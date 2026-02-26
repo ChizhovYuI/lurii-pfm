@@ -71,50 +71,85 @@ class BybitCollector(BaseCollector):
             raise ValueError(msg)
         return data
 
-    async def fetch_balances(self) -> list[Snapshot]:
-        """Fetch wallet balances from Bybit unified account."""
-        today = self._pricing.today()
-        snapshots: list[Snapshot] = []
+    @staticmethod
+    def _accumulate(totals: dict[str, Decimal], ticker: str, amount: Decimal) -> None:
+        """Add amount to running totals for a ticker."""
+        if amount != 0 and ticker:
+            totals[ticker] = totals.get(ticker, Decimal(0)) + amount
 
-        for account_type in ("UNIFIED", "SPOT", "FUND"):
+    async def _fetch_unified(self, totals: dict[str, Decimal]) -> None:
+        """Fetch unified trading account balances."""
+        try:
+            data = await self._get(
+                "/v5/account/wallet-balance",
+                params={"accountType": "UNIFIED"},
+            )
+        except (httpx.HTTPStatusError, ValueError):
+            logger.debug("Bybit: UNIFIED account not available")
+            return
+
+        for account in data.get("result", {}).get("list", []):
+            for coin in account.get("coin", []):
+                ticker = str(coin.get("coin", "")).upper()
+                self._accumulate(totals, ticker, Decimal(str(coin.get("walletBalance", "0"))))
+
+    async def _fetch_funding(self, totals: dict[str, Decimal]) -> None:
+        """Fetch funding account balances."""
+        try:
+            data = await self._get(
+                "/v5/asset/transfer/query-account-coins-balance",
+                params={"accountType": "FUND"},
+            )
+        except (httpx.HTTPStatusError, ValueError):
+            logger.debug("Bybit: FUND account not available")
+            return
+
+        for item in data.get("result", {}).get("balance", []):
+            ticker = str(item.get("coin", "")).upper()
+            self._accumulate(totals, ticker, Decimal(str(item.get("walletBalance", "0"))))
+
+    async def _fetch_earn(self, totals: dict[str, Decimal]) -> None:
+        """Fetch Bybit Earn positions (FlexibleSaving + OnChain)."""
+        for category in ("FlexibleSaving", "OnChain"):
             try:
                 data = await self._get(
-                    "/v5/account/wallet-balance",
-                    params={"accountType": account_type},
+                    "/v5/earn/position",
+                    params={"category": category},
                 )
             except (httpx.HTTPStatusError, ValueError):
-                logger.debug("Bybit: account type %s not available", account_type)
+                logger.warning("Bybit: failed to fetch %s earn positions", category)
                 continue
 
-            for account in data.get("result", {}).get("list", []):
-                for coin in account.get("coin", []):
-                    ticker = str(coin.get("coin", "")).upper()
-                    wallet_balance = Decimal(str(coin.get("walletBalance", "0")))
+            for item in data.get("result", {}).get("list", []):
+                ticker = str(item.get("coin", "")).upper()
+                self._accumulate(totals, ticker, Decimal(str(item.get("amount", "0"))))
 
-                    if wallet_balance == 0 or not ticker:
-                        continue
+    async def fetch_balances(self) -> list[Snapshot]:
+        """Fetch unified + funding + earn account balances."""
+        totals: dict[str, Decimal] = {}
+        await self._fetch_unified(totals)
+        await self._fetch_funding(totals)
+        await self._fetch_earn(totals)
 
-                    # Check if already counted from another account type
-                    existing_assets = {s.asset for s in snapshots}
-                    if ticker in existing_assets:
-                        continue
-
-                    try:
-                        usd_value = await self._pricing.convert_to_usd(wallet_balance, ticker)
-                    except ValueError:
-                        logger.warning("Bybit: cannot price %s, skipping", ticker)
-                        continue
-
-                    snapshots.append(
-                        Snapshot(
-                            date=today,
-                            source=self.source_name,
-                            asset=ticker,
-                            amount=wallet_balance,
-                            usd_value=usd_value,
-                            raw_json=json.dumps(coin),
-                        )
-                    )
+        today = self._pricing.today()
+        snapshots: list[Snapshot] = []
+        for ticker, amount in totals.items():
+            if amount == 0:
+                continue
+            try:
+                usd_value = await self._pricing.convert_to_usd(amount, ticker)
+            except ValueError:
+                logger.warning("Bybit: cannot price %s, skipping", ticker)
+                continue
+            snapshots.append(
+                Snapshot(
+                    date=today,
+                    source=self.source_name,
+                    asset=ticker,
+                    amount=amount,
+                    usd_value=usd_value,
+                )
+            )
 
         logger.info("Bybit: found %d non-zero balances", len(snapshots))
         return snapshots
