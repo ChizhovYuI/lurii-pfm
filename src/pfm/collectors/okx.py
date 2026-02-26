@@ -71,69 +71,63 @@ class OkxCollector(BaseCollector):
         resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]
 
-    async def fetch_balances(self) -> list[Snapshot]:
-        """Fetch trading + funding account balances."""
-        today = self._pricing.today()
-        snapshots: list[Snapshot] = []
+    @staticmethod
+    def _accumulate(totals: dict[str, Decimal], ticker: str, amount: Decimal) -> None:
+        """Add amount to running totals for a ticker."""
+        if amount != 0 and ticker:
+            totals[ticker] = totals.get(ticker, Decimal(0)) + amount
 
-        # Trading account
+    async def _fetch_trading(self, totals: dict[str, Decimal]) -> None:
         trading_data = await self._get("/api/v5/account/balance")
         for account in trading_data.get("data", []):
             for detail in account.get("details", []):
                 ticker = str(detail.get("ccy", "")).upper()
-                eq = Decimal(str(detail.get("eq", "0")))
-                if eq == 0 or not ticker:
-                    continue
-                usd_value = await self._pricing.convert_to_usd(eq, ticker)
-                snapshots.append(
-                    Snapshot(
-                        date=today,
-                        source=self.source_name,
-                        asset=ticker,
-                        amount=eq,
-                        usd_value=usd_value,
-                        raw_json=json.dumps(detail),
-                    )
-                )
+                self._accumulate(totals, ticker, Decimal(str(detail.get("eq", "0"))))
 
-        # Funding account
+    async def _fetch_funding(self, totals: dict[str, Decimal]) -> None:
         funding_data = await self._get("/api/v5/asset/balances")
         for item in funding_data.get("data", []):
             ticker = str(item.get("ccy", "")).upper()
-            available = Decimal(str(item.get("availBal", "0")))
-            frozen = Decimal(str(item.get("frozenBal", "0")))
-            total = available + frozen
-            if total == 0 or not ticker:
-                continue
+            total = Decimal(str(item.get("availBal", "0"))) + Decimal(str(item.get("frozenBal", "0")))
+            self._accumulate(totals, ticker, total)
 
-            # Check if already counted from trading account
-            existing = {s.asset for s in snapshots}
-            if ticker in existing:
-                for i, s in enumerate(snapshots):
-                    if s.asset == ticker:
-                        new_amount = s.amount + total
-                        new_usd = await self._pricing.convert_to_usd(new_amount, ticker)
-                        snapshots[i] = Snapshot(
-                            date=today,
-                            source=self.source_name,
-                            asset=ticker,
-                            amount=new_amount,
-                            usd_value=new_usd,
-                            raw_json=json.dumps(item),
-                        )
-                        break
-            else:
-                usd_value = await self._pricing.convert_to_usd(total, ticker)
-                snapshots.append(
-                    Snapshot(
-                        date=today,
-                        source=self.source_name,
-                        asset=ticker,
-                        amount=total,
-                        usd_value=usd_value,
-                        raw_json=json.dumps(item),
-                    )
+    async def _fetch_earn(self, totals: dict[str, Decimal]) -> None:
+        try:
+            savings_data = await self._get("/api/v5/finance/savings/balance")
+            for item in savings_data.get("data", []):
+                ticker = str(item.get("ccy", "")).upper()
+                self._accumulate(totals, ticker, Decimal(str(item.get("amt", "0"))))
+        except httpx.HTTPStatusError:
+            logger.warning("OKX: failed to fetch savings balances")
+
+        try:
+            staking_data = await self._get("/api/v5/finance/staking-defi/orders-active")
+            for item in staking_data.get("data", []):
+                ticker = str(item.get("ccy", "")).upper()
+                self._accumulate(totals, ticker, Decimal(str(item.get("investAmt", "0"))))
+        except httpx.HTTPStatusError:
+            logger.warning("OKX: failed to fetch staking balances")
+
+    async def fetch_balances(self) -> list[Snapshot]:
+        """Fetch trading + funding + earn account balances."""
+        totals: dict[str, Decimal] = {}
+        await self._fetch_trading(totals)
+        await self._fetch_funding(totals)
+        await self._fetch_earn(totals)
+
+        today = self._pricing.today()
+        snapshots: list[Snapshot] = []
+        for ticker, amount in totals.items():
+            usd_value = await self._pricing.convert_to_usd(amount, ticker)
+            snapshots.append(
+                Snapshot(
+                    date=today,
+                    source=self.source_name,
+                    asset=ticker,
+                    amount=amount,
+                    usd_value=usd_value,
                 )
+            )
 
         logger.info("OKX: found %d non-zero balances", len(snapshots))
         return snapshots
