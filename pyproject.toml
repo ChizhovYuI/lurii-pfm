@@ -1,0 +1,176 @@
+[project]
+name = "lurii-pfm"
+version = "0.1.0"
+description = "Personal Financial Management — aggregate assets, statements, PnL from crypto/finance apps"
+requires-python = ">=3.13"
+dependencies = [
+    "aiosqlite>=0.22.1",
+    "click>=8.3.1",
+    "httpx>=0.28.1",
+    "pydantic-settings>=2.13.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "pre-commit>=4.0",
+    "pytest>=8.3",
+    "pytest-cov>=6.0",
+    "pytest-asyncio>=0.24",
+]
+
+# ── Ruff (linter + formatter) ────────────────────────────────────────
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+src = ["src"]
+
+[tool.ruff.lint]
+select = [
+    "F",      # pyflakes
+    "E", "W", # pycodestyle
+    "C90",    # mccabe complexity
+    "I",      # isort
+    "N",      # pep8-naming
+    "UP",     # pyupgrade
+    "YTT",    # flake8-2020
+    "ANN",    # flake8-annotations
+    "ASYNC",  # flake8-async
+    "S",      # flake8-bandit (security)
+    "BLE",    # flake8-blind-except
+    "FBT",    # flake8-boolean-trap
+    "B",      # flake8-bugbear
+    "A",      # flake8-builtins
+    "COM",    # flake8-commas
+    "C4",     # flake8-comprehensions
+    "DTZ",    # flake8-datetimez
+    "T10",    # flake8-debugger
+    "EM",     # flake8-errmsg
+    "FA",     # flake8-future-annotations
+    "ISC",    # flake8-implicit-str-concat
+    "ICN",    # flake8-import-conventions
+    "LOG",    # flake8-logging
+    "G",      # flake8-logging-format
+    "INP",    # flake8-no-pep420
+    "PIE",    # flake8-pie
+    "T20",    # flake8-print
+    "PYI",    # flake8-pyi
+    "PT",     # flake8-pytest-style
+    "Q",      # flake8-quotes
+    "RSE",    # flake8-raise
+    "RET",    # flake8-return
+    "SLF",    # flake8-self
+    "SLOT",   # flake8-slots
+    "SIM",    # flake8-simplify
+    "TID",    # flake8-tidy-imports
+    "TCH",    # flake8-type-checking
+    "INT",    # flake8-gettext
+    "ARG",    # flake8-unused-arguments
+    "PTH",    # flake8-use-pathlib
+    "TD",     # flake8-todos
+    "FIX",    # flake8-fixme
+    "ERA",    # eradicate (commented-out code)
+    "PD",     # pandas-vet
+    "PGH",    # pygrep-hooks
+    "PL",     # pylint
+    "TRY",    # tryceratops
+    "FLY",    # flynt
+    "PERF",   # perflint
+    "FURB",   # refurb
+    "RUF",    # ruff-specific
+]
+ignore = [
+    "COM812",  # trailing comma (conflicts with formatter)
+    "ISC001",  # single-line implicit string concat (conflicts with formatter)
+    "TD003",   # missing issue link in TODO
+    "FIX002",  # line contains TODO
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = [
+    "S101",    # assert is fine in tests
+    "S106",    # hardcoded passwords fine in test fixtures
+    "S108",    # temp file paths fine in tests
+    "ANN",     # no type annotations required in tests
+    "ARG",     # unused arguments fine in fixtures
+    "SLF001",  # accessing private members fine in tests
+    "FBT",     # boolean traps fine in test helpers
+    "PLR2004", # magic values fine in tests
+    "EM",      # exception message style relaxed in tests
+    "TRY003",  # long exception messages fine in tests
+    "PLC0415", # imports inside functions fine in tests
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.isort]
+known-first-party = ["pfm"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = true
+
+# ── Mypy (strict type checking) ──────────────────────────────────────
+[tool.mypy]
+python_version = "3.13"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+warn_unreachable = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+show_error_codes = true
+enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+
+# ── Pytest ────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "-ra",
+    "--cov=src/pfm",
+    "--cov-report=term-missing",
+    "--cov-fail-under=80",
+]
+asyncio_mode = "auto"
+
+# ── Coverage ──────────────────────────────────────────────────────────
+[tool.coverage.run]
+source = ["src/pfm"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.",
+    "@overload",
+    "raise NotImplementedError",
+]
+show_missing = true
+
+# ── Build system ──────────────────────────────────────────────────────
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pfm"]

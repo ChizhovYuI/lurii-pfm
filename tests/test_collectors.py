@@ -1,0 +1,1105 @@
+"""Tests for all collector implementations with mocked HTTP responses."""
+
+from __future__ import annotations
+
+import json
+from datetime import date
+from decimal import Decimal
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import httpx
+import pytest
+
+from pfm.collectors import COLLECTOR_REGISTRY
+from pfm.collectors.binance import BinanceCollector
+from pfm.collectors.binance_th import BinanceThCollector
+from pfm.collectors.blend import BlendCollector
+from pfm.collectors.bybit import BybitCollector
+from pfm.collectors.ibkr import IbkrCollector
+from pfm.collectors.kbank import KbankCollector
+from pfm.collectors.lobstr import LobstrCollector
+from pfm.collectors.okx import OkxCollector
+from pfm.collectors.uphold import UpholdCollector
+from pfm.collectors.wise import WiseCollector
+from pfm.db.models import Transaction, TransactionType
+from pfm.pricing.coingecko import PricingService
+
+
+@pytest.fixture
+def pricing():
+    p = PricingService()
+    p._set_cache("BTC", Decimal(50000))
+    p._set_cache("ETH", Decimal(3000))
+    p._set_cache("XLM", Decimal("0.10"))
+    p._set_cache("USDC", Decimal(1))
+    p.today = lambda: date(2024, 1, 15)  # type: ignore[assignment]
+    return p
+
+
+def _mock_response(json_data, status_code=200):
+    """Create a mock httpx.Response."""
+    resp = MagicMock(spec=httpx.Response)
+    resp.status_code = status_code
+    resp.json.return_value = json_data
+    resp.text = json.dumps(json_data) if isinstance(json_data, dict | list) else str(json_data)
+    resp.raise_for_status = MagicMock()
+    return resp
+
+
+# ── Lobstr / Stellar ──────────────────────────────────────────────────
+
+
+async def test_lobstr_fetch_balances(pricing):
+    collector = LobstrCollector(pricing, stellar_address="GABC123")
+    account_resp = _mock_response(
+        {
+            "balances": [
+                {"balance": "100.0000000", "asset_type": "native"},
+                {"balance": "500.0000000", "asset_type": "credit_alphanum4", "asset_code": "USDC"},
+                {"balance": "0.0000000", "asset_type": "credit_alphanum4", "asset_code": "BTC"},
+            ]
+        }
+    )
+    collector._client.get = AsyncMock(return_value=account_resp)
+
+    snapshots = await collector.fetch_balances()
+    assert len(snapshots) == 2  # zero balances excluded
+    assert snapshots[0].asset == "XLM"
+    assert snapshots[0].amount == Decimal("100.0000000")
+    assert snapshots[1].asset == "USDC"
+
+
+async def test_lobstr_fetch_transactions(pricing):
+    collector = LobstrCollector(pricing, stellar_address="GABC123")
+    payments_resp = _mock_response(
+        {
+            "_embedded": {
+                "records": [
+                    {
+                        "type": "payment",
+                        "created_at": "2024-01-15T10:00:00Z",
+                        "to": "GABC123",
+                        "asset_type": "credit_alphanum4",
+                        "asset_code": "USDC",
+                        "amount": "100.0",
+                        "transaction_hash": "abc123",
+                    },
+                    {
+                        "type": "manage_offer",  # should be skipped
+                        "created_at": "2024-01-15T09:00:00Z",
+                    },
+                ]
+            }
+        }
+    )
+    collector._client.get = AsyncMock(return_value=payments_resp)
+
+    txs = await collector.fetch_transactions()
+    assert len(txs) == 1
+    assert txs[0].tx_type == TransactionType.DEPOSIT
+    assert txs[0].asset == "USDC"
+    assert txs[0].amount == Decimal("100.0")
+
+
+async def test_lobstr_parse_create_account(pricing):
+    collector = LobstrCollector(pricing, stellar_address="GABC123")
+    record = {
+        "type": "create_account",
+        "created_at": "2024-01-15T10:00:00Z",
+        "to": "GABC123",
+        "starting_balance": "50.0",
+        "transaction_hash": "hash1",
+    }
+    tx = collector._parse_payment(record)
+    assert tx is not None
+    assert tx.asset == "XLM"
+    assert tx.amount == Decimal("50.0")
+
+
+async def test_lobstr_outgoing_payment(pricing):
+    collector = LobstrCollector(pricing, stellar_address="GABC123")
+    record = {
+        "type": "payment",
+        "created_at": "2024-01-15T10:00:00Z",
+        "to": "GOTHER",
+        "from": "GABC123",
+        "asset_type": "native",
+        "amount": "25.0",
+        "transaction_hash": "hash2",
+    }
+    tx = collector._parse_payment(record)
+    assert tx is not None
+    assert tx.tx_type == TransactionType.WITHDRAWAL
+
+
+async def test_lobstr_transactions_since_filter(pricing):
+    collector = LobstrCollector(pricing, stellar_address="GABC123")
+    payments_resp = _mock_response(
+        {
+            "_embedded": {
+                "records": [
+                    {
+                        "type": "payment",
+                        "created_at": "2024-01-15T10:00:00Z",
+                        "to": "GABC123",
+                        "asset_type": "native",
+                        "amount": "10",
+                        "transaction_hash": "h1",
+                    },
+                    {
+                        "type": "payment",
+                        "created_at": "2024-01-10T10:00:00Z",
+                        "to": "GABC123",
+                        "asset_type": "native",
+                        "amount": "5",
+                        "transaction_hash": "h2",
+                    },
+                ]
+            }
+        }
+    )
+    collector._client.get = AsyncMock(return_value=payments_resp)
+
+    txs = await collector.fetch_transactions(since=date(2024, 1, 12))
+    assert len(txs) == 1
+
+
+# ── Binance ───────────────────────────────────────────────────────────
+
+
+async def test_binance_fetch_balances(pricing):
+    collector = BinanceCollector(pricing, api_key="key", api_secret="secret")
+    account_resp = _mock_response(
+        {
+            "balances": [
+                {"asset": "BTC", "free": "1.0", "locked": "0.5"},
+                {"asset": "ETH", "free": "10.0", "locked": "0.0"},
+                {"asset": "DOGE", "free": "0.0", "locked": "0.0"},
+            ]
+        }
+    )
+    collector._client.get = AsyncMock(return_value=account_resp)
+
+    snapshots = await collector.fetch_balances()
+    assert len(snapshots) == 2  # DOGE excluded (zero)
+    btc = next(s for s in snapshots if s.asset == "BTC")
+    assert btc.amount == Decimal("1.5")  # free + locked
+    assert btc.usd_value == Decimal(75000)
+
+
+async def test_binance_fetch_balances_unknown_ticker(pricing):
+    collector = BinanceCollector(pricing, api_key="key", api_secret="secret")
+    account_resp = _mock_response(
+        {
+            "balances": [
+                {"asset": "UNKNOWNCOIN", "free": "100", "locked": "0"},
+            ]
+        }
+    )
+    collector._client.get = AsyncMock(return_value=account_resp)
+
+    snapshots = await collector.fetch_balances()
+    assert len(snapshots) == 0  # skipped due to pricing failure
+
+
+async def test_binance_fetch_transactions(pricing):
+    collector = BinanceCollector(pricing, api_key="key", api_secret="secret")
+    deposits_resp = _mock_response(
+        [
+            {"coin": "BTC", "amount": "1.0", "insertTime": 1705276800000, "txId": "dep1"},
+        ]
+    )
+    withdrawals_resp = _mock_response(
+        [
+            {"coin": "ETH", "amount": "5.0", "applyTime": "2024-01-15T00:00:00+00:00", "id": "wd1"},
+        ]
+    )
+
+    call_count = 0
+
+    async def mock_get(path, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if "deposit" in path:
+            return deposits_resp
+        return withdrawals_resp
+
+    collector._client.get = mock_get  # type: ignore[assignment]
+
+    txs = await collector.fetch_transactions()
+    assert len(txs) == 2
+    dep = next(t for t in txs if t.tx_type == TransactionType.DEPOSIT)
+    assert dep.asset == "BTC"
+    assert dep.amount == Decimal("1.0")
+    wd = next(t for t in txs if t.tx_type == TransactionType.WITHDRAWAL)
+    assert wd.asset == "ETH"
+
+
+async def test_binance_fetch_transactions_with_since(pricing):
+    collector = BinanceCollector(pricing, api_key="key", api_secret="secret")
+    collector._client.get = AsyncMock(return_value=_mock_response([]))
+
+    await collector.fetch_transactions(since=date(2024, 1, 1))
+    # Just verify it doesn't crash with since parameter
+
+
+async def test_binance_deposit_http_error(pricing):
+    collector = BinanceCollector(pricing, api_key="key", api_secret="secret")
+
+    call_count = 0
+
+    async def mock_get(path, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if "deposit" in path:
+            resp = _mock_response([])
+            resp.raise_for_status.side_effect = httpx.HTTPStatusError("403", request=MagicMock(), response=MagicMock())
+            return resp
+        return _mock_response([])
+
+    collector._client.get = mock_get  # type: ignore[assignment]
+
+    txs = await collector.fetch_transactions()
+    # Should gracefully handle the error
+    assert isinstance(txs, list)
+
+
+async def test_binance_signed_params(pricing):
+    collector = BinanceCollector(pricing, api_key="key", api_secret="secret")
+    params = collector._signed_params({"symbol": "BTCUSDT"})
+    assert "timestamp" in params
+    assert "signature" in params
+    assert params["symbol"] == "BTCUSDT"
+
+
+async def test_binance_parse_deposit_empty():
+    tx = BinanceCollector._parse_deposit({"coin": "", "amount": "0"})
+    assert tx is None
+
+
+async def test_binance_parse_withdrawal_empty():
+    tx = BinanceCollector._parse_withdrawal({"coin": "", "amount": "0"})
+    assert tx is None
+
+
+# ── Binance TH ────────────────────────────────────────────────────────
+
+
+async def test_binance_th_has_different_base_url(pricing):
+    collector = BinanceThCollector(pricing, api_key="key", api_secret="secret")
+    assert collector.source_name == "binance_th"
+    assert collector._base_url == "https://api.binance.th"
+
+
+# ── OKX ───────────────────────────────────────────────────────────────
+
+
+async def test_okx_fetch_balances(pricing):
+    collector = OkxCollector(pricing, api_key="key", api_secret="secret", passphrase="pass")
+
+    call_count = 0
+
+    async def mock_get(path, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if "account/balance" in path:
+            return _mock_response(
+                {
+                    "data": [
+                        {
+                            "details": [
+                                {"ccy": "BTC", "eq": "2.0"},
+                                {"ccy": "ETH", "eq": "0"},  # zero, excluded
+                            ]
+                        }
+                    ]
+                }
+            )
+        # funding balances
+        return _mock_response(
+            {
+                "data": [
+                    {"ccy": "USDC", "availBal": "1000", "frozenBal": "0"},
+                    {"ccy": "BTC", "availBal": "0.5", "frozenBal": "0"},  # merge with trading
+                ]
+            }
+        )
+
+    collector._client.get = mock_get  # type: ignore[assignment]
+
+    snapshots = await collector.fetch_balances()
+    assert len(snapshots) == 2  # BTC (merged), USDC
+    btc = next(s for s in snapshots if s.asset == "BTC")
+    assert btc.amount == Decimal("2.5")  # 2.0 trading + 0.5 funding
+
+
+async def test_okx_fetch_transactions(pricing):
+    collector = OkxCollector(pricing, api_key="key", api_secret="secret", passphrase="pass")
+    bills_resp = _mock_response(
+        {
+            "data": [
+                {"ccy": "BTC", "balChg": "1.0", "ts": "1705276800000", "subType": "1", "billId": "b1"},
+                {"ccy": "ETH", "balChg": "-0.5", "ts": "1705276800000", "subType": "13", "billId": "b2"},
+            ]
+        }
+    )
+    collector._client.get = AsyncMock(return_value=bills_resp)
+
+    txs = await collector.fetch_transactions()
+    assert len(txs) == 2
+    trade_tx = next(t for t in txs if t.tx_type == TransactionType.TRADE)
+    assert trade_tx.asset == "BTC"
+
+
+async def test_okx_parse_bill_empty_ccy():
+    tx = OkxCollector._parse_bill({"ccy": "", "balChg": "1.0"})
+    assert tx is None
+
+
+async def test_okx_parse_bill_deposit():
+    bill = {"ccy": "BTC", "balChg": "1.0", "ts": "1705276800000", "subType": "13", "billId": "b"}
+    tx = OkxCollector._parse_bill(bill)
+    assert tx is not None
+    assert tx.tx_type == TransactionType.DEPOSIT
+
+
+async def test_okx_parse_bill_withdrawal():
+    bill = {"ccy": "BTC", "balChg": "-1.0", "ts": "1705276800000", "subType": "14", "billId": "b"}
+    tx = OkxCollector._parse_bill(bill)
+    assert tx is not None
+    assert tx.tx_type == TransactionType.WITHDRAWAL
+
+
+async def test_okx_parse_bill_transfer():
+    bill = {"ccy": "BTC", "balChg": "1.0", "ts": "1705276800000", "subType": "99", "billId": "b"}
+    tx = OkxCollector._parse_bill(bill)
+    assert tx is not None
+    assert tx.tx_type == TransactionType.TRANSFER
+
+
+async def test_okx_sign_request(pricing):
+    collector = OkxCollector(pricing, api_key="key", api_secret="secret", passphrase="pass")
+    headers = collector._sign_request("GET", "/api/v5/account/balance")
+    assert "OK-ACCESS-KEY" in headers
+    assert "OK-ACCESS-SIGN" in headers
+    assert "OK-ACCESS-TIMESTAMP" in headers
+    assert "OK-ACCESS-PASSPHRASE" in headers
+
+
+async def test_okx_transactions_since_filter(pricing):
+    collector = OkxCollector(pricing, api_key="key", api_secret="secret", passphrase="pass")
+    bills_resp = _mock_response(
+        {
+            "data": [
+                {"ccy": "BTC", "balChg": "1.0", "ts": "1705276800000", "subType": "1", "billId": "b1"},
+                {"ccy": "BTC", "balChg": "0.5", "ts": "1704067200000", "subType": "1", "billId": "b2"},
+            ]
+        }
+    )
+    collector._client.get = AsyncMock(return_value=bills_resp)
+
+    txs = await collector.fetch_transactions(since=date(2024, 1, 10))
+    assert len(txs) == 1
+
+
+# ── Bybit ─────────────────────────────────────────────────────────────
+
+
+async def test_bybit_fetch_balances(pricing):
+    collector = BybitCollector(pricing, api_key="key", api_secret="secret")
+
+    async def mock_get(path, **kwargs):
+        return _mock_response(
+            {
+                "retCode": 0,
+                "result": {
+                    "list": [
+                        {
+                            "coin": [
+                                {"coin": "BTC", "walletBalance": "1.0"},
+                                {"coin": "USDC", "walletBalance": "500"},
+                                {"coin": "DOGE", "walletBalance": "0"},  # zero excluded
+                            ]
+                        }
+                    ]
+                },
+            }
+        )
+
+    collector._client.get = mock_get  # type: ignore[assignment]
+
+    snapshots = await collector.fetch_balances()
+    assert len(snapshots) == 2
+
+
+async def test_bybit_fetch_balances_account_error(pricing):
+    collector = BybitCollector(pricing, api_key="key", api_secret="secret")
+
+    call_count = 0
+
+    async def mock_get(path, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return _mock_response(
+            {
+                "retCode": 10001,
+                "retMsg": "account not found",
+            }
+        )
+
+    collector._client.get = mock_get  # type: ignore[assignment]
+
+    snapshots = await collector.fetch_balances()
+    assert snapshots == []
+
+
+async def test_bybit_fetch_transactions(pricing):
+    collector = BybitCollector(pricing, api_key="key", api_secret="secret")
+    tx_resp = _mock_response(
+        {
+            "retCode": 0,
+            "result": {
+                "list": [
+                    {
+                        "currency": "BTC",
+                        "cashFlow": "1.0",
+                        "transactionTime": "1705276800000",
+                        "type": "TRADE",
+                        "id": "t1",
+                    },
+                    {
+                        "currency": "ETH",
+                        "cashFlow": "-0.5",
+                        "transactionTime": "1705276800000",
+                        "type": "WITHDRAWAL",
+                        "id": "t2",
+                    },
+                ]
+            },
+        }
+    )
+    collector._client.get = AsyncMock(return_value=tx_resp)
+
+    txs = await collector.fetch_transactions()
+    assert len(txs) == 2
+
+
+async def test_bybit_parse_transaction_types():
+    ts = "1705276800000"
+
+    tx = BybitCollector._parse_transaction(
+        {"currency": "BTC", "cashFlow": "1", "transactionTime": ts, "type": "TRADE", "id": "1"},
+    )
+    assert tx is not None
+    assert tx.tx_type == TransactionType.TRADE
+
+    tx = BybitCollector._parse_transaction(
+        {"currency": "BTC", "cashFlow": "1", "transactionTime": ts, "type": "DEPOSIT", "id": "2"},
+    )
+    assert tx is not None
+    assert tx.tx_type == TransactionType.DEPOSIT
+
+    tx = BybitCollector._parse_transaction(
+        {"currency": "BTC", "cashFlow": "0.01", "transactionTime": ts, "type": "INTEREST", "id": "3"},
+    )
+    assert tx is not None
+    assert tx.tx_type == TransactionType.INTEREST
+
+    tx = BybitCollector._parse_transaction(
+        {"currency": "BTC", "cashFlow": "1", "transactionTime": ts, "type": "OTHER", "id": "4"},
+    )
+    assert tx is not None
+    assert tx.tx_type == TransactionType.TRANSFER
+
+
+async def test_bybit_parse_transaction_empty_currency():
+    tx = BybitCollector._parse_transaction({"currency": "", "cashFlow": "1", "transactionTime": "0", "type": "TRADE"})
+    assert tx is None
+
+
+async def test_bybit_signed_headers(pricing):
+    collector = BybitCollector(pricing, api_key="key", api_secret="secret")
+    headers = collector._signed_headers("accountType=UNIFIED")
+    assert "X-BAPI-API-KEY" in headers
+    assert "X-BAPI-SIGN" in headers
+    assert "X-BAPI-TIMESTAMP" in headers
+
+
+async def test_bybit_dedup_across_account_types(pricing):
+    collector = BybitCollector(pricing, api_key="key", api_secret="secret")
+
+    calls = 0
+
+    async def mock_get(path, **kwargs):
+        nonlocal calls
+        calls += 1
+        params = kwargs.get("params", {})
+        acct_type = params.get("accountType", "")
+        if acct_type == "UNIFIED":
+            return _mock_response(
+                {
+                    "retCode": 0,
+                    "result": {"list": [{"coin": [{"coin": "BTC", "walletBalance": "1.0"}]}]},
+                }
+            )
+        if acct_type == "SPOT":
+            return _mock_response(
+                {
+                    "retCode": 0,
+                    "result": {"list": [{"coin": [{"coin": "BTC", "walletBalance": "0.5"}]}]},
+                }
+            )
+        return _mock_response({"retCode": 0, "result": {"list": []}})
+
+    collector._client.get = mock_get  # type: ignore[assignment]
+
+    snapshots = await collector.fetch_balances()
+    # BTC should appear only once (from UNIFIED, SPOT duplicate skipped)
+    btc_snapshots = [s for s in snapshots if s.asset == "BTC"]
+    assert len(btc_snapshots) == 1
+
+
+# ── Wise ──────────────────────────────────────────────────────────────
+
+
+async def test_wise_fetch_balances(pricing):
+    collector = WiseCollector(pricing, api_token="token")
+
+    async def mock_get(path, **kwargs):
+        if "/v1/profiles" in path:
+            return _mock_response([{"id": 123, "type": "personal"}])
+        if "/v4/profiles" in path:
+            return _mock_response(
+                [
+                    {"amount": {"value": 1000, "currency": "GBP"}, "id": 1},
+                    {"amount": {"value": 0, "currency": "EUR"}, "id": 2},
+                ]
+            )
+        return _mock_response([])
+
+    collector._client.get = mock_get  # type: ignore[assignment]
+
+    # GBP is fiat; need to cache it
+    pricing._set_cache("GBP", Decimal("1.25"))
+
+    snapshots = await collector.fetch_balances()
+    assert len(snapshots) == 1
+    assert snapshots[0].asset == "GBP"
+    assert snapshots[0].amount == Decimal(1000)
+
+
+async def test_wise_get_profile_fallback(pricing):
+    collector = WiseCollector(pricing, api_token="token")
+    # No personal profile, should fall back to first
+    resp = _mock_response([{"id": 456, "type": "business"}])
+    collector._client.get = AsyncMock(return_value=resp)
+
+    profile_id = await collector._get_profile_id()
+    assert profile_id == 456
+
+
+async def test_wise_no_profiles_raises(pricing):
+    collector = WiseCollector(pricing, api_token="token")
+    resp = _mock_response([])
+    collector._client.get = AsyncMock(return_value=resp)
+
+    with pytest.raises(ValueError, match="No Wise profiles found"):
+        await collector._get_profile_id()
+
+
+async def test_wise_fetch_transactions(pricing):
+    collector = WiseCollector(pricing, api_token="token")
+    pricing._set_cache("GBP", Decimal("1.25"))
+
+    async def mock_get(path, **kwargs):
+        if "balance-statements" in path:
+            return _mock_response(
+                {
+                    "transactions": [
+                        {
+                            "amount": {"value": 100},
+                            "date": "2024-01-15T00:00:00Z",
+                            "type": "CREDIT",
+                            "referenceNumber": "ref1",
+                        },
+                        {
+                            "amount": {"value": -50},
+                            "date": "2024-01-14T00:00:00Z",
+                            "type": "DEBIT",
+                            "referenceNumber": "ref2",
+                        },
+                        {
+                            "amount": {"value": 0},
+                            "date": "2024-01-13T00:00:00Z",
+                            "type": "CREDIT",
+                            "referenceNumber": "ref3",
+                        },
+                    ]
+                }
+            )
+        if "/v4/profiles" in path:
+            return _mock_response(
+                [
+                    {"amount": {"value": 500, "currency": "GBP"}, "id": 1},
+                ]
+            )
+        if "/v1/profiles" in path:
+            return _mock_response([{"id": 123, "type": "personal"}])
+        return _mock_response({})
+
+    collector._client.get = mock_get  # type: ignore[assignment]
+
+    txs = await collector.fetch_transactions()
+    assert len(txs) == 2  # zero amount excluded
+
+
+async def test_wise_parse_transaction_types():
+    # CREDIT -> DEPOSIT
+    tx = WiseCollector._parse_transaction(
+        {"amount": {"value": 100}, "date": "2024-01-15", "type": "CREDIT", "referenceNumber": "r1"}, "GBP"
+    )
+    assert tx is not None
+    assert tx.tx_type == TransactionType.DEPOSIT
+
+    # DEBIT -> WITHDRAWAL
+    tx = WiseCollector._parse_transaction(
+        {"amount": {"value": -50}, "date": "2024-01-15", "type": "DEBIT", "referenceNumber": "r2"}, "GBP"
+    )
+    assert tx is not None
+    assert tx.tx_type == TransactionType.WITHDRAWAL
+
+    # CONVERSION -> TRADE
+    tx = WiseCollector._parse_transaction(
+        {"amount": {"value": 100}, "date": "2024-01-15", "type": "CONVERSION", "referenceNumber": "r3"}, "GBP"
+    )
+    assert tx is not None
+    assert tx.tx_type == TransactionType.TRADE
+
+    # Unknown -> TRANSFER
+    tx = WiseCollector._parse_transaction(
+        {"amount": {"value": 100}, "date": "2024-01-15", "type": "OTHER", "referenceNumber": "r4"}, "GBP"
+    )
+    assert tx is not None
+    assert tx.tx_type == TransactionType.TRANSFER
+
+
+# ── Uphold ────────────────────────────────────────────────────────────
+
+
+async def test_uphold_fetch_balances(pricing):
+    collector = UpholdCollector(pricing, pat="pat-token")
+
+    cards_resp = _mock_response(
+        [
+            {"id": "c1", "balance": "100.0", "currency": "USDC"},
+            {"id": "c2", "balance": "200.0", "currency": "USDC"},  # same currency, aggregate
+            {"id": "c3", "balance": "0.0", "currency": "BTC"},  # zero excluded
+        ]
+    )
+    collector._client.get = AsyncMock(return_value=cards_resp)
+
+    snapshots = await collector.fetch_balances()
+    assert len(snapshots) == 1
+    assert snapshots[0].asset == "USDC"
+    assert snapshots[0].amount == Decimal("300.0")
+
+
+async def test_uphold_fetch_transactions(pricing):
+    collector = UpholdCollector(pricing, pat="pat-token")
+
+    call_count = 0
+
+    async def mock_get(path, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if path == "/v0/me/cards":
+            return _mock_response(
+                [
+                    {"id": "c1", "balance": "100.0", "currency": "USDC"},
+                ]
+            )
+        # card transactions
+        return _mock_response(
+            [
+                {
+                    "id": "tx1",
+                    "type": "deposit",
+                    "createdAt": "2024-01-15T00:00:00Z",
+                    "origin": {"amount": "100", "currency": "USD"},
+                    "destination": {"amount": "100", "currency": "USDC"},
+                },
+            ]
+        )
+
+    collector._client.get = mock_get  # type: ignore[assignment]
+
+    txs = await collector.fetch_transactions()
+    assert len(txs) == 1
+    assert txs[0].tx_type == TransactionType.DEPOSIT
+
+
+async def test_uphold_parse_transaction_trade():
+    tx = UpholdCollector._parse_transaction(
+        {
+            "id": "tx1",
+            "type": "transfer",
+            "createdAt": "2024-01-15T00:00:00Z",
+            "origin": {"amount": "100", "currency": "USD"},
+            "destination": {"amount": "0.002", "currency": "BTC"},
+        }
+    )
+    assert tx is not None
+    assert tx.tx_type == TransactionType.TRADE  # different currencies
+
+
+async def test_uphold_parse_transaction_same_currency():
+    tx = UpholdCollector._parse_transaction(
+        {
+            "id": "tx1",
+            "type": "transfer",
+            "createdAt": "2024-01-15T00:00:00Z",
+            "origin": {"amount": "100", "currency": "USDC"},
+            "destination": {"amount": "100", "currency": "USDC"},
+        }
+    )
+    assert tx is not None
+    assert tx.tx_type == TransactionType.TRANSFER
+
+
+async def test_uphold_parse_transaction_no_currency():
+    tx = UpholdCollector._parse_transaction(
+        {
+            "id": "tx1",
+            "type": "deposit",
+            "createdAt": "2024-01-15T00:00:00Z",
+            "origin": {"amount": "100", "currency": ""},
+            "destination": {"amount": "100", "currency": ""},
+        }
+    )
+    assert tx is None
+
+
+# ── IBKR ──────────────────────────────────────────────────────────────
+
+
+async def test_ibkr_parse_positions_from_xml():
+    collector = IbkrCollector(PricingService(), flex_token="tok", flex_query_id="qid")
+    xml = """<OpenPosition symbol="AAPL" position="10" markMarketValue="1500.00"/>
+<OpenPosition symbol="MSFT" position="5" markMarketValue="1750.00"/>"""
+    positions = collector._parse_positions_from_xml(xml)
+    assert len(positions) == 2
+    assert positions[0]["symbol"] == "AAPL"
+    assert positions[1]["markMarketValue"] == "1750.00"
+
+
+async def test_ibkr_parse_cash_from_xml():
+    collector = IbkrCollector(PricingService(), flex_token="tok", flex_query_id="qid")
+    xml = '<CashReport currency="USD" endingCash="5000.00"/>'
+    cash = collector._parse_cash_from_xml(xml)
+    assert len(cash) == 1
+    assert cash[0]["currency"] == "USD"
+    assert cash[0]["endingCash"] == "5000.00"
+
+
+async def test_ibkr_parse_trades_from_xml():
+    collector = IbkrCollector(PricingService(), flex_token="tok", flex_query_id="qid")
+    xml = '<Trade symbol="AAPL" quantity="10" proceeds="1500.00" tradeDate="2024-01-15" tradeID="123"/>'
+    trades = collector._parse_trades_from_xml(xml)
+    assert len(trades) == 1
+    assert trades[0]["symbol"] == "AAPL"
+
+
+async def test_ibkr_parse_trade_valid():
+    trade = {"symbol": "AAPL", "quantity": "10", "proceeds": "1500.00", "tradeDate": "2024-01-15", "tradeID": "123"}
+    tx = IbkrCollector._parse_trade(trade)
+    assert tx is not None
+    assert tx.asset == "AAPL"
+    assert tx.amount == Decimal(10)
+    assert tx.usd_value == Decimal("1500.00")
+
+
+async def test_ibkr_parse_trade_no_symbol():
+    tx = IbkrCollector._parse_trade({"symbol": "", "quantity": "10", "proceeds": "1500", "tradeDate": "2024-01-15"})
+    assert tx is None
+
+
+async def test_ibkr_parse_trade_bad_date():
+    tx = IbkrCollector._parse_trade({"symbol": "AAPL", "quantity": "10", "proceeds": "1500", "tradeDate": "invalid"})
+    assert tx is None
+
+
+async def test_ibkr_request_statement(pricing):
+    collector = IbkrCollector(pricing, flex_token="tok", flex_query_id="qid")
+    resp = MagicMock(spec=httpx.Response)
+    resp.text = (
+        "<FlexStatementResponse><Status>Success</Status>"
+        "<ReferenceCode>REF123</ReferenceCode></FlexStatementResponse>"
+    )
+    resp.raise_for_status = MagicMock()
+    collector._client.get = AsyncMock(return_value=resp)
+
+    ref_code = await collector._request_statement()
+    assert ref_code == "REF123"
+
+
+async def test_ibkr_request_statement_failure(pricing):
+    collector = IbkrCollector(pricing, flex_token="tok", flex_query_id="qid")
+    resp = MagicMock(spec=httpx.Response)
+    resp.text = (
+        "<FlexStatementResponse><Status>Fail</Status>"
+        "<ErrorMessage>Invalid token</ErrorMessage></FlexStatementResponse>"
+    )
+    resp.raise_for_status = MagicMock()
+    collector._client.get = AsyncMock(return_value=resp)
+
+    with pytest.raises(ValueError, match="IBKR Flex request failed"):
+        await collector._request_statement()
+
+
+async def test_ibkr_fetch_statement_ready(pricing):
+    collector = IbkrCollector(pricing, flex_token="tok", flex_query_id="qid")
+    resp = MagicMock(spec=httpx.Response)
+    resp.text = '<FlexQueryResponse queryName="Test"><FlexStatements count="1"></FlexStatements></FlexQueryResponse>'
+    resp.raise_for_status = MagicMock()
+    collector._client.get = AsyncMock(return_value=resp)
+
+    result = await collector._fetch_statement("REF123")
+    assert "<FlexQueryResponse" in result
+
+
+async def test_ibkr_fetch_statement_timeout(pricing):
+    collector = IbkrCollector(pricing, flex_token="tok", flex_query_id="qid")
+    resp = MagicMock(spec=httpx.Response)
+    resp.text = "Statement generation in progress. Please try again shortly."
+    resp.raise_for_status = MagicMock()
+    collector._client.get = AsyncMock(return_value=resp)
+
+    with (
+        patch("pfm.collectors.ibkr._MAX_POLL_ATTEMPTS", 2),
+        patch("pfm.collectors.ibkr._POLL_DELAY_SECONDS", 0.01),
+        pytest.raises(TimeoutError, match="timed out"),
+    ):
+        await collector._fetch_statement("REF123")
+
+
+async def test_ibkr_fetch_statement_unexpected_response(pricing):
+    collector = IbkrCollector(pricing, flex_token="tok", flex_query_id="qid")
+    resp = MagicMock(spec=httpx.Response)
+    resp.text = "<SomeOtherResponse>Unexpected</SomeOtherResponse>"
+    resp.raise_for_status = MagicMock()
+    collector._client.get = AsyncMock(return_value=resp)
+
+    with pytest.raises(ValueError, match="IBKR unexpected response"):
+        await collector._fetch_statement("REF123")
+
+
+async def test_ibkr_fetch_balances(pricing):
+    collector = IbkrCollector(pricing, flex_token="tok", flex_query_id="qid")
+    pricing._set_cache("USD", Decimal(1))
+
+    request_resp = MagicMock(spec=httpx.Response)
+    request_resp.text = (
+        "<FlexStatementResponse><Status>Success</Status>" "<ReferenceCode>REF1</ReferenceCode></FlexStatementResponse>"
+    )
+    request_resp.raise_for_status = MagicMock()
+
+    statement_xml = """<FlexQueryResponse>
+<FlexStatements>
+<OpenPosition symbol="AAPL" position="10" markMarketValue="1500.00"/>
+<CashReport currency="USD" endingCash="5000.00"/>
+<CashReport currency="BASE_SUMMARY" endingCash="5000.00"/>
+</FlexStatements>
+</FlexQueryResponse>"""
+
+    statement_resp = MagicMock(spec=httpx.Response)
+    statement_resp.text = statement_xml
+    statement_resp.raise_for_status = MagicMock()
+
+    call_count = 0
+
+    async def mock_get(url, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if "SendRequest" in str(url):
+            return request_resp
+        return statement_resp
+
+    collector._client.get = mock_get  # type: ignore[assignment]
+
+    snapshots = await collector.fetch_balances()
+    assert len(snapshots) == 2  # AAPL + USD cash (BASE_SUMMARY excluded)
+
+
+# ── Blend ─────────────────────────────────────────────────────────────
+
+
+async def test_blend_fetch_balances_no_contract(pricing):
+    collector = BlendCollector(pricing, stellar_address="GABC", pool_contract_id="", soroban_rpc_url="http://rpc")
+    snapshots = await collector.fetch_balances()
+    assert snapshots == []
+
+
+async def test_blend_fetch_transactions(pricing):
+    collector = BlendCollector(
+        pricing, stellar_address="GABC", pool_contract_id="contract", soroban_rpc_url="http://rpc"
+    )
+    txs = await collector.fetch_transactions()
+    assert txs == []
+
+
+async def test_blend_parse_positions_error(pricing):
+    collector = BlendCollector(
+        pricing, stellar_address="GABC", pool_contract_id="contract", soroban_rpc_url="http://rpc"
+    )
+    result = collector._parse_positions({"error": "simulation failed"}, date(2024, 1, 15))
+    assert result == []
+
+
+async def test_blend_parse_positions_empty_results(pricing):
+    collector = BlendCollector(
+        pricing, stellar_address="GABC", pool_contract_id="contract", soroban_rpc_url="http://rpc"
+    )
+    result = collector._parse_positions({"result": {"results": []}}, date(2024, 1, 15))
+    assert result == []
+
+
+async def test_blend_parse_positions_with_xdr(pricing):
+    collector = BlendCollector(
+        pricing, stellar_address="GABC", pool_contract_id="contract", soroban_rpc_url="http://rpc"
+    )
+    result = collector._parse_positions(
+        {"result": {"results": [{"xdr": "AAAA"}]}},
+        date(2024, 1, 15),
+    )
+    # XDR parsing deferred, so still empty
+    assert result == []
+
+
+async def test_blend_build_simulation_xdr(pricing):
+    collector = BlendCollector(
+        pricing, stellar_address="GABC", pool_contract_id="contract", soroban_rpc_url="http://rpc"
+    )
+    # Should return empty string (stub)
+    assert collector._build_simulation_xdr() == ""
+
+
+async def test_blend_fetch_balances_rpc_error(pricing):
+    collector = BlendCollector(
+        pricing, stellar_address="GABC", pool_contract_id="contract", soroban_rpc_url="http://rpc"
+    )
+    resp = _mock_response({"error": "bad request"})
+    collector._client.post = AsyncMock(return_value=resp)
+
+    snapshots = await collector.fetch_balances()
+    assert snapshots == []
+
+
+# ── KBank ─────────────────────────────────────────────────────────────
+
+
+async def test_kbank_no_pdf_path(pricing):
+    collector = KbankCollector(pricing)
+    snapshots = await collector.fetch_balances()
+    assert snapshots == []
+    txs = await collector.fetch_transactions()
+    assert txs == []
+
+
+async def test_kbank_set_pdf_path(pricing):
+    collector = KbankCollector(pricing)
+    collector.set_pdf_path(Path("/tmp/test.pdf"))
+    assert collector._pdf_path == Path("/tmp/test.pdf")
+
+
+def test_kbank_parse_date():
+    assert KbankCollector._parse_date("15/01/2024") == date(2024, 1, 15)
+    assert KbankCollector._parse_date("15/01/24") == date(2024, 1, 15)
+    assert KbankCollector._parse_date("2024-01-15") == date(2024, 1, 15)
+    assert KbankCollector._parse_date("invalid") is None
+    assert KbankCollector._parse_date("") is None
+
+
+def test_kbank_parse_amount():
+    assert KbankCollector._parse_amount("1,234.56") == Decimal("1234.56")
+    assert KbankCollector._parse_amount("100.00") == Decimal("100.00")
+    assert KbankCollector._parse_amount("-50.00") == Decimal("-50.00")
+    assert KbankCollector._parse_amount("") is None
+    assert KbankCollector._parse_amount("-") is None
+    assert KbankCollector._parse_amount("abc") is None
+    assert KbankCollector._parse_amount("  ") is None
+
+
+def test_kbank_parse_row_deposit(pricing):
+    collector = KbankCollector(pricing)
+    row = ["15/01/2024", "ATM Deposit", "", "5000.00", "10000.00"]
+    result = collector._parse_row(row, date(2024, 1, 15))
+    assert result is not None
+    tx, balance = result
+    assert tx is not None
+    assert tx.tx_type == TransactionType.DEPOSIT
+    assert tx.amount == Decimal("5000.00")
+    assert balance == Decimal("10000.00")
+
+
+def test_kbank_parse_row_withdrawal(pricing):
+    collector = KbankCollector(pricing)
+    row = ["15/01/2024", "ATM Withdrawal", "3000.00", "", "7000.00"]
+    result = collector._parse_row(row, date(2024, 1, 15))
+    assert result is not None
+    tx, _balance = result
+    assert tx is not None
+    assert tx.tx_type == TransactionType.WITHDRAWAL
+    assert tx.amount == Decimal("3000.00")
+
+
+def test_kbank_parse_row_too_short(pricing):
+    collector = KbankCollector(pricing)
+    result = collector._parse_row(["a", "b"], date(2024, 1, 15))
+    assert result is None
+
+
+def test_kbank_parse_row_bad_date(pricing):
+    collector = KbankCollector(pricing)
+    result = collector._parse_row(["bad-date", "desc", "100", "0", "1000"], date(2024, 1, 15))
+    assert result is None
+
+
+async def test_kbank_fetch_transactions_with_cache(pricing):
+    collector = KbankCollector(pricing)
+    collector._cached_transactions = [
+        Transaction(
+            date=date(2024, 1, 15),
+            source="kbank",
+            tx_type=TransactionType.DEPOSIT,
+            asset="THB",
+            amount=Decimal(100),
+            usd_value=Decimal(0),
+        ),
+        Transaction(
+            date=date(2024, 1, 10),
+            source="kbank",
+            tx_type=TransactionType.DEPOSIT,
+            asset="THB",
+            amount=Decimal(50),
+            usd_value=Decimal(0),
+        ),
+    ]
+    txs = await collector.fetch_transactions(since=date(2024, 1, 12))
+    assert len(txs) == 1
+
+
+# ── Collector Registry ────────────────────────────────────────────────
+
+
+def test_collector_registry_populated():
+    assert "lobstr" in COLLECTOR_REGISTRY
+    assert "binance" in COLLECTOR_REGISTRY
+    assert "binance_th" in COLLECTOR_REGISTRY
+    assert "okx" in COLLECTOR_REGISTRY
+    assert "bybit" in COLLECTOR_REGISTRY
+    assert "wise" in COLLECTOR_REGISTRY
+    assert "uphold" in COLLECTOR_REGISTRY
+    assert "ibkr" in COLLECTOR_REGISTRY
+    assert "blend" in COLLECTOR_REGISTRY
+    assert "kbank" in COLLECTOR_REGISTRY
