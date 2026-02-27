@@ -123,7 +123,18 @@ class BinanceThCollector(BinanceCollector):
                 if status == _HTTP_NOT_FOUND and not is_last:
                     logger.info("Binance TH: endpoint %s returned 404, trying fallback path", path)
                     continue
-                logger.warning("Binance TH: failed to fetch %s from %s: %s", label, path, exc)
+                if status == _HTTP_NOT_FOUND and is_last:
+                    logger.info(
+                        "Binance TH: %s endpoint is unavailable (404) on known paths, skipping.",
+                        label,
+                    )
+                    return []
+                logger.warning(
+                    "Binance TH: failed to fetch %s from %s (HTTP %d)",
+                    label,
+                    path,
+                    status,
+                )
                 return []
         return []
 
