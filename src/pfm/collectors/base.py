@@ -55,6 +55,7 @@ class BaseCollector(ABC):
         """
         result = CollectorResult(source=self.source_name)
         start = time.monotonic()
+        dns_access_blocked = False
 
         # Fetch balances
         try:
@@ -65,12 +66,29 @@ class BaseCollector(ABC):
         except Exception as exc:
             msg, is_network_access_error = _format_fetch_error(self.source_name, "balances", exc)
             if is_network_access_error:
+                dns_access_blocked = True
                 logger.warning("%s (original error: %s)", msg, exc)
             else:
                 logger.exception(msg)
             result.errors.append(msg)
 
         # Fetch transactions
+        if dns_access_blocked:
+            logger.info(
+                "Skipping transactions fetch for %s due to DNS/network access restriction.",
+                self.source_name,
+            )
+            result.duration_seconds = time.monotonic() - start
+            logger.info(
+                "Collected source=%s snapshots=%d transactions=%d errors=%d duration=%.2fs",
+                self.source_name,
+                result.snapshots_count,
+                result.transactions_count,
+                len(result.errors),
+                result.duration_seconds,
+            )
+            return result
+
         try:
             transactions = await self.fetch_transactions(since=since)
             if transactions:

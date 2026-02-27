@@ -117,11 +117,18 @@ async def test_collector_result_has_duration(repo, pricing):
 
 
 async def test_collect_formats_dns_error_with_country_access_hint(repo, pricing):
+    transactions_called = False
+
     class NetworkBlockedCollector(MockCollector):
         async def fetch_balances(self):
             exc = httpx.ConnectError("connect error")
             exc.__cause__ = socket.gaierror(8, "nodename nor servname provided, or not known")
             raise exc
+
+        async def fetch_transactions(self, since=None):
+            nonlocal transactions_called
+            transactions_called = True
+            return []
 
     collector = NetworkBlockedCollector(pricing)
     result = await collector.collect(repo)
@@ -131,3 +138,4 @@ async def test_collect_formats_dns_error_with_country_access_hint(repo, pricing)
         "service access appears restricted from your current network or region. try a vpn and retry."
         in result.errors[0]
     )
+    assert transactions_called is False
