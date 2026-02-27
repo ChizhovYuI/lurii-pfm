@@ -16,6 +16,7 @@ repos:
           - pydantic-settings>=2.0
           - aiosqlite>=0.22
           - click>=8.3
+          - stellar-sdk>=13.0
         args: [--config-file=pyproject.toml]
         pass_filenames: false
         entry: mypy src/

@@ -948,51 +948,91 @@ async def test_blend_fetch_transactions(pricing):
     assert txs == []
 
 
-async def test_blend_parse_positions_error(pricing):
+async def test_blend_fetch_balances_with_positions(pricing):
     collector = BlendCollector(
         pricing, stellar_address="GABC", pool_contract_id="contract", soroban_rpc_url="http://rpc"
     )
-    result = collector._parse_positions({"error": "simulation failed"}, date(2024, 1, 15))
-    assert result == []
+
+    mock_addr = MagicMock()
+    mock_addr.address = "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75"
+    mock_addr.to_xdr_sc_val.return_value = MagicMock()
+
+    collector._get_positions = MagicMock(return_value={"collateral": {1: 10000000000}, "supply": {}, "liabilities": {}})
+    collector._get_reserve_list = MagicMock(return_value=[MagicMock(), mock_addr])
+    collector._get_reserve = MagicMock(
+        return_value={
+            "data": {"b_rate": 1_000_000_000_000},
+            "scalar": 10_000_000,
+        }
+    )
+
+    snapshots = await collector.fetch_balances()
+    assert len(snapshots) == 1
+    assert snapshots[0].asset == "USDC"
+    assert snapshots[0].amount == Decimal("1000")
 
 
-async def test_blend_parse_positions_empty_results(pricing):
+async def test_blend_fetch_balances_empty_positions(pricing):
     collector = BlendCollector(
         pricing, stellar_address="GABC", pool_contract_id="contract", soroban_rpc_url="http://rpc"
     )
-    result = collector._parse_positions({"result": {"results": []}}, date(2024, 1, 15))
-    assert result == []
+    collector._get_positions = MagicMock(return_value={"collateral": {}, "supply": {}, "liabilities": {}})
+    collector._get_reserve_list = MagicMock(return_value=[])
 
-
-async def test_blend_parse_positions_with_xdr(pricing):
-    collector = BlendCollector(
-        pricing, stellar_address="GABC", pool_contract_id="contract", soroban_rpc_url="http://rpc"
-    )
-    result = collector._parse_positions(
-        {"result": {"results": [{"xdr": "AAAA"}]}},
-        date(2024, 1, 15),
-    )
-    # XDR parsing deferred, so still empty
-    assert result == []
-
-
-async def test_blend_build_simulation_xdr(pricing):
-    collector = BlendCollector(
-        pricing, stellar_address="GABC", pool_contract_id="contract", soroban_rpc_url="http://rpc"
-    )
-    # Should return empty string (stub)
-    assert collector._build_simulation_xdr() == ""
+    snapshots = await collector.fetch_balances()
+    assert snapshots == []
 
 
 async def test_blend_fetch_balances_rpc_error(pricing):
     collector = BlendCollector(
         pricing, stellar_address="GABC", pool_contract_id="contract", soroban_rpc_url="http://rpc"
     )
-    resp = _mock_response({"error": "bad request"})
-    collector._client.post = AsyncMock(return_value=resp)
+    collector._get_positions = MagicMock(side_effect=ValueError("RPC error"))
 
     snapshots = await collector.fetch_balances()
     assert snapshots == []
+
+
+async def test_blend_resolve_ticker_known(pricing):
+    collector = BlendCollector(
+        pricing, stellar_address="GABC", pool_contract_id="contract", soroban_rpc_url="http://rpc"
+    )
+    mock_addr = MagicMock()
+    mock_addr.address = "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75"
+    assert collector._resolve_ticker(mock_addr) == "USDC"
+
+    mock_addr.address = "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA"
+    assert collector._resolve_ticker(mock_addr) == "XLM"
+
+
+async def test_blend_supply_and_collateral_merged(pricing):
+    collector = BlendCollector(
+        pricing, stellar_address="GABC", pool_contract_id="contract", soroban_rpc_url="http://rpc"
+    )
+
+    mock_addr = MagicMock()
+    mock_addr.address = "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75"
+    mock_addr.to_xdr_sc_val.return_value = MagicMock()
+
+    # Both supply and collateral at index 0
+    collector._get_positions = MagicMock(
+        return_value={
+            "collateral": {0: 5000000000},
+            "supply": {0: 5000000000},
+            "liabilities": {},
+        }
+    )
+    collector._get_reserve_list = MagicMock(return_value=[mock_addr])
+    collector._get_reserve = MagicMock(
+        return_value={
+            "data": {"b_rate": 1_000_000_000_000},
+            "scalar": 10_000_000,
+        }
+    )
+
+    snapshots = await collector.fetch_balances()
+    assert len(snapshots) == 1
+    assert snapshots[0].amount == Decimal("1000")
 
 
 # ── KBank ─────────────────────────────────────────────────────────────

@@ -3,29 +3,43 @@
 from __future__ import annotations
 
 import logging
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 import httpx
+from stellar_sdk import Address, Network, SorobanServer, TransactionBuilder, scval
+from stellar_sdk import xdr as stellar_xdr
+from stellar_sdk.exceptions import SdkError
 
 from pfm.collectors import register_collector
-from pfm.collectors._retry import retry
 from pfm.collectors.base import BaseCollector
+from pfm.db.models import Snapshot
 
 if TYPE_CHECKING:
     from datetime import date
 
-    from pfm.db.models import Snapshot, Transaction
+    from pfm.db.models import Transaction
     from pfm.pricing.coingecko import PricingService
 
 logger = logging.getLogger(__name__)
+
+_SCALAR_12 = 10**12
+# Known Stellar asset contract → ticker mapping (mainnet).
+# Native XLM uses a Stellar Asset Contract (SAC) wrapper.
+_KNOWN_ASSETS: dict[str, str] = {
+    "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA": "XLM",
+    "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75": "USDC",
+    "CDTKPWPLOURQA2SGTKTUQOWRCBZEORB4BWBOMJ3D3ZTQQSGE5F6JBQLV": "EURC",
+}
 
 
 @register_collector
 class BlendCollector(BaseCollector):
     """Collector for Blend Protocol positions on Stellar via Soroban RPC.
 
-    Reads fixed pool lending positions by simulating a contract call
-    to get_positions(user_address) on the Blend pool contract.
+    Reads lending positions by simulating ``get_positions(address)`` on the
+    Blend pool contract, then converts bToken balances to underlying assets
+    using each reserve's ``b_rate``.
     """
 
     source_name = "blend"
@@ -42,72 +56,140 @@ class BlendCollector(BaseCollector):
         self._address = stellar_address
         self._pool_contract_id = pool_contract_id
         self._rpc_url = soroban_rpc_url
-        self._client = httpx.AsyncClient(timeout=30.0)
 
-    @retry()
-    async def _simulate_get_positions(self) -> dict[str, Any]:
-        """Simulate a Soroban contract call to get_positions."""
-        payload = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "simulateTransaction",
-            "params": {
-                "transaction": self._build_simulation_xdr(),
-            },
-        }
+    # ── Soroban helpers ────────────────────────────────────────────────
 
-        resp = await self._client.post(self._rpc_url, json=payload)
-        resp.raise_for_status()
-        return resp.json()  # type: ignore[no-any-return]
-
-    def _build_simulation_xdr(self) -> str:
-        """Build the transaction XDR for simulating get_positions.
-
-        Placeholder — full implementation requires stellar-sdk to construct
-        the proper Soroban invocation envelope.
-        """
-        logger.warning(
-            "Blend: stellar-sdk not yet integrated. Full Soroban contract simulation requires stellar-sdk dependency."
+    def _simulate(
+        self,
+        function_name: str,
+        parameters: list[Any],
+    ) -> Any:  # noqa: ANN401
+        """Build, simulate a Soroban contract call and return the native result."""
+        server = SorobanServer(self._rpc_url)
+        source = server.load_account(self._address)
+        tx = (
+            TransactionBuilder(source, Network.PUBLIC_NETWORK_PASSPHRASE, base_fee=100)
+            .set_timeout(30)
+            .append_invoke_contract_function_op(
+                contract_id=self._pool_contract_id,
+                function_name=function_name,
+                parameters=parameters,
+            )
+            .build()
         )
-        return ""
+        sim = server.simulate_transaction(tx)
+        if not sim.results or not sim.results[0].xdr:
+            return None
+        val = stellar_xdr.SCVal.from_xdr(sim.results[0].xdr)
+        return scval.to_native(val)
+
+    def _get_positions(self) -> dict[str, Any]:
+        """Call get_positions(address) on the pool contract."""
+        result = self._simulate("get_positions", [scval.to_address(self._address)])
+        if not isinstance(result, dict):
+            return {"collateral": {}, "supply": {}, "liabilities": {}}
+        return result
+
+    def _get_reserve_list(self) -> list[Address]:
+        """Call get_reserve_list() → list of asset Address objects."""
+        result = self._simulate("get_reserve_list", [])
+        if not isinstance(result, list):
+            return []
+        return result
+
+    def _get_reserve(self, asset_addr: Address) -> dict[str, Any] | None:
+        """Call get_reserve(asset) → reserve config + data (includes b_rate)."""
+        result = self._simulate("get_reserve", [asset_addr.to_xdr_sc_val()])
+        if not isinstance(result, dict):
+            return None
+        return result
+
+    def _resolve_ticker(self, asset_addr: Address) -> str:
+        """Resolve asset contract address to ticker symbol."""
+        contract_id = asset_addr.address
+        if contract_id in _KNOWN_ASSETS:
+            return _KNOWN_ASSETS[contract_id]
+        # Fall back to calling the token's symbol() function
+        try:
+            server = SorobanServer(self._rpc_url)
+            source = server.load_account(self._address)
+            tx = (
+                TransactionBuilder(source, Network.PUBLIC_NETWORK_PASSPHRASE, base_fee=100)
+                .set_timeout(30)
+                .append_invoke_contract_function_op(
+                    contract_id=contract_id,
+                    function_name="symbol",
+                    parameters=[],
+                )
+                .build()
+            )
+            sim = server.simulate_transaction(tx)
+            if sim.results and sim.results[0].xdr:
+                val = stellar_xdr.SCVal.from_xdr(sim.results[0].xdr)
+                symbol = str(scval.to_native(val)).upper()
+                if symbol == "NATIVE":
+                    return "XLM"
+                return symbol
+        except (httpx.HTTPStatusError, SdkError, ValueError, KeyError):
+            logger.warning("Blend: could not resolve ticker for %s", contract_id[:12])
+        return "UNKNOWN"
+
+    # ── Public interface ───────────────────────────────────────────────
 
     async def fetch_balances(self) -> list[Snapshot]:
-        """Fetch Blend lending positions."""
-        today = self._pricing.today()
-
+        """Fetch Blend lending positions (supply + collateral)."""
         if not self._pool_contract_id:
             logger.warning("Blend: pool contract ID not configured, skipping")
             return []
 
         try:
-            result = await self._simulate_get_positions()
-            return self._parse_positions(result, today)
-        except (httpx.HTTPStatusError, ValueError) as exc:
+            positions = self._get_positions()
+            reserve_list = self._get_reserve_list()
+        except (httpx.HTTPStatusError, SdkError, ValueError, KeyError) as exc:
             logger.warning("Blend: failed to fetch positions: %s", exc)
             return []
 
-    def _parse_positions(self, rpc_result: dict[str, Any], _today: date) -> list[Snapshot]:
-        """Parse Soroban RPC simulation result into Snapshot objects."""
+        # Merge supply + collateral bTokens per reserve index
+        totals: dict[int, int] = {}
+        for pos_type in ("collateral", "supply"):
+            for idx, b_tokens in positions.get(pos_type, {}).items():
+                idx_int = int(idx)
+                totals[idx_int] = totals.get(idx_int, 0) + int(b_tokens)
+
+        if not totals:
+            logger.info("Blend: no active positions")
+            return []
+
+        today = self._pricing.today()
         snapshots: list[Snapshot] = []
 
-        error = rpc_result.get("error")
-        if error:
-            logger.warning("Blend: Soroban simulation error: %s", error)
-            return []
+        for idx, b_tokens in totals.items():
+            if idx >= len(reserve_list):
+                continue
+            asset_addr = reserve_list[idx]
+            reserve = self._get_reserve(asset_addr)
+            if reserve is None:
+                continue
 
-        result_data = rpc_result.get("result", {})
-        results = result_data.get("results", [])
+            b_rate = int(reserve["data"]["b_rate"])
+            scalar = int(reserve["scalar"])
+            underlying_raw = b_tokens * b_rate // _SCALAR_12
+            amount = Decimal(underlying_raw) / Decimal(scalar)
 
-        if not results:
-            logger.info("Blend: no position data returned")
-            return []
+            ticker = self._resolve_ticker(asset_addr)
+            usd_value = await self._pricing.convert_to_usd(amount, ticker)
 
-        for result_entry in results:
-            xdr_val = result_entry.get("xdr", "")
-            if xdr_val:
-                logger.debug("Blend: got XDR result, parsing deferred until stellar-sdk integration")
+            snapshots.append(
+                Snapshot(
+                    date=today,
+                    source=self.source_name,
+                    asset=ticker,
+                    amount=amount,
+                    usd_value=usd_value,
+                )
+            )
 
-        logger.info("Blend: parsed %d positions", len(snapshots))
+        logger.info("Blend: found %d positions", len(snapshots))
         return snapshots
 
     async def fetch_transactions(self, since: date | None = None) -> list[Transaction]:  # noqa: ARG002
