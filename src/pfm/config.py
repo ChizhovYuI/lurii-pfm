@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     gmail_address: str = ""
     gmail_app_password: SecretStr = SecretStr("")
     kbank_sender_email: str = "K-ElectronicDocument@kasikornbank.com"
+    kbank_pdf_password: SecretStr = SecretStr("")
 
     # ── IBKR ──────────────────────────────────────────────────────────
     ibkr_flex_token: SecretStr = SecretStr("")

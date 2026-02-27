@@ -41,7 +41,7 @@ class KbankCollector(BaseCollector):
 
     source_name = "kbank"
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         pricing: PricingService,
         *,
@@ -49,12 +49,14 @@ class KbankCollector(BaseCollector):
         gmail_address: str = "",
         gmail_app_password: str = "",
         kbank_sender_email: str = "K-ElectronicDocument@kasikornbank.com",
+        pdf_password: str = "",
     ) -> None:
         super().__init__(pricing)
         self._pdf_path = pdf_path
         self._gmail_address = gmail_address
         self._gmail_app_password = gmail_app_password
         self._kbank_sender_email = kbank_sender_email
+        self._pdf_password = pdf_password
         self._cached_snapshots: list[Snapshot] = []
         self._cached_transactions: list[Transaction] = []
 
@@ -170,7 +172,7 @@ class KbankCollector(BaseCollector):
         today = self._pricing.today()
         ending_balance = Decimal(0)
 
-        with pdfplumber.open(str(pdf_path)) as pdf:
+        with pdfplumber.open(str(pdf_path), password=self._pdf_password or None) as pdf:
             for page in pdf.pages:
                 tables = page.extract_tables()
                 for table in tables:
