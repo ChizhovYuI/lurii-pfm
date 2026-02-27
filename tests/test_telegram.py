@@ -71,6 +71,53 @@ async def test_send_message_returns_false_on_http_error():
     assert ok is False
 
 
+async def test_send_message_retries_plain_text_on_400_html_error():
+    endpoint = "https://api.telegram.org/bottoken/sendMessage"
+    client = _FakeClient(
+        responses=[
+            httpx.Response(
+                400,
+                json={"ok": False, "description": "Bad Request: can't parse entities"},
+                request=httpx.Request("POST", endpoint),
+            ),
+            httpx.Response(
+                200,
+                json={"ok": True},
+                request=httpx.Request("POST", endpoint),
+            ),
+        ]
+    )
+
+    ok = await send_message("chat-1", "<b>Hello</b><br>World", bot_token="token-1", client=client)
+
+    assert ok is True
+    assert len(client.calls) == 2
+    assert client.calls[0][1]["parse_mode"] == "HTML"
+    assert "parse_mode" not in client.calls[1][1]
+    assert client.calls[1][1]["text"] == "Hello\nWorld"
+
+
+async def test_send_message_returns_false_when_400_persists_after_plain_text_retry():
+    endpoint = "https://api.telegram.org/bottoken/sendMessage"
+    client = _FakeClient(
+        responses=[
+            httpx.Response(
+                400,
+                json={"ok": False, "description": "Bad Request: can't parse entities"},
+                request=httpx.Request("POST", endpoint),
+            ),
+            httpx.Response(
+                400,
+                json={"ok": False, "description": "Bad Request: chat not found"},
+                request=httpx.Request("POST", endpoint),
+            ),
+        ]
+    )
+
+    ok = await send_message("chat-1", "<b>Hello</b>", bot_token="token-1", client=client)
+    assert ok is False
+
+
 async def test_send_message_404_logs_without_token_leak(caplog):
     token = "123456:ABCDEF_SECRET_TOKEN"  # noqa: S105
     endpoint = f"https://api.telegram.org/bot{token}/sendMessage"

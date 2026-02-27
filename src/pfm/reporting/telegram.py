@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import html
 import logging
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -23,6 +25,8 @@ _HTTP_UNAUTHORIZED = 401
 _HTTP_FORBIDDEN = 403
 _HTTP_NOT_FOUND = 404
 
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
 
 @dataclass(frozen=True, slots=True)
 class WeeklyReport:
@@ -31,7 +35,14 @@ class WeeklyReport:
     text: str
 
 
-async def send_message(  # noqa: C901, PLR0912, PLR0913
+@dataclass(frozen=True, slots=True)
+class _ChunkSendResult:
+    ok: bool
+    status_code: int | None = None
+    description: str | None = None
+
+
+async def send_message(  # noqa: PLR0913
     chat_id: str | None,
     text: str,
     parse_mode: str | None = "HTML",
@@ -56,36 +67,15 @@ async def send_message(  # noqa: C901, PLR0912, PLR0913
     http_client = client if client is not None else httpx.AsyncClient(timeout=20.0)
     try:
         for chunk in chunks:
-            payload: dict[str, str] = {
-                "chat_id": creds.chat_id,
-                "text": chunk,
-            }
-            if parse_mode:
-                payload["parse_mode"] = parse_mode
-
-            resp = await http_client.post(endpoint, json=payload)
-            resp.raise_for_status()
-            try:
-                body = resp.json()
-            except ValueError as exc:
-                logger.warning("Telegram API returned invalid JSON response: %s", exc)
+            sent = await _send_chunk(
+                http_client,
+                endpoint=endpoint,
+                chat_id=creds.chat_id,
+                chunk=chunk,
+                parse_mode=parse_mode,
+            )
+            if not sent:
                 return False
-            if not body.get("ok", False):
-                logger.warning("Telegram API returned ok=false: %s", body)
-                return False
-    except httpx.HTTPStatusError as exc:
-        status = exc.response.status_code
-        if status == _HTTP_NOT_FOUND:
-            logger.warning("Telegram API returned 404. Bot token is likely invalid.")
-        elif status == _HTTP_UNAUTHORIZED:
-            logger.warning("Telegram API returned 401 Unauthorized. Check bot token.")
-        elif status == _HTTP_FORBIDDEN:
-            logger.warning("Telegram API returned 403 Forbidden. Bot may be blocked or missing chat access.")
-        elif status == _HTTP_BAD_REQUEST:
-            logger.warning("Telegram API returned 400 Bad Request. Check chat ID and message format.")
-        else:
-            logger.warning("Telegram API request failed with HTTP %d.", status)
-        return False
     except httpx.HTTPError as exc:
         logger.warning("Telegram API transport error (%s): %s", type(exc).__name__, exc)
         return False
@@ -94,6 +84,115 @@ async def send_message(  # noqa: C901, PLR0912, PLR0913
             await http_client.aclose()
 
     return True
+
+
+async def _send_chunk(
+    client: httpx.AsyncClient,
+    *,
+    endpoint: str,
+    chat_id: str,
+    chunk: str,
+    parse_mode: str | None,
+) -> bool:
+    first_attempt = await _post_chunk(client, endpoint=endpoint, chat_id=chat_id, chunk=chunk, parse_mode=parse_mode)
+    if first_attempt.ok:
+        return True
+
+    if parse_mode is None or first_attempt.status_code != _HTTP_BAD_REQUEST:
+        _log_status_failure(first_attempt.status_code, first_attempt.description)
+        return False
+
+    plain_chunk = _html_to_plain_text(chunk)
+    logger.warning(
+        "Telegram rejected formatted chunk (400%s); retrying the same chunk as plain text.",
+        f": {first_attempt.description}" if first_attempt.description else "",
+    )
+    plain_attempt = await _post_chunk(client, endpoint=endpoint, chat_id=chat_id, chunk=plain_chunk, parse_mode=None)
+    if plain_attempt.ok:
+        return True
+
+    _log_status_failure(plain_attempt.status_code, plain_attempt.description)
+    return False
+
+
+async def _post_chunk(
+    client: httpx.AsyncClient,
+    *,
+    endpoint: str,
+    chat_id: str,
+    chunk: str,
+    parse_mode: str | None,
+) -> _ChunkSendResult:
+    payload: dict[str, str] = {
+        "chat_id": chat_id,
+        "text": chunk,
+    }
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
+
+    resp = await client.post(endpoint, json=payload)
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError:
+        return _ChunkSendResult(
+            ok=False,
+            status_code=resp.status_code,
+            description=_extract_error_description(resp),
+        )
+
+    try:
+        body = resp.json()
+    except ValueError as exc:
+        logger.warning("Telegram API returned invalid JSON response: %s", exc)
+        return _ChunkSendResult(ok=False)
+    if not body.get("ok", False):
+        logger.warning("Telegram API returned ok=false: %s", body)
+        return _ChunkSendResult(ok=False, description=str(body.get("description", "")))
+    return _ChunkSendResult(ok=True)
+
+
+def _html_to_plain_text(text: str) -> str:
+    plain = text.replace("<br>", "\n")
+    plain = _HTML_TAG_RE.sub("", plain)
+    return html.unescape(plain)
+
+
+def _extract_error_description(response: httpx.Response) -> str | None:
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    if not isinstance(body, dict):
+        return None
+    description = body.get("description")
+    if isinstance(description, str) and description.strip():
+        return description.strip()
+    return None
+
+
+def _log_status_failure(status_code: int | None, description: str | None) -> None:
+    if status_code == _HTTP_NOT_FOUND:
+        logger.warning("Telegram API returned 404. Bot token is likely invalid.")
+        return
+    if status_code == _HTTP_UNAUTHORIZED:
+        logger.warning("Telegram API returned 401 Unauthorized. Check bot token.")
+        return
+    if status_code == _HTTP_FORBIDDEN:
+        logger.warning("Telegram API returned 403 Forbidden. Bot may be blocked or missing chat access.")
+        return
+    if status_code == _HTTP_BAD_REQUEST:
+        if description:
+            logger.warning("Telegram API returned 400 Bad Request: %s", description)
+        else:
+            logger.warning("Telegram API returned 400 Bad Request. Check chat ID and message format.")
+        return
+    if status_code is not None:
+        logger.warning("Telegram API request failed with HTTP %d.", status_code)
+        return
+    if description:
+        logger.warning("Telegram message send failed: %s", description)
+        return
+    logger.warning("Telegram message send failed.")
 
 
 async def send_report(
