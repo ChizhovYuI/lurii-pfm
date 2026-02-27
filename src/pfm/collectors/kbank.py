@@ -156,7 +156,12 @@ class KbankCollector(BaseCollector):
                 conn.logout()
 
     def _parse_pdf(self, pdf_path: Path) -> tuple[list[Snapshot], list[Transaction]]:
-        """Parse a KBank PDF statement using pdfplumber."""
+        """Parse a KBank PDF statement using pdfplumber.
+
+        KBank PDFs have a specific structure per page:
+        - Table 1: header with account info and ending balance (page 1 only)
+        - Table 2: transactions with all entries newline-delimited in one row
+        """
         try:
             import pdfplumber  # type: ignore[import-not-found]
         except ImportError:
@@ -173,19 +178,17 @@ class KbankCollector(BaseCollector):
         ending_balance = Decimal(0)
 
         with pdfplumber.open(str(pdf_path), password=self._pdf_password or None) as pdf:
-            for page in pdf.pages:
+            for page_num, page in enumerate(pdf.pages):
                 tables = page.extract_tables()
-                for table in tables:
-                    for row in table:
-                        parsed = self._parse_row(row, today)
-                        if parsed is None:
-                            continue
 
-                        tx, balance = parsed
-                        if tx:
-                            transactions.append(tx)
-                        if balance is not None:
-                            ending_balance = balance
+                # Extract ending balance from header table (page 1)
+                if page_num == 0 and tables:
+                    ending_balance = self._parse_header_balance(tables[0])
+
+                # Transaction table is the last table on each page
+                if len(tables) >= 2:  # noqa: PLR2004
+                    txs = self._parse_transaction_table(tables[-1])
+                    transactions.extend(txs)
 
         if ending_balance > 0:
             snapshots.append(
@@ -202,70 +205,98 @@ class KbankCollector(BaseCollector):
         logger.info("KBank: parsed %d transactions, ending balance: %s THB", len(transactions), ending_balance)
         return snapshots, transactions
 
-    def _parse_row(
-        self,
-        row: list[Any],
-        _today: date,
-    ) -> tuple[Transaction | None, Decimal | None] | None:
-        """Parse a single table row from a KBank statement.
+    def _parse_header_balance(self, table: list[list[Any]]) -> Decimal:
+        """Extract ending balance from the header table on page 1.
 
-        KBank PDF statements typically have columns:
-        Date | Description | Withdrawal | Deposit | Balance
-
-        Returns (transaction, balance) or None if row is not parseable.
+        Looks for a cell containing "Ending Balance 42,327.80".
         """
-        if not row or len(row) < 4:  # noqa: PLR2004
-            return None
+        for row in table:
+            for cell in row:
+                text = str(cell or "")
+                if "Ending Balance" in text:
+                    amount_str = text.replace("Ending Balance", "").strip()
+                    amount = self._parse_amount(amount_str)
+                    if amount:
+                        return amount
+        return Decimal(0)
 
-        # Clean and filter
-        cells = [str(cell).strip() if cell else "" for cell in row]
+    def _parse_transaction_table(self, table: list[list[Any]]) -> list[Transaction]:
+        """Parse a KBank transaction table with newline-delimited entries.
 
-        # Try to parse date from first column
-        tx_date = self._parse_date(cells[0])
-        if tx_date is None:
-            return None
+        KBank PDFs pack all transactions into a single row per page:
+        - Column 0: "DD-MM-YY HH:MM Xx\\n..." (date + time + description start)
+        - Column 1: "description continuation\\n..."
+        - Column 2: "amount\\n..." (Withdrawal / Deposit)
+        - Column 3: "balance\\n..." (Outstanding Balance)
 
-        # Parse amounts
-        withdrawal = self._parse_amount(cells[2]) if len(cells) > 2 else None  # noqa: PLR2004
-        deposit = self._parse_amount(cells[3]) if len(cells) > 3 else None  # noqa: PLR2004
-        balance = self._parse_amount(cells[-1])
+        The first entry on each page is "Beginning Balance" (no amount).
+        """
+        if len(table) < 2:  # noqa: PLR2004
+            return []
 
-        tx: Transaction | None = None
-        if deposit and deposit > 0:
-            tx = Transaction(
-                date=tx_date,
-                source=self.source_name,
-                tx_type=TransactionType.DEPOSIT,
-                asset="THB",
-                amount=deposit,
-                usd_value=Decimal(0),
-                tx_id="",
-                raw_json=json.dumps({"row": cells}),
+        data_row = table[1]  # row 0 is header, row 1 is all data
+        if not data_row or len(data_row) < 4:  # noqa: PLR2004
+            return []
+
+        dates_raw = str(data_row[0] or "").split("\n")
+        descs_raw = str(data_row[1] or "").split("\n")
+        amounts_raw = str(data_row[2] or "").split("\n")
+        balances_raw = str(data_row[3] or "").split("\n")
+
+        # dates[0] = "DD-MM-YY Be" (Beginning Balance), balances[0] = starting balance
+        # dates[1:] = transactions, amounts[0:] = their amounts, balances[1:] = after-tx balances
+        transactions: list[Transaction] = []
+        for i, amount_str in enumerate(amounts_raw):
+            date_idx = i + 1  # offset by Beginning Balance entry
+            if date_idx >= len(dates_raw) or date_idx >= len(balances_raw):
+                break
+
+            tx_date = self._parse_tx_date(dates_raw[date_idx])
+            if not tx_date:
+                continue
+
+            amount = self._parse_amount(amount_str)
+            if not amount or amount <= 0:
+                continue
+
+            # Determine deposit vs withdrawal from balance change
+            prev_bal = self._parse_amount(balances_raw[date_idx - 1])
+            curr_bal = self._parse_amount(balances_raw[date_idx])
+            is_deposit = prev_bal is not None and curr_bal is not None and curr_bal > prev_bal
+
+            # Reconstruct description from truncated date tail + description column
+            date_tail = dates_raw[date_idx].split()[-1] if dates_raw[date_idx].strip() else ""
+            desc_cont = descs_raw[i] if i < len(descs_raw) else ""
+            description = date_tail + desc_cont
+
+            transactions.append(
+                Transaction(
+                    date=tx_date,
+                    source=self.source_name,
+                    tx_type=TransactionType.DEPOSIT if is_deposit else TransactionType.WITHDRAWAL,
+                    asset="THB",
+                    amount=amount,
+                    usd_value=Decimal(0),
+                    tx_id="",
+                    raw_json=json.dumps(
+                        {"description": description, "balance": str(curr_bal or "")},
+                    ),
+                )
             )
-        elif withdrawal and withdrawal > 0:
-            tx = Transaction(
-                date=tx_date,
-                source=self.source_name,
-                tx_type=TransactionType.WITHDRAWAL,
-                asset="THB",
-                amount=withdrawal,
-                usd_value=Decimal(0),
-                tx_id="",
-                raw_json=json.dumps({"row": cells}),
-            )
 
-        return tx, balance
+        return transactions
 
     @staticmethod
-    def _parse_date(date_str: str) -> date | None:
-        """Try to parse a date from various KBank formats."""
-        formats = ["%d/%m/%Y", "%d/%m/%y", "%Y-%m-%d", "%d %b %Y"]
-        for fmt in formats:
-            try:
-                return datetime.strptime(date_str.strip(), fmt).date()  # noqa: DTZ007
-            except ValueError:
-                continue
-        return None
+    def _parse_tx_date(date_str: str) -> date | None:
+        """Parse date from KBank PDF format: 'DD-MM-YY HH:MM Xx'."""
+        date_str = date_str.strip()
+        if len(date_str) < 8:  # noqa: PLR2004
+            return None
+        date_part = date_str[:8]  # "DD-MM-YY"
+        try:
+            return datetime.strptime(date_part, "%d-%m-%y").date()  # noqa: DTZ007
+        except ValueError:
+            return None
 
     @staticmethod
     def _parse_amount(amount_str: str) -> Decimal | None:

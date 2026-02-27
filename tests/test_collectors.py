@@ -1223,12 +1223,12 @@ async def test_kbank_auto_fetch_skipped_when_pdf_path_set(pricing, tmp_path):
     mock_fetch.assert_not_called()
 
 
-def test_kbank_parse_date():
-    assert KbankCollector._parse_date("15/01/2024") == date(2024, 1, 15)
-    assert KbankCollector._parse_date("15/01/24") == date(2024, 1, 15)
-    assert KbankCollector._parse_date("2024-01-15") == date(2024, 1, 15)
-    assert KbankCollector._parse_date("invalid") is None
-    assert KbankCollector._parse_date("") is None
+def test_kbank_parse_tx_date():
+    assert KbankCollector._parse_tx_date("01-02-26 12:09 Pa") == date(2026, 2, 1)
+    assert KbankCollector._parse_tx_date("15-01-24 Be") == date(2024, 1, 15)
+    assert KbankCollector._parse_tx_date("invalid") is None
+    assert KbankCollector._parse_tx_date("") is None
+    assert KbankCollector._parse_tx_date("short") is None
 
 
 def test_kbank_parse_amount():
@@ -1241,39 +1241,50 @@ def test_kbank_parse_amount():
     assert KbankCollector._parse_amount("  ") is None
 
 
-def test_kbank_parse_row_deposit(pricing):
+def test_kbank_parse_header_balance(pricing):
     collector = KbankCollector(pricing)
-    row = ["15/01/2024", "ATM Deposit", "", "5000.00", "10000.00"]
-    result = collector._parse_row(row, date(2024, 1, 15))
-    assert result is not None
-    tx, balance = result
-    assert tx is not None
-    assert tx.tx_type == TransactionType.DEPOSIT
-    assert tx.amount == Decimal("5000.00")
-    assert balance == Decimal("10000.00")
+    table = [
+        ["Reference Code", "26022716366931630111"],
+        ["Account Number", "163-8-08872-6"],
+        ["Ending Balance 42,327.80", None],
+    ]
+    assert collector._parse_header_balance(table) == Decimal("42327.80")
 
 
-def test_kbank_parse_row_withdrawal(pricing):
+def test_kbank_parse_header_balance_missing(pricing):
     collector = KbankCollector(pricing)
-    row = ["15/01/2024", "ATM Withdrawal", "3000.00", "", "7000.00"]
-    result = collector._parse_row(row, date(2024, 1, 15))
-    assert result is not None
-    tx, _balance = result
-    assert tx is not None
-    assert tx.tx_type == TransactionType.WITHDRAWAL
-    assert tx.amount == Decimal("3000.00")
+    table = [["Reference Code", "123"], ["Account Number", "456"]]
+    assert collector._parse_header_balance(table) == Decimal(0)
 
 
-def test_kbank_parse_row_too_short(pricing):
+def test_kbank_parse_transaction_table(pricing):
     collector = KbankCollector(pricing)
-    result = collector._parse_row(["a", "b"], date(2024, 1, 15))
-    assert result is None
+    table = [
+        ["Time/\nDate", "Descriptions", "Withdrawal / Deposit", "Outstanding Balance\n(THB)"],
+        [
+            "01-02-26 Be\n01-02-26 02:22 De\n01-02-26 12:09 Pa\n02-02-26 00:21 Tr",
+            "ginning Balance\nbit Card Spending\nyment\nansfer Deposit",
+            "1,850.00\n160.00\n45,000.00",
+            "5,151.94\n3,301.94\n3,141.94\n48,141.94",
+        ],
+    ]
+    txs = collector._parse_transaction_table(table)
+    assert len(txs) == 3
+    assert txs[0].tx_type == TransactionType.WITHDRAWAL  # balance decreased
+    assert txs[0].amount == Decimal("1850.00")
+    assert txs[0].date == date(2026, 2, 1)
+    assert txs[1].tx_type == TransactionType.WITHDRAWAL
+    assert txs[1].amount == Decimal("160.00")
+    assert txs[2].tx_type == TransactionType.DEPOSIT  # balance increased
+    assert txs[2].amount == Decimal("45000.00")
+    assert txs[2].date == date(2026, 2, 2)
 
 
-def test_kbank_parse_row_bad_date(pricing):
+def test_kbank_parse_transaction_table_too_short(pricing):
     collector = KbankCollector(pricing)
-    result = collector._parse_row(["bad-date", "desc", "100", "0", "1000"], date(2024, 1, 15))
-    assert result is None
+    assert collector._parse_transaction_table([["header only"]]) == []
+    assert collector._parse_transaction_table([["h"], [None]]) == []
+    assert collector._parse_transaction_table([["h"], ["a", "b"]]) == []
 
 
 async def test_kbank_fetch_transactions_with_cache(pricing):
