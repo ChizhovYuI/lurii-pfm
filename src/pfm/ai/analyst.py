@@ -61,13 +61,13 @@ async def generate_commentary(
     owns_client = client is None
     sdk_client = client if client is not None else genai.Client(api_key=resolved_api_key)
     try:
-        for model in GEMINI_MODELS:
+        for index, model in enumerate(GEMINI_MODELS):
             response = await _request_commentary_response(
                 sdk_client.aio.models,
                 prompt,
                 model=model,
                 input_size=(prompt_chars, prompt_tokens_est),
-                enforce_local_rate_limit=owns_client,
+                enforce_local_rate_limit=owns_client and index == 0,
             )
             if response is None:
                 logger.warning("Gemini model %s failed. Trying next fallback model.", model)
@@ -133,49 +133,30 @@ async def _request_commentary_response(
         logger.warning("Gemini SDK client is missing generate_content; using fallback commentary.")
         return None
 
-    for attempt in range(1, GEMINI_MAX_RETRIES + 1):
-        try:
-            if enforce_local_rate_limit:
-                await _apply_local_rate_limit(model)
-            response: object = await generate_content(
-                model=model,
-                contents=prompt,
-                config=config,
+    try:
+        if enforce_local_rate_limit:
+            await _apply_local_rate_limit(model)
+        response: object = await generate_content(
+            model=model,
+            contents=prompt,
+            config=config,
+        )
+    except errors.APIError as exc:
+        status = exc.code
+        if status == HTTP_TOO_MANY_REQUESTS:
+            logger.warning(
+                "Gemini rate limited (HTTP 429). Switching to next model immediately. "
+                "input_chars=%d input_tokens_est=%d",
+                prompt_chars,
+                prompt_tokens_est,
             )
-        except errors.APIError as exc:
-            status = exc.code
-            if status == HTTP_TOO_MANY_REQUESTS and attempt < GEMINI_MAX_RETRIES:
-                retry_delay = _retry_delay_seconds(_extract_retry_after(exc), attempt, model)
-                logger.warning(
-                    "Gemini rate limited (HTTP 429). Retrying in %.1fs (%d/%d). input_chars=%d input_tokens_est=%d",
-                    retry_delay,
-                    attempt,
-                    GEMINI_MAX_RETRIES,
-                    prompt_chars,
-                    prompt_tokens_est,
-                )
-                await asyncio.sleep(retry_delay)
-                continue
-            if status == HTTP_TOO_MANY_REQUESTS:
-                recommended_wait = _min_retry_delay_seconds(model, GEMINI_MAX_RETRIES)
-                logger.warning(
-                    "Gemini rate limited (HTTP 429). Using fallback commentary. "
-                    "Wait about %.0fs before retrying 'pfm comment'. input_chars=%d input_tokens_est=%d",
-                    recommended_wait,
-                    prompt_chars,
-                    prompt_tokens_est,
-                )
-            else:
-                logger.warning("Gemini API request failed with HTTP %d. Using fallback commentary.", status)
-            break
-        except Exception:  # pragma: no cover - defensive guardrail
-            logger.exception("Unexpected Gemini API error")
-            break
-        else:
-            return response
-    else:
-        logger.warning("Gemini commentary request failed after retries. Using fallback commentary.")
-    return None
+            return None
+        logger.warning("Gemini API request failed with HTTP %d. Using fallback commentary.", status)
+        return None
+    except Exception:  # pragma: no cover - defensive guardrail
+        logger.exception("Unexpected Gemini API error")
+        return None
+    return response
 
 
 def _extract_retry_after(exc: errors.APIError) -> str | None:

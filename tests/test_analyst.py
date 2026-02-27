@@ -151,7 +151,7 @@ async def test_generate_commentary_retries_on_429_then_succeeds():
 
     assert result == "Recovered after retry."
     assert len(fake_models.calls) == 2
-    sleep_mock.assert_awaited_once()
+    assert sleep_mock.await_count == 0
 
 
 async def test_generate_commentary_fallback_after_429_retries_exhausted():
@@ -160,7 +160,7 @@ async def test_generate_commentary_fallback_after_429_retries_exhausted():
         request=httpx.Request("POST", "https://example.invalid/gemini"),
     )
     limited_error = errors.ClientError(429, {"error": {"status": "RESOURCE_EXHAUSTED"}}, limited_response)
-    fake_models = _FakeAsyncModels(responses=[limited_error] * (3 * len(GEMINI_MODELS)))
+    fake_models = _FakeAsyncModels(responses=[limited_error] * len(GEMINI_MODELS))
     fake_client = _FakeClient(aio=_FakeAioClient(models=fake_models))
     settings = MagicMock()
     settings.gemini_api_key = SecretStr("gemini-key")
@@ -173,8 +173,8 @@ async def test_generate_commentary_fallback_after_429_retries_exhausted():
         result = await generate_commentary(_sample_analytics(), api_key="gemini-key", client=fake_client)
 
     assert result == FALLBACK_COMMENTARY
-    assert len(fake_models.calls) == 3 * len(GEMINI_MODELS)
-    assert sleep_mock.await_count == 2 * len(GEMINI_MODELS)
+    assert len(fake_models.calls) == len(GEMINI_MODELS)
+    assert sleep_mock.await_count == 0
 
 
 async def test_generate_commentary_fallback_on_unexpected_exception():
