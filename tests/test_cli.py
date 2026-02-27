@@ -442,7 +442,7 @@ def test_collect_handles_unexpected_collector_exception(runner, store):
 
 
 @pytest.mark.usefixtures("_patched_settings", "_mock_pricing_repo")
-def test_collect_kbank_logs_statement_date_and_stale_hint(runner, store):
+def test_collect_kbank_logs_statement_date_without_stale_hint_when_yesterday(runner, store):
     asyncio.run(
         store.add(
             "kbank-main",
@@ -457,8 +457,8 @@ def test_collect_kbank_logs_statement_date_and_stale_hint(runner, store):
 
     assert result.exit_code == 0
     assert "KBank statement date: 2026-02-26" in result.output
-    assert "Statement is not from today (2026-02-27)." in result.output
-    assert "Request a new statement from K PLUS and send it to your email" in result.output
+    assert "Statement is older than yesterday" not in result.output
+    assert "Request a new statement from K PLUS and send it to your email" not in result.output
 
 
 @pytest.mark.usefixtures("_patched_settings", "_mock_pricing_repo")
@@ -478,6 +478,26 @@ def test_collect_kbank_logs_statement_date_without_stale_hint_when_fresh(runner,
     assert result.exit_code == 0
     assert "KBank statement date: 2026-02-27" in result.output
     assert "Request a new statement from K PLUS and send it to your email" not in result.output
+
+
+@pytest.mark.usefixtures("_patched_settings", "_mock_pricing_repo")
+def test_collect_kbank_logs_stale_hint_when_older_than_yesterday(runner, store):
+    asyncio.run(
+        store.add(
+            "kbank-main",
+            "kbank",
+            {"gmail_address": "a@b.com", "gmail_app_password": "pass", "pdf_password": "01011990"},
+        )
+    )
+
+    mock_cls = _make_mock_collector("kbank", statement_date=date(2026, 2, 25))
+    with patch("pfm.cli.COLLECTOR_REGISTRY", {"kbank": mock_cls}):
+        result = runner.invoke(cli, ["collect", "--source", "kbank-main"])
+
+    assert result.exit_code == 0
+    assert "KBank statement date: 2026-02-25" in result.output
+    assert "Statement is older than yesterday (2026-02-26)." in result.output
+    assert "Request a new statement from K PLUS and send it to your email" in result.output
 
 
 # ── pipeline stubs ────────────────────────────────────────────────────

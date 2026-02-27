@@ -7,7 +7,7 @@ import json
 import logging
 import re
 import sys
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -507,9 +507,10 @@ def _print_kbank_statement_freshness(*, source_type: str, collector: object, tod
         return
 
     click.secho(f"  KBank statement date: {statement_date.isoformat()}", fg="cyan")
-    if statement_date != today:
+    oldest_acceptable = today - timedelta(days=1)
+    if statement_date < oldest_acceptable:
         click.secho(
-            f"    Statement is not from today ({today.isoformat()}).",
+            f"    Statement is older than yesterday ({oldest_acceptable.isoformat()}).",
             fg="yellow",
         )
         click.secho(
