@@ -523,7 +523,7 @@ Version-controlled prompt templates:
 - `WEEKLY_REPORT_USER_PROMPT_TEMPLATE` — placeholders for all analytics data
 - Instructs Claude to produce: market context, health assessment, rebalancing, risk alerts, recommendations
 
-### Task 5.2 — Claude API analyst `src/pfm/ai/analyst.py` [M]
+### Task 5.2 — Claude API analyst `src/pfm/ai/analyst.py` [M] ✅
 
 **Dependencies:** 5.1, Phase 4
 
