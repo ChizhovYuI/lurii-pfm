@@ -575,7 +575,7 @@ Format analytics + AI commentary into Telegram HTML:
 
 `pfm run`: collect → analyze → report (full pipeline). Aggregate errors, send alert if any source failed.
 
-### Task 6.4 — Reporting tests [S]
+### Task 6.4 — Reporting tests [S] ✅
 
 **Dependencies:** 6.1–6.3
 
