@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from pfm.pricing.coingecko import PricingService
 
 logger = logging.getLogger(__name__)
+_HTTP_NOT_FOUND = 404
 
 
 @register_collector
@@ -30,6 +31,8 @@ class BinanceThCollector(BinanceCollector):
 
     source_name = "binance_th"
     _base_url = "https://api.binance.th"
+    _DEPOSIT_ENDPOINTS = ("/api/v1/capital/deposit/hisrec", "/sapi/v1/capital/deposit/hisrec")
+    _WITHDRAW_ENDPOINTS = ("/api/v1/capital/withdraw/history", "/sapi/v1/capital/withdraw/history")
 
     def __init__(
         self,
@@ -88,26 +91,41 @@ class BinanceThCollector(BinanceCollector):
             since_dt = datetime(since.year, since.month, since.day, tzinfo=UTC)
             params["startTime"] = str(int(since_dt.timestamp() * 1000))
 
-        try:
-            deposits = await self._get("/api/v1/capital/deposit/hisrec", params)
-            for dep in deposits:
-                tx = self._parse_deposit_th(dep)
-                if tx:
-                    transactions.append(tx)
-        except httpx.HTTPStatusError as exc:
-            logger.warning("Binance TH: failed to fetch deposits: %s", exc)
+        deposits = await self._fetch_with_fallback(self._DEPOSIT_ENDPOINTS, params, "deposits")
+        for dep in deposits:
+            tx = self._parse_deposit_th(dep)
+            if tx:
+                transactions.append(tx)
 
-        try:
-            withdrawals = await self._get("/api/v1/capital/withdraw/history", params)
-            for wd in withdrawals:
-                tx = self._parse_withdrawal_th(wd)
-                if tx:
-                    transactions.append(tx)
-        except httpx.HTTPStatusError as exc:
-            logger.warning("Binance TH: failed to fetch withdrawals: %s", exc)
+        withdrawals = await self._fetch_with_fallback(self._WITHDRAW_ENDPOINTS, params, "withdrawals")
+        for wd in withdrawals:
+            tx = self._parse_withdrawal_th(wd)
+            if tx:
+                transactions.append(tx)
 
         logger.info("Binance TH: parsed %d transactions", len(transactions))
         return transactions
+
+    async def _fetch_with_fallback(
+        self,
+        paths: tuple[str, ...],
+        params: dict[str, str],
+        label: str,
+    ) -> list[dict[str, Any]]:
+        """Fetch an endpoint with fallback from /api/v1 to /sapi/v1 on 404."""
+        for i, path in enumerate(paths):
+            try:
+                payload = await self._get(path, params)
+                return payload if isinstance(payload, list) else []
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                is_last = i == len(paths) - 1
+                if status == _HTTP_NOT_FOUND and not is_last:
+                    logger.info("Binance TH: endpoint %s returned 404, trying fallback path", path)
+                    continue
+                logger.warning("Binance TH: failed to fetch %s from %s: %s", label, path, exc)
+                return []
+        return []
 
     @staticmethod
     def _parse_deposit_th(dep: dict[str, Any]) -> Transaction | None:

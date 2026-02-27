@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import socket
 import time
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
 
@@ -25,6 +26,19 @@ RETRYABLE_EXCEPTIONS: tuple[type[Exception], ...] = (
 )
 
 
+def _is_dns_resolution_error(exc: Exception) -> bool:
+    """Return True when an exception chain contains a DNS resolution failure."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        if isinstance(current, socket.gaierror):
+            return True
+        seen.add(id(current))
+        next_exc = current.__cause__ or current.__context__
+        current = next_exc if isinstance(next_exc, BaseException) else None
+    return False
+
+
 def retry(
     max_attempts: int = 3,
     backoff_base: float = 2.0,
@@ -41,6 +55,9 @@ def retry(
                     return await func(*args, **kwargs)
                 except retryable as exc:
                     last_exc = exc
+                    if _is_dns_resolution_error(exc):
+                        logger.warning("DNS resolution failed for %s: %s. Not retrying.", func.__name__, exc)
+                        raise
                     if attempt < max_attempts:
                         delay = backoff_base**attempt
                         logger.warning(

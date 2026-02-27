@@ -1,5 +1,6 @@
 """Tests for retry and rate limiting utilities."""
 
+import socket
 import time
 
 import httpx
@@ -83,6 +84,23 @@ async def test_retry_custom_retryable():
         await custom_fail()
 
     assert call_count == 2
+
+
+async def test_retry_does_not_retry_dns_resolution_error():
+    call_count = 0
+
+    @retry(max_attempts=3, backoff_base=0.01)
+    async def dns_failure() -> str:
+        nonlocal call_count
+        call_count += 1
+        exc = httpx.ConnectError("connect error")
+        exc.__cause__ = socket.gaierror(8, "nodename nor servname provided, or not known")
+        raise exc
+
+    with pytest.raises(httpx.ConnectError, match="connect error"):
+        await dns_failure()
+
+    assert call_count == 1
 
 
 async def test_rate_limiter_allows_first_request():

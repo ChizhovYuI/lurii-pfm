@@ -292,6 +292,38 @@ async def test_binance_th_has_different_base_url(pricing):
     assert collector._base_url == "https://api.binance.th"
 
 
+async def test_binance_th_transactions_fallback_to_sapi(pricing):
+    collector = BinanceThCollector(pricing, api_key="key", api_secret="secret")
+    called_paths: list[str] = []
+
+    async def mock_get(path, params=None):
+        called_paths.append(path)
+        if path == "/api/v1/capital/deposit/hisrec":
+            response = MagicMock()
+            response.status_code = 404
+            raise httpx.HTTPStatusError("404", request=MagicMock(), response=response)
+        if path == "/sapi/v1/capital/deposit/hisrec":
+            return [
+                {
+                    "coin": "USDC",
+                    "amount": "10",
+                    "insertTime": "1705276800000",
+                    "txId": "dep-1",
+                }
+            ]
+        if path == "/api/v1/capital/withdraw/history":
+            return []
+        raise AssertionError(f"Unexpected path: {path}")
+
+    collector._get = mock_get  # type: ignore[assignment]
+
+    txs = await collector.fetch_transactions()
+    assert len(txs) == 1
+    assert txs[0].tx_type == TransactionType.DEPOSIT
+    assert "/api/v1/capital/deposit/hisrec" in called_paths
+    assert "/sapi/v1/capital/deposit/hisrec" in called_paths
+
+
 # ── OKX ───────────────────────────────────────────────────────────────
 
 
