@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from pfm.pricing.coingecko import PricingService
 
 logger = logging.getLogger(__name__)
-_COUNTRY_ACCESS_HINT = "you don't have access from this country. use vpn or smth to handle this"
+_COUNTRY_ACCESS_HINT = "service access appears restricted from your current network or region. try a vpn and retry."
 
 
 def _format_fetch_error(source_name: str, stage: str, exc: Exception) -> tuple[str, bool]:

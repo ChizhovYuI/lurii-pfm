@@ -399,7 +399,10 @@ def test_collect_with_errors(runner, store):
 def test_collect_with_country_access_error_pretty_output(runner, store):
     asyncio.run(store.add("okx-main", "okx", {"api_key": "k", "api_secret": "s", "passphrase": "p"}))
 
-    error = "Failed to fetch balances from okx: you don't have access from this country. use vpn or smth to handle this"
+    error = (
+        "Failed to fetch balances from okx: "
+        "service access appears restricted from your current network or region. try a vpn and retry."
+    )
     mock_cls = _make_mock_collector("okx", errors=[error])
     with patch("pfm.cli.COLLECTOR_REGISTRY", {"okx": mock_cls}):
         result = runner.invoke(cli, ["collect", "--source", "okx-main"])
@@ -407,7 +410,7 @@ def test_collect_with_country_access_error_pretty_output(runner, store):
     assert result.exit_code == 0
     assert "okx: cannot fetch balances because access looks geo-restricted." in result.output
     assert "Hint: connect a VPN (or run from a supported country) and retry." in result.output
-    assert "you don't have access from this country" not in result.output
+    assert "service access appears restricted from your current network or region" not in result.output
 
 
 @pytest.mark.usefixtures("_patched_settings", "_mock_pricing_repo")

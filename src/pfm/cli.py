@@ -34,7 +34,10 @@ if TYPE_CHECKING:
     from pfm.db.repository import Repository
 
 logger = logging.getLogger(__name__)
-_COUNTRY_ACCESS_HINT = "you don't have access from this country. use vpn or smth to handle this"
+_COUNTRY_ACCESS_HINT_PATTERNS = (
+    "service access appears restricted from your current network or region",
+    "you don't have access from this country. use vpn or smth to handle this",
+)
 
 
 def _mask(value: str) -> str:
@@ -403,7 +406,8 @@ def _print_collect_results(results: list[CollectorResult]) -> None:
 
 def _print_collect_error(err: str) -> None:
     """Render collector errors with user-friendly formatting and color."""
-    if _COUNTRY_ACCESS_HINT in err.lower():
+    lowered = err.lower()
+    if any(pattern in lowered for pattern in _COUNTRY_ACCESS_HINT_PATTERNS):
         match = re.match(r"Failed to fetch (\w+) from ([^:]+):", err)
         stage = match.group(1) if match else "data"
         source = match.group(2) if match else "source"

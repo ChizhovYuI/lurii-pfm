@@ -127,4 +127,7 @@ async def test_collect_formats_dns_error_with_country_access_hint(repo, pricing)
     result = await collector.collect(repo)
 
     assert len(result.errors) == 1
-    assert "you don't have access from this country. use vpn or smth to handle this" in result.errors[0]
+    assert (
+        "service access appears restricted from your current network or region. try a vpn and retry."
+        in result.errors[0]
+    )
