@@ -52,7 +52,6 @@ async def test_report_async_loads_cache_formats_and_sends(tmp_path):
     mock_send = AsyncMock(return_value=True)
     with (
         patch("pfm.cli.get_settings", return_value=settings),
-        patch("pfm.ai.generate_commentary", AsyncMock(return_value="Steady.")),
         patch("pfm.reporting.send_report", mock_send),
     ):
         ok = await _report_async()

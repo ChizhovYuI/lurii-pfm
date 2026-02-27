@@ -845,7 +845,6 @@ async def _report_async() -> bool:
     settings = get_settings()
 
     # Late imports to avoid circular dependencies and keep startup fast
-    from pfm.ai import generate_commentary
     from pfm.db.repository import Repository
     from pfm.reporting import format_weekly_report, is_telegram_configured, send_report
 
@@ -867,14 +866,10 @@ async def _report_async() -> bool:
         if commentary:
             click.echo("Using cached AI commentary.")
         else:
-            commentary = await generate_commentary(analytics)
-            async with Repository(settings.database_path) as repo:
-                await repo.save_analytics_metric(
-                    analytics.as_of_date,
-                    "ai_commentary",
-                    json.dumps({"text": commentary}),
-                )
-            click.echo("Generated and cached AI commentary.")
+            commentary = (
+                "AI commentary is not cached for this analysis date. " "Run 'pfm comment' to generate and store it."
+            )
+            click.echo("No cached AI commentary for this analysis date. Using fallback text.")
 
         report_payload = format_weekly_report(analytics, commentary)
         sent = await send_report(report_payload)

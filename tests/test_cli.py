@@ -626,18 +626,18 @@ def test_report_success(runner, db_path):
                 '{"weekly":{"absolute_change":"1.5","percentage_change":"1.0"}}',
             )
             await repo.save_analytics_metric(snapshot_date, "weekly_pnl_by_asset", "[]")
+            await repo.save_analytics_metric(snapshot_date, "ai_commentary", '{"text":"All good."}')
 
     asyncio.run(_seed_analytics())
 
     with (
         patch("pfm.reporting.is_telegram_configured", AsyncMock(return_value=True)),
-        patch("pfm.ai.generate_commentary", AsyncMock(return_value="All good.")),
         patch("pfm.reporting.send_report", AsyncMock(return_value=True)),
     ):
         result = runner.invoke(cli, ["report"])
 
     assert result.exit_code == 0
-    assert "Generated and cached AI commentary." in result.output
+    assert "Using cached AI commentary." in result.output
     assert "Report sent to Telegram." in result.output
 
 
@@ -671,10 +671,8 @@ def test_report_uses_cached_ai_commentary(runner, db_path):
 
     asyncio.run(_seed_analytics())
 
-    mock_generate = AsyncMock(return_value="Should not be used")
     with (
         patch("pfm.reporting.is_telegram_configured", AsyncMock(return_value=True)),
-        patch("pfm.ai.generate_commentary", mock_generate),
         patch("pfm.reporting.send_report", AsyncMock(return_value=True)),
     ):
         result = runner.invoke(cli, ["report"])
@@ -682,7 +680,46 @@ def test_report_uses_cached_ai_commentary(runner, db_path):
     assert result.exit_code == 0
     assert "Using cached AI commentary." in result.output
     assert "Report sent to Telegram." in result.output
-    mock_generate.assert_not_awaited()
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_report_without_cached_ai_commentary_uses_fallback_text(runner, db_path):
+    async def _seed_analytics() -> None:
+        async with Repository(db_path) as repo:
+            snapshot_date = date(2024, 1, 15)
+            await repo.save_snapshot(
+                Snapshot(
+                    date=snapshot_date,
+                    source="wise",
+                    asset="USD",
+                    amount=Decimal("100.0"),
+                    usd_value=Decimal("100.0"),
+                )
+            )
+            await repo.save_analytics_metric(snapshot_date, "net_worth", '{"usd":"100.0"}')
+            await repo.save_analytics_metric(snapshot_date, "allocation_by_asset", "[]")
+            await repo.save_analytics_metric(snapshot_date, "allocation_by_source", "[]")
+            await repo.save_analytics_metric(snapshot_date, "allocation_by_category", "[]")
+            await repo.save_analytics_metric(snapshot_date, "currency_exposure", "[]")
+            await repo.save_analytics_metric(snapshot_date, "risk_metrics", "{}")
+            await repo.save_analytics_metric(
+                snapshot_date,
+                "pnl",
+                '{"weekly":{"absolute_change":"1.5","percentage_change":"1.0"}}',
+            )
+            await repo.save_analytics_metric(snapshot_date, "weekly_pnl_by_asset", "[]")
+
+    asyncio.run(_seed_analytics())
+
+    with (
+        patch("pfm.reporting.is_telegram_configured", AsyncMock(return_value=True)),
+        patch("pfm.reporting.send_report", AsyncMock(return_value=True)),
+    ):
+        result = runner.invoke(cli, ["report"])
+
+    assert result.exit_code == 0
+    assert "No cached AI commentary for this analysis date. Using fallback text." in result.output
+    assert "Report sent to Telegram." in result.output
 
 
 @pytest.mark.usefixtures("_patched_settings")
