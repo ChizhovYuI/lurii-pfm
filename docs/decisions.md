@@ -55,3 +55,58 @@ Documenting dropped sources, rejected approaches, and other decisions that shape
 - All 9 collectors refactored to accept `credentials: dict` instead of `Settings`
 - `pfm collect` becomes dynamic — runs whatever sources are in the DB
 - `.env.example` reduced to ~10 lines (global settings only)
+
+---
+
+## ADR-003: Add persistent CoinGecko cache in SQLite
+
+**Date:** 2026-02-27
+
+**Status:** Accepted
+
+**Context:** Price conversion is used by multiple collectors in one `pfm collect` run. In-memory cache helps within a single process, but repeated runs (or process restarts) still trigger fresh CoinGecko requests and increase `429 Too Many Requests` risk.
+
+**Problem:**
+- CoinGecko free-tier rate limits are easy to hit during concurrent collection
+- In-memory cache is lost between runs
+- Repeated requests for the same asset/rate within a short time window are unnecessary
+
+**Decision:** Use `prices` table as a persistent cache layer for CoinGecko. `PricingService` now checks SQLite for a recent cached USD price first (TTL 1 hour), then falls back to HTTP only when needed, and writes fetched results back to SQLite (write-through cache).
+
+**Design choices:**
+- **SQLite-backed cache** over external Redis/memcached — no extra infra, single-user local setup
+- **TTL by `created_at`** — cache freshness window enforced at query time
+- **Layered cache** — keep existing in-memory cache for fastest repeated lookups in-process
+- **Serialized HTTP + 429 backoff** — requests are lock-serialized and retried with backoff to reduce rate-limit failures
+
+**Consequences:**
+- Fewer CoinGecko API calls across repeated runs
+- Better resilience during `pfm collect` bursts
+- Price cache has durable history in the same DB used for analytics
+
+---
+
+## ADR-004: Make snapshot writes idempotent per source and date
+
+**Date:** 2026-02-27
+
+**Status:** Accepted
+
+**Context:** Running `pfm collect` multiple times on the same day previously appended new snapshot rows, causing duplicate `(date, source, asset)` entries and inflated net worth/allocation analytics unless manually cleaned.
+
+**Problem:**
+- Duplicate same-day snapshots for the same source
+- Latest analytics could be overstated due to additive duplicates
+- Manual cleanup required after repeated collect runs
+
+**Decision:** Snapshot persistence is now idempotent per `source + date`. Before inserting a new snapshot batch for a source/date, existing rows for that source/date are deleted. The new batch becomes the effective snapshot set for that source/day.
+
+**Design choices:**
+- **Repository-level replacement** (`save_snapshots`) instead of ad-hoc cleanup scripts
+- **Delete by `(date, source)` then insert batch** to preserve complete replacement semantics
+- **Transactions unaffected** — only snapshot dedup is enforced
+
+**Consequences:**
+- Re-running `pfm collect` on the same day does not inflate portfolio totals
+- "Latest snapshot" semantics become deterministic and easier to reason about
+- Existing historical duplicates can still be cleaned once; new duplicates are prevented going forward
