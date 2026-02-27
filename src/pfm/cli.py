@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import sys
 from datetime import date
 from decimal import Decimal
@@ -33,6 +34,7 @@ if TYPE_CHECKING:
     from pfm.db.repository import Repository
 
 logger = logging.getLogger(__name__)
+_COUNTRY_ACCESS_HINT = "you don't have access from this country. use vpn or smth to handle this"
 
 
 def _mask(value: str) -> str:
@@ -393,10 +395,32 @@ def _print_collect_results(results: list[CollectorResult]) -> None:
             f"{r.source:<20}  {r.snapshots_count:>5}  " f"{r.transactions_count:>5}  {len(r.errors):>6}  {status:>7}",
         )
         for err in r.errors:
-            click.echo(f"  ! {err}", err=True)
+            _print_collect_error(err)
 
     click.echo("-" * 55)
     click.echo(f"{'TOTAL':<20}  {total_snaps:>5}  {total_txns:>5}  {total_errors:>6}")
+
+
+def _print_collect_error(err: str) -> None:
+    """Render collector errors with user-friendly formatting and color."""
+    if _COUNTRY_ACCESS_HINT in err.lower():
+        match = re.match(r"Failed to fetch (\w+) from ([^:]+):", err)
+        stage = match.group(1) if match else "data"
+        source = match.group(2) if match else "source"
+        click.secho(
+            f"  ! {source}: cannot fetch {stage} because access looks geo-restricted.",
+            fg="red",
+            bold=True,
+            err=True,
+        )
+        click.secho(
+            "    Hint: connect a VPN (or run from a supported country) and retry.",
+            fg="yellow",
+            err=True,
+        )
+        return
+
+    click.secho(f"  ! {err}", fg="red", err=True)
 
 
 @cli.command()
