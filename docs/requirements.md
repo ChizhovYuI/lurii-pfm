@@ -295,6 +295,11 @@ pfm collect --source <name> # Fetch a single named source
 pfm analyze                 # Run analytics on latest snapshot
 pfm report                  # Generate and send Telegram report
 pfm run                     # Full pipeline: collect → analyze → report
+
+# ── Gemini config ────────────────────────────────────────────────
+pfm gemini set              # Save Gemini API key
+pfm gemini show             # Show Gemini config (key masked)
+pfm gemini clear            # Remove Gemini API key
 ```
 
 ---
@@ -304,6 +309,23 @@ pfm run                     # Full pipeline: collect → analyze → report
 - **Price feed**: [CoinGecko](https://www.coingecko.com/en/api) free tier (crypto prices + fiat rates, 30 req/min)
 - **AI commentary**: [Gemini API](https://ai.google.dev/gemini-api/docs/api-key) — create `GEMINI_API_KEY`
 - **Telegram bot**: create via [@BotFather](https://t.me/BotFather), get chat ID via [@userinfobot](https://t.me/userinfobot)
+
+## Gemini API Key Setup (Google AI Studio)
+
+You can get a free Gemini API key from [Google AI Studio](https://aistudio.google.com/):
+
+1. Open [aistudio.google.com](https://aistudio.google.com/).
+2. Sign in with your Google account.
+3. In the left navigation, click **Get API key**.
+4. Click **Create API key**.
+5. Select a Google Cloud project (existing project or **Create API key in new project**).
+6. Copy the generated key and keep it private (never commit it to git).
+
+Configure it in PFM:
+
+```bash
+pfm gemini set
+```
 
 ## Open Questions
 
