@@ -49,6 +49,26 @@ async def test_save_snapshots_batch(repo):
     assert len(results) == 2
 
 
+async def test_save_snapshots_replaces_same_source_and_date(repo):
+    first_batch = [
+        Snapshot(date=date(2024, 1, 15), source="wise", asset="GBP", amount=Decimal(100), usd_value=Decimal(125)),
+        Snapshot(date=date(2024, 1, 15), source="wise", asset="EUR", amount=Decimal(50), usd_value=Decimal(55)),
+    ]
+    second_batch = [
+        Snapshot(date=date(2024, 1, 15), source="wise", asset="GBP", amount=Decimal(120), usd_value=Decimal(150)),
+    ]
+
+    await repo.save_snapshots(first_batch)
+    await repo.save_snapshots(second_batch)
+
+    results = await repo.get_snapshots_by_date(date(2024, 1, 15))
+    assert len(results) == 1
+    assert results[0].source == "wise"
+    assert results[0].asset == "GBP"
+    assert results[0].amount == Decimal(120)
+    assert results[0].usd_value == Decimal(150)
+
+
 async def test_get_latest_snapshots_empty(repo):
     results = await repo.get_latest_snapshots()
     assert results == []

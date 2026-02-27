@@ -49,20 +49,20 @@ class Repository:
 
     async def save_snapshot(self, snapshot: Snapshot) -> None:
         """Save a single balance snapshot."""
-        sql = "INSERT INTO snapshots (date, source, asset, amount, usd_value, raw_json) VALUES (?, ?, ?, ?, ?, ?)"
-        params = (
-            str(snapshot.date),
-            snapshot.source,
-            snapshot.asset,
-            str(snapshot.amount),
-            str(snapshot.usd_value),
-            snapshot.raw_json,
-        )
-        await self._db.execute(sql, params)
-        await self._db.commit()
+        await self.save_snapshots([snapshot])
 
     async def save_snapshots(self, snapshots: list[Snapshot]) -> None:
-        """Save multiple snapshots atomically."""
+        """Save multiple snapshots atomically, replacing same source/date rows."""
+        if not snapshots:
+            return
+
+        source_dates = {(str(s.date), s.source) for s in snapshots}
+        for snapshot_date, source in source_dates:
+            await self._db.execute(
+                "DELETE FROM snapshots WHERE date = ? AND source = ?",
+                (snapshot_date, source),
+            )
+
         await self._db.executemany(
             "INSERT INTO snapshots (date, source, asset, amount, usd_value, raw_json) VALUES (?, ?, ?, ?, ?, ?)",
             [(str(s.date), s.source, s.asset, str(s.amount), str(s.usd_value), s.raw_json) for s in snapshots],
