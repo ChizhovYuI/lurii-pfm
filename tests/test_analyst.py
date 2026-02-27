@@ -10,7 +10,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 from pydantic import SecretStr
 
-from pfm.ai.analyst import FALLBACK_COMMENTARY, GEMINI_MAX_OUTPUT_TOKENS, GEMINI_MODEL, generate_commentary
+from pfm.ai.analyst import (
+    FALLBACK_COMMENTARY,
+    GEMINI_MAX_OUTPUT_TOKENS,
+    GEMINI_MODEL,
+    _retry_delay_seconds,
+    generate_commentary,
+)
 from pfm.ai.prompts import AnalyticsSummary
 from pfm.db.gemini_store import GeminiStore
 from pfm.db.models import init_db
@@ -192,3 +198,15 @@ async def test_generate_commentary_uses_db_key_when_env_missing(tmp_path):
     assert result == "From DB key."
     _, params, _ = fake_client.calls[0]
     assert params["key"] == "gemini-db-key"
+
+
+def test_retry_delay_applies_model_minimum_even_with_small_retry_after():
+    endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+    response = httpx.Response(
+        429,
+        headers={"Retry-After": "0.01"},
+        request=httpx.Request("POST", endpoint),
+    )
+
+    assert _retry_delay_seconds(response, 1, "gemini-2.5-pro") == 30.0
+    assert _retry_delay_seconds(response, 1, "gemini-2.5-flash") == 7.0

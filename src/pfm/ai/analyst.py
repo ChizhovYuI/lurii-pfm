@@ -23,7 +23,7 @@ GEMINI_MODEL = "gemini-2.0-flash"
 GEMINI_MAX_OUTPUT_TOKENS = 1024
 GEMINI_MAX_RETRIES = 3
 GEMINI_BASE_BACKOFF_SECONDS = 2.0
-GEMINI_MAX_BACKOFF_SECONDS = 30.0
+GEMINI_MAX_BACKOFF_SECONDS = 120.0
 GEMINI_TOKEN_ESTIMATE_CHARS = 4
 HTTP_TOO_MANY_REQUESTS = 429
 FALLBACK_COMMENTARY = (
@@ -87,7 +87,8 @@ async def generate_commentary(
     return FALLBACK_COMMENTARY
 
 
-def _retry_delay_seconds(response: httpx.Response, attempt: int) -> float:
+def _retry_delay_seconds(response: httpx.Response, attempt: int, model: str) -> float:
+    min_delay = _min_retry_delay_seconds(model, attempt)
     retry_after = response.headers.get("Retry-After", "").strip()
     if retry_after:
         try:
@@ -95,10 +96,24 @@ def _retry_delay_seconds(response: httpx.Response, attempt: int) -> float:
         except ValueError:
             parsed = 0.0
         if parsed > 0:
-            return float(min(parsed, GEMINI_MAX_BACKOFF_SECONDS))
+            return float(min(max(parsed, min_delay), GEMINI_MAX_BACKOFF_SECONDS))
 
     backoff = GEMINI_BASE_BACKOFF_SECONDS * (2 ** (attempt - 1))
-    return float(min(backoff, GEMINI_MAX_BACKOFF_SECONDS))
+    return float(min(max(backoff, min_delay), GEMINI_MAX_BACKOFF_SECONDS))
+
+
+def _min_retry_delay_seconds(model: str, attempt: int) -> float:
+    model_lower = model.lower()
+    if "pro" in model_lower:
+        base = 30.0
+    elif "flash-lite" in model_lower:
+        base = 5.0
+    elif "flash" in model_lower:
+        base = 7.0
+    else:
+        base = 10.0
+
+    return float(min(base * (2 ** (attempt - 1)), GEMINI_MAX_BACKOFF_SECONDS))
 
 
 async def _request_commentary_body(
@@ -122,7 +137,7 @@ async def _request_commentary_body(
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
             if status == HTTP_TOO_MANY_REQUESTS and attempt < GEMINI_MAX_RETRIES:
-                retry_delay = _retry_delay_seconds(exc.response, attempt)
+                retry_delay = _retry_delay_seconds(exc.response, attempt, GEMINI_MODEL)
                 logger.warning(
                     "Gemini rate limited (HTTP 429). Retrying in %.1fs (%d/%d). input_chars=%d input_tokens_est=%d",
                     retry_delay,
