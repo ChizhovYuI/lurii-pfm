@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 import httpx
 
@@ -17,12 +21,16 @@ logger = logging.getLogger(__name__)
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_MODEL = "gemini-2.0-flash"
 GEMINI_MAX_OUTPUT_TOKENS = 1024
+GEMINI_MAX_RETRIES = 3
+GEMINI_BASE_BACKOFF_SECONDS = 2.0
+GEMINI_MAX_BACKOFF_SECONDS = 30.0
+HTTP_TOO_MANY_REQUESTS = 429
 FALLBACK_COMMENTARY = (
     "AI commentary is currently unavailable. " "Review net worth trend, concentration risk, and PnL changes manually."
 )
 
 
-async def generate_commentary(  # noqa: PLR0911
+async def generate_commentary(
     analytics: AnalyticsSummary,
     *,
     api_key: str | None = None,
@@ -36,7 +44,7 @@ async def generate_commentary(  # noqa: PLR0911
         return FALLBACK_COMMENTARY
 
     prompt = render_weekly_report_user_prompt(analytics)
-    payload = {
+    payload: dict[str, object] = {
         "system_instruction": {"parts": [{"text": WEEKLY_REPORT_SYSTEM_PROMPT}]},
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {"maxOutputTokens": GEMINI_MAX_OUTPUT_TOKENS},
@@ -46,25 +54,13 @@ async def generate_commentary(  # noqa: PLR0911
     owns_client = client is None
     http_client = client if client is not None else httpx.AsyncClient(timeout=30.0)
     try:
-        response = await http_client.post(endpoint, params={"key": resolved_api_key}, json=payload)
-        response.raise_for_status()
-        body: dict[str, Any] = response.json()
-    except httpx.HTTPStatusError as exc:
-        logger.warning("Gemini API request failed with HTTP %d.", exc.response.status_code)
-        return FALLBACK_COMMENTARY
-    except httpx.HTTPError as exc:
-        logger.warning("Gemini API transport error (%s).", type(exc).__name__)
-        logger.debug("Gemini transport error details: %s", exc)
-        return FALLBACK_COMMENTARY
-    except ValueError as exc:
-        logger.warning("Gemini API returned invalid JSON: %s", exc)
-        return FALLBACK_COMMENTARY
-    except Exception:  # pragma: no cover - defensive guardrail
-        logger.exception("Unexpected Gemini API error")
-        return FALLBACK_COMMENTARY
+        body = await _request_commentary_body(http_client, endpoint, resolved_api_key, payload)
     finally:
         if owns_client:
             await http_client.aclose()
+
+    if body is None:
+        return FALLBACK_COMMENTARY
 
     _log_token_usage(body)
     text = _extract_text(body)
@@ -73,6 +69,67 @@ async def generate_commentary(  # noqa: PLR0911
 
     logger.warning("Gemini returned empty text response; using fallback commentary.")
     return FALLBACK_COMMENTARY
+
+
+def _retry_delay_seconds(response: httpx.Response, attempt: int) -> float:
+    retry_after = response.headers.get("Retry-After", "").strip()
+    if retry_after:
+        try:
+            parsed = float(retry_after)
+        except ValueError:
+            parsed = 0.0
+        if parsed > 0:
+            return float(min(parsed, GEMINI_MAX_BACKOFF_SECONDS))
+
+    backoff = GEMINI_BASE_BACKOFF_SECONDS * (2 ** (attempt - 1))
+    return float(min(backoff, GEMINI_MAX_BACKOFF_SECONDS))
+
+
+async def _request_commentary_body(
+    client: httpx.AsyncClient,
+    endpoint: str,
+    api_key: str,
+    payload: Mapping[str, object],
+) -> dict[str, Any] | None:
+    for attempt in range(1, GEMINI_MAX_RETRIES + 1):
+        try:
+            response = await client.post(endpoint, params={"key": api_key}, json=payload)
+            response.raise_for_status()
+            body = response.json()
+            if isinstance(body, dict):
+                return body
+            logger.warning("Gemini API returned non-object JSON body; using fallback commentary.")
+            break
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            if status == HTTP_TOO_MANY_REQUESTS and attempt < GEMINI_MAX_RETRIES:
+                retry_delay = _retry_delay_seconds(exc.response, attempt)
+                logger.warning(
+                    "Gemini rate limited (HTTP 429). Retrying in %.1fs (%d/%d).",
+                    retry_delay,
+                    attempt,
+                    GEMINI_MAX_RETRIES,
+                )
+                await asyncio.sleep(retry_delay)
+                continue
+            if status == HTTP_TOO_MANY_REQUESTS:
+                logger.warning("Gemini rate limited (HTTP 429). Using fallback commentary.")
+            else:
+                logger.warning("Gemini API request failed with HTTP %d. Using fallback commentary.", status)
+            break
+        except httpx.HTTPError as exc:
+            logger.warning("Gemini API transport error (%s).", type(exc).__name__)
+            logger.debug("Gemini transport error details: %s", exc)
+            break
+        except ValueError as exc:
+            logger.warning("Gemini API returned invalid JSON: %s", exc)
+            break
+        except Exception:  # pragma: no cover - defensive guardrail
+            logger.exception("Unexpected Gemini API error")
+            break
+    else:
+        logger.warning("Gemini commentary request failed after retries. Using fallback commentary.")
+    return None
 
 
 async def resolve_gemini_api_key(
