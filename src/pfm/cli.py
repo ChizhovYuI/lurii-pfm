@@ -546,7 +546,16 @@ async def _analyze_async() -> None:
 
         snapshot_assets = {(s.source, s.asset.upper()) for s in all_snapshots}
         yield_inputs: list[tuple[str, str]] = []
-        for source, asset in [("blend", "USDC"), ("okx", "USDC"), ("okx", "USDT")]:
+        for source, asset in [
+            ("blend", "USDC"),
+            ("bybit", "SOL"),
+            ("bybit", "USDC"),
+            ("bybit", "USDT"),
+            ("okx", "BTC"),
+            ("okx", "ETH"),
+            ("okx", "USDC"),
+            ("okx", "USDT"),
+        ]:
             if (source, asset) in snapshot_assets:
                 yield_inputs.append((source, asset))
 

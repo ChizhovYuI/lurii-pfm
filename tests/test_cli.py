@@ -496,7 +496,10 @@ def test_analyze_computes_and_caches_metrics(runner, db_path):
         "yield",
     }
     assert json.loads(metrics["net_worth"]) == {"usd": "570.0"}
-    assert json.loads(metrics["yield"]) == []
+    yield_rows = json.loads(metrics["yield"])
+    assert len(yield_rows) == 1
+    assert yield_rows[0]["source"] == "okx"
+    assert yield_rows[0]["asset"] == "BTC"
     pnl = json.loads(metrics["pnl"])
     assert pnl["daily"]["start_date"] == "2024-01-14"
     assert pnl["daily"]["end_date"] == "2024-01-15"
