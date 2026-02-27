@@ -467,7 +467,7 @@ Register all 9 collector types. `pfm collect` auto-discovers from DB. Add `--cat
 
 ## Phase 4 — Analytics Engine
 
-### Task 4.1 — Portfolio analytics `src/pfm/analytics/portfolio.py` [M]
+### Task 4.1 — Portfolio analytics `src/pfm/analytics/portfolio.py` [M] ✅
 
 **Dependencies:** Phase 0
 
@@ -647,7 +647,7 @@ Phase 0 ── Phase 0.5 (Source Management)
 | 5 — AI Commentary | 3 | 2S + 1M | Pending |
 | 6 — Telegram Reporting | 4 | 2S + 2M | Pending |
 | 7 — Hardening | 5 | 2S + 3M | Pending |
-| **Total** | **48** | | **~38/48 done** |
+| **Total** | **48** | | **~39/48 done** |
 
 ## File Manifest
 

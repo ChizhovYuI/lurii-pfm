@@ -1,0 +1,135 @@
+"""Tests for portfolio analytics."""
+
+from __future__ import annotations
+
+from datetime import date
+from decimal import Decimal
+
+from pfm.analytics.portfolio import (
+    compute_allocation_by_asset,
+    compute_allocation_by_category,
+    compute_allocation_by_source,
+    compute_currency_exposure,
+    compute_net_worth,
+    compute_risk_metrics,
+)
+from pfm.db.models import Snapshot
+
+
+async def test_compute_net_worth(repo):
+    target_date = date(2024, 1, 15)
+    await repo.save_snapshots(
+        [
+            Snapshot(target_date, "wise", "GBP", Decimal(100), Decimal(125)),
+            Snapshot(target_date, "lobstr", "XLM", Decimal(50), Decimal(5)),
+            Snapshot(target_date, "ibkr", "AAPL", Decimal(1), Decimal(180)),
+        ]
+    )
+
+    net_worth = await compute_net_worth(repo, target_date)
+    assert net_worth == Decimal(310)
+
+
+async def test_compute_allocation_by_asset(repo):
+    target_date = date(2024, 1, 15)
+    await repo.save_snapshots(
+        [
+            Snapshot(target_date, "lobstr", "USDC", Decimal(100), Decimal(100)),
+            Snapshot(target_date, "okx", "USDC", Decimal(50), Decimal(50)),
+            Snapshot(target_date, "wise", "GBP", Decimal(200), Decimal(250)),
+        ]
+    )
+
+    rows = await compute_allocation_by_asset(repo, target_date)
+    assert [row.asset for row in rows] == ["GBP", "USDC"]
+    assert rows[0].usd_value == Decimal(250)
+    assert rows[1].amount == Decimal(150)
+    assert rows[0].percentage == Decimal("62.5")
+    assert rows[1].percentage == Decimal("37.5")
+
+
+async def test_compute_allocation_by_source(repo):
+    target_date = date(2024, 1, 15)
+    await repo.save_snapshots(
+        [
+            Snapshot(target_date, "wise", "GBP", Decimal(100), Decimal(125)),
+            Snapshot(target_date, "wise", "EUR", Decimal(50), Decimal(55)),
+            Snapshot(target_date, "lobstr", "XLM", Decimal(50), Decimal(5)),
+        ]
+    )
+
+    rows = await compute_allocation_by_source(repo, target_date)
+    assert [row.bucket for row in rows] == ["wise", "lobstr"]
+    assert rows[0].usd_value == Decimal(180)
+    assert rows[1].percentage == Decimal("2.702702702702702702702702703")
+
+
+async def test_compute_allocation_by_category(repo):
+    target_date = date(2024, 1, 15)
+    await repo.save_snapshots(
+        [
+            Snapshot(target_date, "wise", "GBP", Decimal(100), Decimal(125)),
+            Snapshot(target_date, "ibkr", "AAPL", Decimal(1), Decimal(200)),
+            Snapshot(target_date, "ibkr", "USD", Decimal(20), Decimal(20)),
+            Snapshot(target_date, "blend", "USDC", Decimal(300), Decimal(300)),
+            Snapshot(target_date, "okx", "BTC", Decimal("0.1"), Decimal(5000)),
+        ]
+    )
+
+    rows = await compute_allocation_by_category(repo, target_date)
+    assert [row.bucket for row in rows] == ["crypto", "DeFi", "stocks", "fiat"]
+    by_bucket = {row.bucket: row.usd_value for row in rows}
+    assert by_bucket["crypto"] == Decimal(5000)
+    assert by_bucket["DeFi"] == Decimal(300)
+    assert by_bucket["stocks"] == Decimal(200)
+    assert by_bucket["fiat"] == Decimal(145)
+
+
+async def test_compute_currency_exposure(repo):
+    target_date = date(2024, 1, 15)
+    await repo.save_snapshots(
+        [
+            Snapshot(target_date, "wise", "GBP", Decimal(100), Decimal(125)),
+            Snapshot(target_date, "kbank", "THB", Decimal(3000), Decimal(90)),
+            Snapshot(target_date, "ibkr", "AAPL", Decimal(1), Decimal(200)),
+        ]
+    )
+
+    rows = await compute_currency_exposure(repo, target_date)
+    assert [row.currency for row in rows] == ["GBP", "THB"]
+    assert rows[0].percentage == Decimal("30.12048192771084337349397590")
+    assert rows[1].percentage == Decimal("21.68674698795180722891566265")
+
+
+async def test_compute_risk_metrics(repo):
+    target_date = date(2024, 1, 15)
+    await repo.save_snapshots(
+        [
+            Snapshot(target_date, "okx", "BTC", Decimal("0.1"), Decimal(5000)),
+            Snapshot(target_date, "wise", "GBP", Decimal(100), Decimal(125)),
+            Snapshot(target_date, "ibkr", "AAPL", Decimal(1), Decimal(200)),
+            Snapshot(target_date, "lobstr", "USDC", Decimal(300), Decimal(300)),
+            Snapshot(target_date, "blend", "USDC", Decimal(400), Decimal(400)),
+            Snapshot(target_date, "lobstr", "XLM", Decimal(50), Decimal(5)),
+        ]
+    )
+
+    metrics = await compute_risk_metrics(repo, target_date)
+    assert metrics.concentration_percentage == Decimal("82.91873963515754560530679934")
+    assert len(metrics.top_5_assets) == 5
+    assert metrics.top_5_assets[0].asset == "BTC"
+    assert metrics.hhi_index == Decimal("0.7025582425077487080902837939")
+
+
+async def test_empty_portfolio(repo):
+    target_date = date(2024, 1, 15)
+
+    assert await compute_net_worth(repo, target_date) == Decimal(0)
+    assert await compute_allocation_by_asset(repo, target_date) == []
+    assert await compute_allocation_by_source(repo, target_date) == []
+    assert await compute_allocation_by_category(repo, target_date) == []
+    assert await compute_currency_exposure(repo, target_date) == []
+    metrics = await compute_risk_metrics(repo, target_date)
+    assert metrics.concentration_percentage == Decimal(0)
+    assert metrics.top_5_assets == []
+    assert metrics.hhi_index == Decimal(0)
