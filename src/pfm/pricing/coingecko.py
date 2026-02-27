@@ -7,9 +7,13 @@ import logging
 import time
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+import aiosqlite
 import httpx
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +58,7 @@ _HTTP_STATUS_TOO_MANY_REQUESTS = 429
 class PricingService:
     """Fetches crypto prices and fiat rates from CoinGecko."""
 
-    def __init__(self, api_key: str = "") -> None:
+    def __init__(self, api_key: str = "", cache_db_path: str | Path | None = None) -> None:
         headers: dict[str, str] = {"Accept": "application/json"}
         if api_key:
             headers["x-cg-demo-api-key"] = api_key
@@ -63,6 +67,7 @@ class PricingService:
             headers=headers,
             timeout=30.0,
         )
+        self._cache_db_path = str(cache_db_path) if cache_db_path is not None else None
         self._last_request_time: float = 0.0
         self._request_lock = asyncio.Lock()
         self._cache: dict[str, tuple[Decimal, datetime]] = {}
@@ -88,6 +93,10 @@ class PricingService:
         cached = self._get_cached(ticker)
         if cached is not None:
             return cached
+        persisted = await self._get_persisted_cache(ticker)
+        if persisted is not None:
+            self._set_cache(ticker, persisted)
+            return persisted
 
         # Fiat
         if ticker in FIAT_TICKERS:
@@ -106,12 +115,22 @@ class PricingService:
             t = ticker.upper()
             if t == "USD" or t in STABLECOINS:
                 results[t] = Decimal(1)
-            elif cached := self._get_cached(t):
-                results[t] = cached
-            elif t in FIAT_TICKERS:
-                fiat_to_fetch.append(t)
             else:
-                crypto_to_fetch.append(t)
+                cached = self._get_cached(t)
+                if cached is not None:
+                    results[t] = cached
+                    continue
+
+                persisted = await self._get_persisted_cache(t)
+                if persisted is not None:
+                    self._set_cache(t, persisted)
+                    results[t] = persisted
+                    continue
+
+                if t in FIAT_TICKERS:
+                    fiat_to_fetch.append(t)
+                else:
+                    crypto_to_fetch.append(t)
 
         # Batch fetch crypto
         if crypto_to_fetch:
@@ -170,6 +189,41 @@ class PricingService:
         msg = "CoinGecko request failed after retries"
         raise RuntimeError(msg)
 
+    async def _get_persisted_cache(self, ticker: str) -> Decimal | None:
+        """Read recent cached price from SQLite, if configured."""
+        if self._cache_db_path is None:
+            return None
+
+        ttl_window = f"-{int(self._cache_ttl_seconds)} seconds"
+        sql = (
+            "SELECT price FROM prices "
+            "WHERE asset = ? AND currency = 'USD' AND created_at >= datetime('now', ?) "
+            "ORDER BY created_at DESC LIMIT 1"
+        )
+        try:
+            async with aiosqlite.connect(self._cache_db_path) as db:
+                row = await (await db.execute(sql, (ticker, ttl_window))).fetchone()
+        except aiosqlite.Error:
+            logger.exception("Failed to read price cache from SQLite")
+            return None
+
+        if row is None:
+            return None
+        return Decimal(str(row[0]))
+
+    async def _save_persisted_cache(self, ticker: str, price: Decimal) -> None:
+        """Write fetched price into SQLite cache, if configured."""
+        if self._cache_db_path is None:
+            return
+
+        sql = "INSERT INTO prices (date, asset, currency, price, source) VALUES (?, ?, 'USD', ?, 'coingecko')"
+        try:
+            async with aiosqlite.connect(self._cache_db_path) as db:
+                await db.execute(sql, (str(self.today()), ticker, str(price)))
+                await db.commit()
+        except aiosqlite.Error:
+            logger.exception("Failed to write price cache into SQLite")
+
     async def _fetch_crypto_price(self, ticker: str) -> Decimal:
         """Fetch a single crypto price from CoinGecko."""
         coingecko_id = TICKER_TO_COINGECKO.get(ticker)
@@ -189,6 +243,7 @@ class PricingService:
 
         price = Decimal(str(price_val))
         self._set_cache(ticker, price)
+        await self._save_persisted_cache(ticker, price)
         logger.debug("Fetched price %s = $%s", ticker, price)
         return price
 
@@ -216,6 +271,7 @@ class PricingService:
             if price_val is not None:
                 price = Decimal(str(price_val))
                 self._set_cache(ticker, price)
+                await self._save_persisted_cache(ticker, price)
                 results[ticker] = price
             else:
                 logger.warning("No price data for %s", ticker)
@@ -241,6 +297,7 @@ class PricingService:
         # 1 BTC = X USD, 1 BTC = Y FIAT => 1 FIAT = X/Y USD
         rate = Decimal(str(btc_usd)) / Decimal(str(btc_fiat))
         self._set_cache(ticker, rate)
+        await self._save_persisted_cache(ticker, rate)
         logger.debug("Fetched fiat rate 1 %s = $%s", ticker, rate)
         return rate
 

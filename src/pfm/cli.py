@@ -261,7 +261,10 @@ async def _collect_async(source_name: str | None) -> list[CollectorResult]:
     from pfm.db.repository import Repository
     from pfm.pricing import PricingService
 
-    pricing = PricingService(api_key=settings.coingecko_api_key)
+    pricing = PricingService(
+        api_key=settings.coingecko_api_key,
+        cache_db_path=settings.database_path,
+    )
     results: list[CollectorResult] = []
 
     try:

@@ -1,11 +1,14 @@
 """Tests for CoinGecko pricing service."""
 
+from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiosqlite
 import httpx
 import pytest
 
+from pfm.db.models import init_db
 from pfm.pricing.coingecko import STABLECOINS, TICKER_TO_COINGECKO, PricingService
 
 
@@ -80,3 +83,45 @@ async def test_retries_on_rate_limit_429(pricing):
 
     assert price == Decimal(60000)
     assert pricing._client.get.await_count == 2
+
+
+async def test_persistent_cache_hit_avoids_http(tmp_path):
+    db_path = tmp_path / "pricing-cache.db"
+    await init_db(db_path)
+
+    async with aiosqlite.connect(str(db_path)) as db:
+        await db.execute(
+            "INSERT INTO prices (date, asset, currency, price, source) VALUES (?, ?, ?, ?, ?)",
+            (str(datetime.now(tz=UTC).date()), "BTC", "USD", "12345.67", "coingecko"),
+        )
+        await db.commit()
+
+    pricing = PricingService(cache_db_path=db_path)
+    pricing._client.get = AsyncMock(side_effect=AssertionError("HTTP should not be called"))  # type: ignore[assignment]
+
+    price = await pricing.get_price_usd("BTC")
+    await pricing.close()
+    assert price == Decimal("12345.67")
+
+
+async def test_persistent_cache_write_through(tmp_path):
+    db_path = tmp_path / "pricing-cache-write.db"
+    await init_db(db_path)
+
+    ok_resp = MagicMock(spec=httpx.Response)
+    ok_resp.status_code = 200
+    ok_resp.headers = {}
+    ok_resp.json.return_value = {"bitcoin": {"usd": 50000}}
+    ok_resp.raise_for_status = MagicMock()
+
+    pricing1 = PricingService(cache_db_path=db_path)
+    pricing1._client.get = AsyncMock(return_value=ok_resp)  # type: ignore[assignment]
+    fetched = await pricing1.get_price_usd("BTC")
+    await pricing1.close()
+    assert fetched == Decimal(50000)
+
+    pricing2 = PricingService(cache_db_path=db_path)
+    pricing2._client.get = AsyncMock(side_effect=AssertionError("HTTP should not be called"))  # type: ignore[assignment]
+    cached = await pricing2.get_price_usd("BTC")
+    await pricing2.close()
+    assert cached == Decimal(50000)
