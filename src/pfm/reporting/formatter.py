@@ -12,6 +12,8 @@ from pfm.reporting.telegram import WeeklyReport
 if TYPE_CHECKING:
     from pfm.ai.prompts import AnalyticsSummary
 
+HOLDING_MIN_DISPLAY_USD = Decimal("10")
+
 
 def format_weekly_report(
     analytics: AnalyticsSummary,
@@ -43,13 +45,18 @@ def format_weekly_report(
         "<b>All Holdings</b>",
     ]
 
+    shown_holding = False
     if allocation_rows:
         for row in allocation_rows:
             asset = html.escape(str(row.get("asset", "UNKNOWN")))
             usd_value = _to_decimal(row.get("usd_value", "0"))
+            if usd_value < HOLDING_MIN_DISPLAY_USD:
+                continue
             percentage = _to_decimal(row.get("percentage", "0")).quantize(Decimal("0.01"))
             lines.append(f"• {asset}: ${_fmt_money(usd_value)} ({percentage}%)")
-    else:
+            shown_holding = True
+
+    if not shown_holding:
         lines.append("• No holdings data available.")
 
     lines.extend(["", "<b>Yield</b>"])

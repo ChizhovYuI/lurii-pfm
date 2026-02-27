@@ -80,7 +80,8 @@ def test_format_weekly_report_tolerates_invalid_numeric_values():
     report = format_weekly_report(analytics, "Still works.")
     assert "<b>PnL (Weekly)</b>: → $0.00 (0.00%)" in report.text
     assert "<b>PnL (Monthly)</b>: → $0.00 (0.00%)" in report.text
-    assert "• BTC: $0.00 (0.00%)" in report.text
+    assert "• BTC: $0.00 (0.00%)" not in report.text
+    assert "• No holdings data available." in report.text
     assert "• BLEND/USDC: $0.00 (0.00%)" in report.text
 
 
@@ -99,4 +100,6 @@ def test_format_weekly_report_includes_all_holdings_not_truncated():
     )
 
     report = format_weekly_report(analytics, "All holdings visible.")
+    assert "• A9: $9.00 (1.00%)" not in report.text
+    assert "• A10: $10.00 (1.00%)" in report.text
     assert "• A11: $11.00 (1.00%)" in report.text
