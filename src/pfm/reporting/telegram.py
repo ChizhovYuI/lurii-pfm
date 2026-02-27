@@ -18,6 +18,10 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_API_BASE = "https://api.telegram.org"
 TELEGRAM_MESSAGE_LIMIT = 4096
+_HTTP_BAD_REQUEST = 400
+_HTTP_UNAUTHORIZED = 401
+_HTTP_FORBIDDEN = 403
+_HTTP_NOT_FOUND = 404
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,7 +31,7 @@ class WeeklyReport:
     text: str
 
 
-async def send_message(  # noqa: PLR0913
+async def send_message(  # noqa: C901, PLR0912, PLR0913
     chat_id: str | None,
     text: str,
     parse_mode: str | None = "HTML",
@@ -69,8 +73,21 @@ async def send_message(  # noqa: PLR0913
             if not body.get("ok", False):
                 logger.warning("Telegram API returned ok=false: %s", body)
                 return False
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code
+        if status == _HTTP_NOT_FOUND:
+            logger.warning("Telegram API returned 404. Bot token is likely invalid.")
+        elif status == _HTTP_UNAUTHORIZED:
+            logger.warning("Telegram API returned 401 Unauthorized. Check bot token.")
+        elif status == _HTTP_FORBIDDEN:
+            logger.warning("Telegram API returned 403 Forbidden. Bot may be blocked or missing chat access.")
+        elif status == _HTTP_BAD_REQUEST:
+            logger.warning("Telegram API returned 400 Bad Request. Check chat ID and message format.")
+        else:
+            logger.warning("Telegram API request failed with HTTP %d.", status)
+        return False
     except httpx.HTTPError as exc:
-        logger.warning("Telegram API request failed: %s", exc)
+        logger.warning("Telegram API transport error (%s): %s", type(exc).__name__, exc)
         return False
     finally:
         if owns_client:

@@ -71,6 +71,25 @@ async def test_send_message_returns_false_on_http_error():
     assert ok is False
 
 
+async def test_send_message_404_logs_without_token_leak(caplog):
+    token = "123456:ABCDEF_SECRET_TOKEN"  # noqa: S105
+    endpoint = f"https://api.telegram.org/bot{token}/sendMessage"
+    client = _FakeClient(
+        responses=[
+            httpx.Response(
+                404,
+                json={"ok": False},
+                request=httpx.Request("POST", endpoint),
+            )
+        ]
+    )
+
+    ok = await send_message("chat-1", "hello", bot_token=token, client=client)
+    assert ok is False
+    assert "Bot token is likely invalid" in caplog.text
+    assert token not in caplog.text
+
+
 async def test_send_message_returns_false_on_invalid_json_body():
     endpoint = "https://api.telegram.org/bottoken/sendMessage"
     client = _FakeClient(
