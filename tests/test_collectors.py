@@ -21,7 +21,6 @@ from pfm.collectors.ibkr import IbkrCollector
 from pfm.collectors.kbank import KbankCollector
 from pfm.collectors.lobstr import LobstrCollector
 from pfm.collectors.okx import OkxCollector
-from pfm.collectors.uphold import UpholdCollector
 from pfm.collectors.wise import WiseCollector
 from pfm.db.models import Transaction, TransactionType
 from pfm.pricing.coingecko import PricingService
@@ -685,102 +684,6 @@ async def test_wise_parse_transaction_types():
     assert tx.tx_type == TransactionType.TRANSFER
 
 
-# ── Uphold ────────────────────────────────────────────────────────────
-
-
-async def test_uphold_fetch_balances(pricing):
-    collector = UpholdCollector(pricing, pat="pat-token")
-
-    cards_resp = _mock_response(
-        [
-            {"id": "c1", "balance": "100.0", "currency": "USDC"},
-            {"id": "c2", "balance": "200.0", "currency": "USDC"},  # same currency, aggregate
-            {"id": "c3", "balance": "0.0", "currency": "BTC"},  # zero excluded
-        ]
-    )
-    collector._client.get = AsyncMock(return_value=cards_resp)
-
-    snapshots = await collector.fetch_balances()
-    assert len(snapshots) == 1
-    assert snapshots[0].asset == "USDC"
-    assert snapshots[0].amount == Decimal("300.0")
-
-
-async def test_uphold_fetch_transactions(pricing):
-    collector = UpholdCollector(pricing, pat="pat-token")
-
-    call_count = 0
-
-    async def mock_get(path, **kwargs):
-        nonlocal call_count
-        call_count += 1
-        if path == "/v0/me/cards":
-            return _mock_response(
-                [
-                    {"id": "c1", "balance": "100.0", "currency": "USDC"},
-                ]
-            )
-        # card transactions
-        return _mock_response(
-            [
-                {
-                    "id": "tx1",
-                    "type": "deposit",
-                    "createdAt": "2024-01-15T00:00:00Z",
-                    "origin": {"amount": "100", "currency": "USD"},
-                    "destination": {"amount": "100", "currency": "USDC"},
-                },
-            ]
-        )
-
-    collector._client.get = mock_get  # type: ignore[assignment]
-
-    txs = await collector.fetch_transactions()
-    assert len(txs) == 1
-    assert txs[0].tx_type == TransactionType.DEPOSIT
-
-
-async def test_uphold_parse_transaction_trade():
-    tx = UpholdCollector._parse_transaction(
-        {
-            "id": "tx1",
-            "type": "transfer",
-            "createdAt": "2024-01-15T00:00:00Z",
-            "origin": {"amount": "100", "currency": "USD"},
-            "destination": {"amount": "0.002", "currency": "BTC"},
-        }
-    )
-    assert tx is not None
-    assert tx.tx_type == TransactionType.TRADE  # different currencies
-
-
-async def test_uphold_parse_transaction_same_currency():
-    tx = UpholdCollector._parse_transaction(
-        {
-            "id": "tx1",
-            "type": "transfer",
-            "createdAt": "2024-01-15T00:00:00Z",
-            "origin": {"amount": "100", "currency": "USDC"},
-            "destination": {"amount": "100", "currency": "USDC"},
-        }
-    )
-    assert tx is not None
-    assert tx.tx_type == TransactionType.TRANSFER
-
-
-async def test_uphold_parse_transaction_no_currency():
-    tx = UpholdCollector._parse_transaction(
-        {
-            "id": "tx1",
-            "type": "deposit",
-            "createdAt": "2024-01-15T00:00:00Z",
-            "origin": {"amount": "100", "currency": ""},
-            "destination": {"amount": "100", "currency": ""},
-        }
-    )
-    assert tx is None
-
-
 # ── IBKR ──────────────────────────────────────────────────────────────
 
 
@@ -1321,7 +1224,6 @@ def test_collector_registry_populated():
     assert "okx" in COLLECTOR_REGISTRY
     assert "bybit" in COLLECTOR_REGISTRY
     assert "wise" in COLLECTOR_REGISTRY
-    assert "uphold" in COLLECTOR_REGISTRY
     assert "ibkr" in COLLECTOR_REGISTRY
     assert "blend" in COLLECTOR_REGISTRY
     assert "kbank" in COLLECTOR_REGISTRY

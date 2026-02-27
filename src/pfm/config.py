@@ -38,9 +38,6 @@ class Settings(BaseSettings):
     bybit_api_key: SecretStr = SecretStr("")
     bybit_api_secret: SecretStr = SecretStr("")
 
-    # ── Uphold ────────────────────────────────────────────────────────
-    uphold_pat: SecretStr = SecretStr("")
-
     # ── Stellar / Lobstr / Blend ──────────────────────────────────────
     stellar_public_address: str = ""
     blend_pool_contract_id: str = ""

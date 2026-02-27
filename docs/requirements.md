@@ -14,7 +14,7 @@ Personal Financial Management system that aggregates assets and statements from 
 
 ---
 
-## Data Sources (10)
+## Data Sources (9)
 
 ### Crypto Exchanges (4)
 
@@ -30,14 +30,13 @@ Personal Financial Management system that aggregates assets and statements from 
 | Source | Method | Auth |
 |--------|--------|------|
 | Wise | REST API | Personal token |
-| KBank | PDF statement parsing | None (manual PDF) |
+| KBank | PDF parsing (Gmail IMAP auto-fetch or manual) | Gmail App Password |
 
-### Stellar Ecosystem (3)
+### Stellar Ecosystem (2)
 
 | Source | Method | Auth |
 |--------|--------|------|
 | Lobstr (wallet) | Stellar Horizon API | Public address (no auth) |
-| Uphold (bridge) | REST API | Personal Access Token |
 | Blend (DeFi yield) | Soroban RPC contract call | Public address (no auth) |
 
 ### Broker (1)
@@ -52,7 +51,7 @@ Personal Financial Management system that aggregates assets and statements from 
 
 ### F1 — Data Collection
 
-- F1.1: Fetch current balances from all 10 sources
+- F1.1: Fetch current balances from all 9 sources
 - F1.2: Fetch transaction history (deposits, withdrawals, trades, yields)
 - F1.3: Convert all balances to USD using live exchange rates
 - F1.4: Handle KBank PDF import (manual trigger or email-based)
@@ -142,23 +141,24 @@ Personal Financial Management system that aggregates assets and statements from 
 | Layer | Technology |
 |-------|-----------|
 | Language | Python 3.13+ |
-| Package manager | uv |
-| Database | SQLite (via aiosqlite or sqlite3) |
+| Package manager | [uv](https://docs.astral.sh/uv/) |
+| Database | SQLite (via [aiosqlite](https://pypi.org/project/aiosqlite/)) |
 | Migrations | alembic |
-| HTTP client | httpx (async) |
-| Crypto exchange SDKs | python-okx, binance-connector-python, pybit |
-| Stellar | stellar-sdk |
-| Wise | wise-api or raw httpx |
-| Uphold | uphold-sdk-python or raw httpx |
-| IBKR | ibflex |
-| PDF parsing | pdfplumber |
-| AI | anthropic (Claude API) |
-| Telegram | python-telegram-bot or raw httpx |
+| HTTP client | [httpx](https://www.python-httpx.org/) (async) |
+| Crypto exchanges | Raw httpx + HMAC signing (OKX, Binance, Bybit) |
+| Stellar | [stellar-sdk](https://stellar-sdk.readthedocs.io/) (Horizon + Soroban) |
+| Wise | Raw httpx (Bearer token) |
+| IBKR | [ibflex](https://pypi.org/project/ibflex/) (Flex Query parser) |
+| PDF parsing | [pdfplumber](https://github.com/jsvine/pdfplumber) |
+| KBank email | Python stdlib (`imaplib` + `email`) |
+| Pricing | [CoinGecko API](https://docs.coingecko.com/reference/introduction) (free tier) |
+| AI | [anthropic](https://docs.anthropic.com/) (Claude API) |
+| Telegram | Raw httpx (push-only bot) |
 | Scheduler | cron / systemd timer (external) |
-| Linting | ruff |
-| Type checking | mypy (strict) |
+| Linting | [ruff](https://docs.astral.sh/ruff/) |
+| Type checking | [mypy](https://mypy.readthedocs.io/) (strict) |
 | Testing | pytest + pytest-cov + pytest-asyncio |
-| Pre-commit | pre-commit |
+| Pre-commit | [pre-commit](https://pre-commit.com/) |
 
 ---
 
@@ -175,14 +175,11 @@ Personal Financial Management system that aggregates assets and statements from 
 │            Collector Layer              │
 │                                         │
 │  ┌─────┐ ┌───────┐ ┌─────┐ ┌───────┐  │
-│  │ OKX │ │Binance│ │Bybit│ │Uphold │  │
+│  │ OKX │ │Binance│ │Bybit│ │Lobstr │  │
 │  └──┬──┘ └───┬───┘ └──┬──┘ └───┬───┘  │
 │  ┌──┴──┐ ┌───┴───┐ ┌──┴──┐ ┌───┴───┐  │
-│  │Lobstr│ │ Blend │ │Wise │ │ IBKR  │  │
+│  │Blend│ │ Wise  │ │IBKR │ │ KBank │  │
 │  └──┬──┘ └───┬───┘ └──┬──┘ └───┬───┘  │
-│     │    ┌───┴───┐    │        │       │
-│     │    │ KBank │    │        │       │
-│     │    └───┬───┘    │        │       │
 │     └────┬───┴────┬───┘────────┘       │
 │          ▼        ▼                    │
 │   ┌────────────────────┐               │
@@ -234,7 +231,6 @@ src/pfm/
 │   ├── binance.py
 │   ├── binance_th.py
 │   ├── bybit.py
-│   ├── uphold.py
 │   ├── lobstr.py          # Stellar Horizon
 │   ├── blend.py           # Soroban RPC
 │   ├── wise.py
@@ -286,12 +282,14 @@ pfm import-kbank /path/to/statement.pdf
 
 ## Decided
 
-- **Price feed**: CoinGecko free tier (crypto prices + fiat rates, 30 req/min)
+- **Price feed**: [CoinGecko](https://www.coingecko.com/en/api) free tier (crypto prices + fiat rates, 30 req/min)
+- **AI commentary**: [Claude API](https://console.anthropic.com/) — get key at [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys)
+- **Telegram bot**: create via [@BotFather](https://t.me/BotFather), get chat ID via [@userinfobot](https://t.me/userinfobot)
 
 ## Open Questions
 
 1. **IBKR token refresh** — Flex tokens expire after 6 hours. Automation strategy?
-2. **Blend pool IDs** — need to confirm mainnet contract addresses
-3. **KBank statement format** — need a sample PDF to build the parser
-4. **Binance TH API differences** — need to test which endpoints differ from global
+2. ~~**Blend pool IDs**~~ — resolved: `BLEND_POOL_CONTRACT_ID` env var
+3. ~~**KBank statement format**~~ — resolved: parser handles newline-delimited cells, password-protected PDFs, Gmail IMAP auto-fetch
+4. ~~**Binance TH API differences**~~ — resolved: uses v1 API endpoints instead of v3
 5. **Tax reporting** — future scope? (capital gains, FIFO/LIFO cost basis methods)

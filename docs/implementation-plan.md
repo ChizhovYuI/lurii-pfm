@@ -1,6 +1,6 @@
 # Implementation Plan
 
-42 tasks across 8 phases. Each phase delivers something testable.
+41 tasks across 8 phases. Each phase delivers something testable.
 
 **Effort key:** S = half day, M = 1 day, L = 2 days
 
@@ -10,13 +10,13 @@
 
 Everything wired and testable, but no real data yet.
 
-### Task 0.1 — Configuration module `src/pfm/config.py` [S]
+### Task 0.1 — Configuration module `src/pfm/config.py` [S] ✅
 
 **Dependencies:** None
 
 **Files:** create `src/pfm/config.py`, modify `pyproject.toml` (add `pydantic-settings`)
 
-`Settings` class using `pydantic-settings` reading from `.env`. Fields for every API key/secret/token (OKX, Binance, Binance TH, Bybit, Uphold, Lobstr public address, Blend pool contract ID, Wise, IBKR flex token/query ID, Telegram bot token/chat ID, Claude API key, CoinGecko API key, DB path). All secrets are `SecretStr`. Cached `get_settings()` factory.
+`Settings` class using `pydantic-settings` reading from `.env`. Fields for every API key/secret/token (OKX, Binance, Binance TH, Bybit, Lobstr public address, Blend pool contract ID, Wise, IBKR flex token/query ID, Telegram bot token/chat ID, Claude API key, CoinGecko API key, DB path). All secrets are `SecretStr`. Cached `get_settings()` factory.
 
 **Acceptance:**
 - Loads from `.env.example` without errors
@@ -24,7 +24,7 @@ Everything wired and testable, but no real data yet.
 - No plaintext secrets in `repr()`
 - mypy + ruff pass
 
-### Task 0.2 — Update `.env.example` [S]
+### Task 0.2 — Update `.env.example` [S] ✅
 
 **Dependencies:** 0.1
 
@@ -32,7 +32,7 @@ Everything wired and testable, but no real data yet.
 
 Add placeholders for every secret field in `Settings`.
 
-### Task 0.3 — Database models `src/pfm/db/models.py` [M]
+### Task 0.3 — Database models `src/pfm/db/models.py` [M] ✅
 
 **Dependencies:** 0.1
 
@@ -51,7 +51,7 @@ Dataclass models for tables:
 - `init_db` creates SQLite file with all tables
 - Round-trip test: insert row, read back, fields match
 
-### Task 0.4 — Repository / data access `src/pfm/db/repository.py` [M]
+### Task 0.4 — Repository / data access `src/pfm/db/repository.py` [M] ✅
 
 **Dependencies:** 0.3
 
@@ -69,7 +69,7 @@ Context manager pattern for connection lifecycle.
 - Batch insert is atomic
 - Unit tests with >90% coverage on this module
 
-### Task 0.5 — Abstract collector interface `src/pfm/collectors/base.py` [S]
+### Task 0.5 — Abstract collector interface `src/pfm/collectors/base.py` [S] ✅
 
 **Dependencies:** 0.3
 
@@ -90,7 +90,7 @@ Context manager pattern for connection lifecycle.
 - Mock subclass runs `collect()` end-to-end against in-memory DB
 - Errors in one fetch don't prevent the other
 
-### Task 0.6 — Pricing service `src/pfm/pricing/coingecko.py` [M]
+### Task 0.6 — Pricing service `src/pfm/pricing/coingecko.py` [M] ✅
 
 **Dependencies:** 0.1, 0.4
 
@@ -131,7 +131,7 @@ All stubs initially. Wire up settings, DB init, structured logging.
 - Each command logs start/end
 - Exit code 0 for stubs
 
-### Task 0.8 — Structured logging `src/pfm/logging.py` [S]
+### Task 0.8 — Structured logging `src/pfm/logging.py` [S] ✅
 
 **Dependencies:** None
 
@@ -143,7 +143,7 @@ All stubs initially. Wire up settings, DB init, structured logging.
 - Output includes timestamp and level
 - Secret patterns redacted in logs
 
-### Task 0.9 — Test infrastructure [S]
+### Task 0.9 — Test infrastructure [S] ✅
 
 **Dependencies:** 0.1–0.8
 
@@ -162,7 +162,7 @@ Shared fixtures: in-memory DB, test settings, mock httpx client. Tests for all P
 
 Prove the full pipeline with the two simplest sources.
 
-### Task 1.1 — Lobstr collector `src/pfm/collectors/lobstr.py` [M]
+### Task 1.1 — Lobstr collector `src/pfm/collectors/lobstr.py` [M] ✅
 
 **Dependencies:** Phase 0
 
@@ -173,7 +173,7 @@ Stellar Horizon API:
 - `fetch_transactions()`: GET `/accounts/{public_key}/payments`, paginate, normalize
 - Map `asset_type=native` → XLM, `credit_alphanum4` → by `asset_code`
 
-### Task 1.2 — Wise collector `src/pfm/collectors/wise.py` [M]
+### Task 1.2 — Wise collector `src/pfm/collectors/wise.py` [M] ✅
 
 **Dependencies:** Phase 0
 
@@ -204,7 +204,7 @@ Register collectors. `pfm collect` runs both concurrently via `asyncio.gather`. 
 
 Four HMAC-signed REST API collectors.
 
-### Task 2.5 — HMAC signing utility `src/pfm/collectors/_auth.py` [S]
+### Task 2.5 — HMAC signing utility `src/pfm/collectors/_auth.py` [S] ✅
 
 **Dependencies:** None (used by 2.1–2.4)
 
@@ -214,7 +214,7 @@ Four HMAC-signed REST API collectors.
 - `sign_binance(query_string, secret) -> str`
 - `sign_bybit(timestamp, api_key, recv_window, query_string, secret) -> str`
 
-### Task 2.1 — OKX collector `src/pfm/collectors/okx.py` [M]
+### Task 2.1 — OKX collector `src/pfm/collectors/okx.py` [M] ✅
 
 **Dependencies:** Phase 0, 2.5
 
@@ -224,7 +224,7 @@ Four HMAC-signed REST API collectors.
 - `fetch_transactions()`: `/api/v5/account/bills` or bills-archive
 - Raw httpx with signing helper (not the `okx` SDK)
 
-### Task 2.2 — Binance collector `src/pfm/collectors/binance.py` [M]
+### Task 2.2 — Binance collector `src/pfm/collectors/binance.py` [M] ✅
 
 **Dependencies:** Phase 0, 2.5
 
@@ -234,7 +234,7 @@ Four HMAC-signed REST API collectors.
 - `fetch_transactions()`: deposit + withdrawal history
 - Base URL configurable (for Binance TH reuse)
 
-### Task 2.3 — Binance TH collector `src/pfm/collectors/binance_th.py` [S]
+### Task 2.3 — Binance TH collector `src/pfm/collectors/binance_th.py` [S] ✅
 
 **Dependencies:** 2.2
 
@@ -242,7 +242,7 @@ Four HMAC-signed REST API collectors.
 
 Subclass/compose with `BinanceCollector`, override base URL + THB-specific handling.
 
-### Task 2.4 — Bybit collector `src/pfm/collectors/bybit.py` [M]
+### Task 2.4 — Bybit collector `src/pfm/collectors/bybit.py` [M] ✅
 
 **Dependencies:** Phase 0, 2.5
 
@@ -252,7 +252,7 @@ Subclass/compose with `BinanceCollector`, override base URL + THB-specific handl
 - `fetch_transactions()`: GET `/v5/account/transaction-log`
 - Auth via headers (`X-BAPI-*`)
 
-### Task 2.6 — Exchange collector tests [M]
+### Task 2.6 — Exchange collector tests [M] ✅
 
 **Dependencies:** 2.1–2.5
 
@@ -260,16 +260,9 @@ Subclass/compose with `BinanceCollector`, override base URL + THB-specific handl
 
 ---
 
-## Phase 3 — Remaining Collectors (Uphold, IBKR, Blend, KBank)
+## Phase 3 — Remaining Collectors (IBKR, Blend, KBank)
 
-### Task 3.1 — Uphold collector `src/pfm/collectors/uphold.py` [M]
-
-**Dependencies:** Phase 0
-
-- GET cards/accounts, sum balances per currency
-- Auth: Bearer PAT
-
-### Task 3.2 — IBKR collector `src/pfm/collectors/ibkr.py` [M]
+### Task 3.2 — IBKR collector `src/pfm/collectors/ibkr.py` [M] ✅
 
 **Dependencies:** Phase 0
 
@@ -281,7 +274,7 @@ Flex Query two-step workflow:
 - Retry loop for "statement not ready"
 - Token expiry warning
 
-### Task 3.3 — Blend collector `src/pfm/collectors/blend.py` [L]
+### Task 3.3 — Blend collector `src/pfm/collectors/blend.py` [L] ✅
 
 **Dependencies:** Phase 0, stellar-sdk
 
@@ -291,28 +284,30 @@ Soroban RPC:
 - Parse XDR → bToken amounts × `b_rate` → USDC value → USD
 - Transactions: empty for now (yield tracked via balance diffs)
 
-### Task 3.4 — KBank PDF parser `src/pfm/collectors/kbank.py` [L]
+### Task 3.4 — KBank PDF parser `src/pfm/collectors/kbank.py` [L] ✅
 
 **Dependencies:** Phase 0
 
 **Additional dep:** `pdfplumber`
 
 - Manual trigger via `pfm import-kbank /path/to/statement.pdf`
-- Parse tables: date/description/amount/balance columns
+- Auto-fetch from Gmail IMAP (searches for KBank sender, downloads latest PDF)
+- Parse newline-delimited cells: dates, descriptions, amounts, balances
+- Password-protected PDF support (DDMMYYYY date of birth)
 - THB → USD conversion
 - `fetch_balances()`: ending balance from most recent import
 
 ### Task 3.5 — Wire remaining collectors [S]
 
-**Dependencies:** 3.1–3.4
+**Dependencies:** 3.2–3.4
 
-Register all 10 collectors. Add `--category` filter to `pfm collect`.
+Register all 9 collectors. Add `--category` filter to `pfm collect`.
 
-### Task 3.6 — Tests [M]
+### Task 3.6 — Tests [M] ✅
 
-**Dependencies:** 3.1–3.4
+**Dependencies:** 3.2–3.4
 
-**Files:** `tests/test_uphold.py`, `tests/test_ibkr.py`, `tests/test_blend.py`, `tests/test_kbank.py`
+**Files:** `tests/test_collectors.py` (consolidated)
 
 ---
 
@@ -481,23 +476,23 @@ Phases 1, 2, 3 are independent (all depend only on Phase 0). Phase 4 needs Phase
 Phase 0
   ├── Phase 1 (Lobstr + Wise) ──────────────┐
   ├── Phase 2 (Crypto Exchanges) ────────────┤
-  ├── Phase 3 (Uphold, IBKR, Blend, KBank) ─┤
+  ├── Phase 3 (IBKR, Blend, KBank) ──────────┤
   └── Phase 4 (Analytics) ──────────────────>├── Phase 5 (AI) ── Phase 6 (Telegram) ── Phase 7 (Hardening)
 ```
 
 ## Effort Summary
 
-| Phase | Tasks | Effort |
-|-------|-------|--------|
-| 0 — Foundation | 9 | 5S + 4M |
-| 1 — Lobstr + Wise | 4 | 2S + 2M |
-| 2 — Crypto Exchanges | 6 | 2S + 4M |
-| 3 — Remaining Sources | 6 | 1S + 3M + 2L |
-| 4 — Analytics | 5 | 1S + 3M + 1L |
-| 5 — AI Commentary | 3 | 2S + 1M |
-| 6 — Telegram Reporting | 4 | 2S + 2M |
-| 7 — Hardening | 5 | 2S + 3M |
-| **Total** | **42** | |
+| Phase | Tasks | Effort | Status |
+|-------|-------|--------|--------|
+| 0 — Foundation | 9 | 5S + 4M | ✅ (8/9 — CLI pending) |
+| 1 — Lobstr + Wise | 4 | 2S + 2M | ✅ |
+| 2 — Crypto Exchanges | 6 | 2S + 4M | ✅ |
+| 3 — Remaining Sources | 5 | 1S + 2M + 2L | ✅ |
+| 4 — Analytics | 5 | 1S + 3M + 1L | Pending |
+| 5 — AI Commentary | 3 | 2S + 1M | Pending |
+| 6 — Telegram Reporting | 4 | 2S + 2M | Pending |
+| 7 — Hardening | 5 | 2S + 3M | Pending |
+| **Total** | **41** | | **~29/41 done** |
 
 ## File Manifest
 
@@ -520,7 +515,6 @@ src/pfm/
     binance.py                     # 2.2
     binance_th.py                  # 2.3
     bybit.py                       # 2.4
-    uphold.py                      # 3.1
     lobstr.py                      # 1.1
     blend.py                       # 3.3
     wise.py                        # 1.2
@@ -557,7 +551,6 @@ tests/
   test_binance.py                  # 2.6
   test_binance_th.py               # 2.6
   test_bybit.py                    # 2.6
-  test_uphold.py                   # 3.6
   test_ibkr.py                     # 3.6
   test_blend.py                    # 3.6
   test_kbank.py                    # 3.6
@@ -576,7 +569,6 @@ tests/
     bybit_wallet.json
     horizon_account.json
     wise_balances.json
-    uphold_cards.json
     ibkr_flex_statement.xml
     blend_positions.json
 

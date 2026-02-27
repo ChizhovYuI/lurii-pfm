@@ -12,17 +12,16 @@ Overview of all financial data sources, recommended integration method, and acce
 | 2 | Binance | Crypto exchange (global) | Various | REST API (read-only key) |
 | 3 | Binance TH | Crypto exchange (Thailand) | Various + THB | REST API (read-only key) |
 | 4 | Bybit | Crypto exchange | Various | REST API (read-only key) |
-| 5 | Uphold | Fiat-to-crypto bridge | GBP, USDC | REST API (Personal Access Token) |
-| 6 | Lobstr | Stellar wallet | XLM, USDC | Stellar Horizon API (public address) |
-| 7 | Blend | Stellar DeFi lending | USDC (fixed pool) | Soroban RPC (contract call) |
-| 8 | Wise | Multi-currency fiat | GBP + others | REST API (personal token) |
-| 9 | KBank | Thai bank | THB | PDF statement parsing |
-| 10 | IBKR | Broker (stocks/ETFs) | USD | Flex Query (automated) |
+| 5 | Lobstr | Stellar wallet | XLM, USDC | Stellar Horizon API (public address) |
+| 6 | Blend | Stellar DeFi lending | USDC (fixed pool) | Soroban RPC (contract call) |
+| 7 | Wise | Multi-currency fiat | GBP + others | REST API (personal token) |
+| 8 | KBank | Thai bank | THB | PDF parsing (Gmail IMAP auto-fetch) |
+| 9 | IBKR | Broker (stocks/ETFs) | USD | Flex Query (automated) |
 
 ## Money Flow
 
 ```
-Salary → Anna Money → GBP → Wise → GBP → Uphold → USDC (Stellar) → Lobstr → Blend (fixed pool yield)
+Salary → Anna Money → GBP → Wise → GBP → USDC (Stellar) → Lobstr → Blend (fixed pool yield)
 ```
 
 ---
@@ -45,7 +44,7 @@ Salary → Anna Money → GBP → Wise → GBP → Uphold → USDC (Stellar) →
 
 ### Setup
 
-1. OKX → API Management → Create API key
+1. Log in to [OKX](https://www.okx.com/) → [API Management](https://www.okx.com/account/my-api) → Create API key
 2. Permissions: **Read only** (no trade, no withdraw)
 3. IP whitelist recommended
 
@@ -79,7 +78,7 @@ Global rate limit: **6,000 request weight per minute**.
 
 ### Setup
 
-1. Binance → API Management → Create API
+1. Log in to [Binance](https://www.binance.com/) → [API Management](https://www.binance.com/en/my/settings/api-management) → Create API
 2. Permissions: **Read only** (`enableReading=true`, all others false)
 3. IP whitelist recommended
 4. Keys unused 90 days without IP whitelist auto-reset to read-only
@@ -106,12 +105,11 @@ CSV export via web UI (Wallet → Transaction History → Export). Max 15 export
 
 - Spot trading only (no futures/margin/leverage)
 - THB trading pairs (BTC/THB, ETH/THB, USDT/THB)
-- Some endpoint names and response formats differ
-- API docs: `https://www.binance.th/api-docs/en/`
+- Uses v1 API endpoints (not v3) — see [API docs](https://www.binance.th/en/binance-api)
 
 ### Setup
 
-Same process as Binance Global — create read-only API key on Binance TH platform.
+1. Log in to [Binance TH](https://www.binance.th/) → [API Management](https://www.binance.th/en/my/settings/api-management) → Create read-only API key
 
 ### Python Library
 
@@ -135,7 +133,7 @@ Auth: HMAC SHA256 signature via headers (`X-BAPI-SIGN`, `X-BAPI-API-KEY`, `X-BAP
 
 ### Setup
 
-1. Bybit → API Management → Create API key
+1. Log in to [Bybit](https://www.bybit.com/) → [API Management](https://www.bybit.com/app/user/api-management) → Create API key
 2. Permissions: Read only (Orders, Positions, Trade, Account Transfer)
 
 ### Python Library
@@ -150,35 +148,7 @@ CSV export via Account → Data Export. Max 6-month range, 10k entries, 5 export
 
 ---
 
-## 5. Uphold
-
-**Method:** REST API with Personal Access Token (PAT)
-
-### Endpoints
-
-| Purpose | Endpoint | Rate Limit |
-|---------|----------|------------|
-| Transaction history | `GET /core/accounts/{id}/transactions` | 250 req/min |
-| Card balances | via card/account endpoints | 250 req/min |
-
-### Setup
-
-1. Uphold → Settings → Personal Access Token
-2. OAuth scopes: `accounts:read`, `cards:read`, `transactions:read`
-
-### Python Library
-
-```
-pip install uphold-sdk-python  # community
-```
-
-### Fallback
-
-CSV export via Activity → Generate Report (sent to email).
-
----
-
-## 6. Lobstr (Stellar Wallet)
+## 5. Lobstr (Stellar Wallet)
 
 **Method:** Stellar Horizon API — no authentication needed, just the public address
 
@@ -205,8 +175,9 @@ The `/accounts/{public_key}` response includes a `balances` array with:
 
 ### Setup
 
-1. Get your Stellar public address (`G...`) from Lobstr
-2. No API key needed
+1. Open [Lobstr](https://lobstr.co/) app → copy your Stellar public address (`G...`)
+2. No API key needed — all Stellar data is public on-chain
+3. Horizon API docs: [developers.stellar.org](https://developers.stellar.org/docs/data/horizon)
 
 ### Python Library
 
@@ -224,7 +195,7 @@ payments = server.payments().for_account("GABC...").call()
 
 ---
 
-## 7. Blend (Stellar DeFi — Fixed Pool)
+## 6. Blend (Stellar DeFi — Fixed Pool)
 
 **Method:** Soroban RPC contract call via `stellar-sdk`
 
@@ -239,10 +210,11 @@ Blend has **no REST API**. It's a Soroban smart contract. Positions are read by 
 
 ### Key Details
 
-- Pool contract IDs must be known (from Blend app or docs)
+- Pool contract IDs: find via [Blend app](https://mainnet.blend.capital/) or [docs](https://docs.blend.capital/)
 - `b_rate` / `d_rate` change every ledger — fetch fresh each time
 - No Python Blend SDK exists — replicate the JS SDK logic via raw Soroban calls
-- Reference: `https://docs.blend.capital/tech-docs/integrations/integrate-pool`
+- Integration reference: [docs.blend.capital/tech-docs/integrations/integrate-pool](https://docs.blend.capital/tech-docs/integrations/integrate-pool)
+- Soroban RPC docs: [soroban.stellar.org](https://soroban.stellar.org/docs)
 
 ### Python Library
 
@@ -263,7 +235,7 @@ soroban = SorobanServer("https://mainnet.stellar.validationcloud.io/v1/...")
 
 ---
 
-## 8. Wise
+## 7. Wise
 
 **Method:** REST API with personal API token
 
@@ -277,10 +249,11 @@ soroban = SorobanServer("https://mainnet.stellar.validationcloud.io/v1/...")
 
 ### Setup
 
-1. Wise → Settings → Integrations and Tools → API tokens
+1. Log in to [Wise](https://wise.com/) → Settings → [API tokens](https://wise.com/settings/api-tokens)
 2. Available for personal accounts
 3. Read-only access to balance and transaction endpoints
-4. Note: EU/UK PSD2 may restrict some actions with personal tokens
+4. API docs: [docs.wise.com](https://docs.wise.com/)
+5. Note: EU/UK PSD2 may restrict some actions with personal tokens
 
 ### Python Library
 
@@ -296,9 +269,9 @@ CSV/PDF/XLSX/JSON export via web UI (Transactions page). Up to 365-day periods. 
 
 ---
 
-## 9. Kasikorn Bank (KBank)
+## 8. Kasikorn Bank (KBank)
 
-**Method:** PDF statement parsing (no personal API available)
+**Method:** PDF statement parsing via Gmail IMAP auto-fetch (no personal API available)
 
 ### Why No API
 
@@ -309,9 +282,22 @@ CSV/PDF/XLSX/JSON export via web UI (Transactions page). Up to 365-day periods. 
 
 ### Approach
 
-1. Enable **K-eMail Statement** (monthly auto-delivery, PDF) from K PLUS app
-2. Parse the PDF with Python (`pdfplumber` or `camelot-py`)
-3. Ingest structured data into the tracker
+Two modes supported:
+
+1. **Auto (Gmail IMAP):** Collector connects to Gmail via IMAP, searches for emails from `K-ElectronicDocument@kasikornbank.com`, downloads the latest PDF attachment, and parses it automatically.
+2. **Manual:** `pfm import-kbank /path/to/statement.pdf` — parse a local PDF file directly.
+
+### Setup (Gmail auto-fetch)
+
+1. In [K PLUS](https://www.kasikornbank.com/en/personal/Digital-banking/Pages/KPLUS.aspx) app → request statement (sends password-protected PDF to your email)
+2. Create a [Gmail App Password](https://myaccount.google.com/apppasswords) (requires [2-Step Verification](https://myaccount.google.com/signinoptions/two-step-verification) enabled)
+3. Set env vars: `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, `KBANK_PDF_PASSWORD` (your date of birth, DDMMYYYY format)
+
+### PDF Format
+
+KBank PDFs are password-protected (date of birth in DDMMYYYY format). Structure per page:
+- Table 1 (page 1 only): header with account info and ending balance
+- Table 2+: transactions packed into newline-delimited cells (not one-per-row)
 
 ### Statement Options
 
@@ -326,16 +312,16 @@ No native CSV export from any KBank product.
 ### Python Libraries
 
 ```
-pip install pdfplumber  # or camelot-py
+pip install pdfplumber  # PDF table extraction
 ```
 
 ### Future
 
-Monitor BOT "Your Data" implementation (expected late 2026): `bot.or.th/en/financial-innovation/digital-finance/open-data.html`
+Monitor BOT "Your Data" implementation (expected late 2026): [bot.or.th/en/financial-innovation/digital-finance/open-data](https://bot.or.th/en/financial-innovation/digital-finance/open-data.html)
 
 ---
 
-## 10. Interactive Brokers (IBKR)
+## 9. Interactive Brokers (IBKR)
 
 **Method:** Flex Query (automated HTTP retrieval) — best for daily snapshots, no daemon needed
 
@@ -363,9 +349,10 @@ GET https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService/GetSt
 
 ### Setup
 
-1. Client Portal → Reports → Flex Queries → create Activity query (positions, trades, cash, dividends)
+1. Log in to [IBKR Client Portal](https://www.interactivebrokers.com/sso/Login) → [Performance & Reports](https://www.interactivebrokers.com/en/index.php?f=4700) → Flex Queries → create Activity query (positions, trades, cash, dividends)
 2. Flex Web Service → generate token (6-hour default expiry, IP-lockable)
 3. Schedule daily cron job ~30 min after market close
+4. API docs: [interactivebrokers.github.io/tws-api](https://interactivebrokers.github.io/tws-api/)
 
 ### Python Library
 
@@ -414,20 +401,18 @@ Activity Statements via Client Portal → Reports → Statements (CSV/Excel). Ca
 | Binance | Low | API key | Yes |
 | Binance TH | Medium | API key | Yes |
 | Bybit | Low | API key | Yes |
-| Uphold | Low | PAT/OAuth | Yes |
 | Lobstr | Low | None (public) | Yes |
 | Blend | High | None (public) | Yes |
 | Wise | Low | Personal token | Yes |
-| KBank | High | None (PDF parse) | No (batch) |
+| KBank | Medium | Gmail App Password | No (batch) |
 | IBKR | Medium | Flex token | No (EOD) |
 
 ### Recommended Implementation Order
 
 1. **Lobstr** — zero auth, instant (just need public address)
 2. **Wise** — personal token, simple REST
-3. **Uphold** — PAT, simple REST
-4. **OKX / Binance / Bybit** — API keys, well-documented SDKs
-5. **Binance TH** — similar to Binance but needs testing
-6. **IBKR** — Flex Query setup, cron-based
-7. **Blend** — Soroban contract calls, most complex
-8. **KBank** — PDF parsing, least automatable
+3. **OKX / Binance / Bybit** — API keys, well-documented SDKs
+4. **Binance TH** — similar to Binance but needs testing
+5. **IBKR** — Flex Query setup, cron-based
+6. **Blend** — Soroban contract calls, most complex
+7. **KBank** — PDF parsing, least automatable
