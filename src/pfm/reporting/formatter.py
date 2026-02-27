@@ -20,7 +20,6 @@ _HOLDING_TYPE_ICONS = {
     "defi": "🏦",
     "other": "📦",
 }
-_HOLDINGS_LEGEND = "🪙 crypto | 💵 fiat | 📈 stocks | 🏦 defi | 📦 other"
 _FIAT_ASSETS = {
     "USD",
     "THB",
@@ -82,7 +81,7 @@ def format_weekly_report(
         f"<b>PnL (Monthly)</b>: {_pnl_arrow(monthly_abs)} ${_fmt_money(monthly_abs)} "
         f"({monthly_pct.quantize(Decimal('0.01'))}%)",
         "",
-        f"<b>All Holdings</b> ({_HOLDINGS_LEGEND})",
+        "<b>All Holdings</b> (Total | 7d PnL)",
     ]
 
     shown_holding = False

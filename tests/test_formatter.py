@@ -29,7 +29,7 @@ def test_format_weekly_report_contains_required_sections():
     assert "Net worth: <b>$12,345.67</b>" in report.text
     assert "<b>PnL (Weekly)</b>: ↑ $123.45 (1.23%)" in report.text
     assert "<b>PnL (Monthly)</b>: ↑ $456.78 (4.56%)" in report.text
-    assert "<b>All Holdings</b> (🪙 crypto | 💵 fiat | 📈 stocks | 🏦 defi | 📦 other)" in report.text
+    assert "<b>All Holdings</b> (Total | 7d PnL)" in report.text
     assert "🪙 BTC: $7,000.00 (56.70%) | 7d PnL: $80.00 (1.16%)" in report.text
     assert "<b>AI Commentary</b>" in report.text
     assert "Watch &lt;volatility&gt;.<br>Rebalance slowly." in report.text
