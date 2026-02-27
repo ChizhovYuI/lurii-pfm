@@ -26,7 +26,7 @@ def test_render_weekly_report_user_prompt_formats_analytics():
     analytics = AnalyticsSummary(
         as_of_date=date(2024, 1, 15),
         net_worth_usd=Decimal("12345.67"),
-        allocation_by_asset='[{"asset":"BTC","usd_value":"7000"}]',
+        allocation_by_asset='[{"asset":"BTC","usd_value":"7000","asset_type":"crypto","percentage":"56.7"}]',
         allocation_by_source='[{"source":"okx","usd_value":"7000"}]',
         allocation_by_category='[{"category":"crypto","usd_value":"7000"}]',
         currency_exposure='[{"currency":"USD","usd_value":"5000"}]',
@@ -39,9 +39,35 @@ def test_render_weekly_report_user_prompt_formats_analytics():
     assert "2024-01-15" in prompt
     assert "Net worth (USD): 12345.67" in prompt
     assert '"asset": "BTC"' in prompt
-    assert '"source": "okx"' in prompt
     assert '"category": "crypto"' in prompt
-    assert '"currency": "USD"' in prompt
+    assert '"asset_type": "crypto"' in prompt
     assert '"concentration_percentage": "56.7"' in prompt
     assert '"absolute_change": "120"' in prompt
-    assert "Weekly PnL by asset" in prompt
+    assert "Top holdings" in prompt
+    assert "Top weekly movers by asset" in prompt
+    assert "Allocation by source" not in prompt
+    assert "Currency exposure" not in prompt
+
+
+def test_render_weekly_report_user_prompt_limits_holdings_and_movers():
+    holdings = ",".join(
+        f'{{"asset":"A{i}","usd_value":"{100-i}","asset_type":"other","percentage":"1"}}' for i in range(1, 15)
+    )
+    movers = ",".join(f'{{"asset":"M{i}","absolute_change":"{i}","percentage_change":"1"}}' for i in range(1, 15))
+    analytics = AnalyticsSummary(
+        as_of_date=date(2024, 1, 15),
+        net_worth_usd=Decimal("12345.67"),
+        allocation_by_asset=f"[{holdings}]",
+        allocation_by_source="[]",
+        allocation_by_category="[]",
+        currency_exposure="[]",
+        risk_metrics="{}",
+        pnl="{}",
+        weekly_pnl_by_asset=f"[{movers}]",
+    )
+
+    prompt = render_weekly_report_user_prompt(analytics)
+    assert '"asset": "A10"' in prompt
+    assert '"asset": "A11"' not in prompt
+    assert '"asset": "M14"' in prompt
+    assert '"asset": "M4"' not in prompt
