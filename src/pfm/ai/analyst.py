@@ -17,7 +17,12 @@ from pfm.db.gemini_store import GeminiStore
 
 logger = logging.getLogger(__name__)
 
-GEMINI_MODEL = "gemini-2.5-flash-lite"
+GEMINI_MODELS: tuple[str, ...] = (
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+)
+GEMINI_MODEL = GEMINI_MODELS[0]
 GEMINI_MAX_OUTPUT_TOKENS = 1024
 GEMINI_MAX_RETRIES = 3
 GEMINI_BASE_BACKOFF_SECONDS = 2.0
@@ -47,8 +52,8 @@ async def generate_commentary(
     prompt_chars = len(prompt)
     prompt_tokens_est = _estimate_tokens(prompt_chars)
     logger.info(
-        "gemini_input_size model=%s prompt_chars=%d prompt_tokens_est=%d max_output_tokens=%d",
-        GEMINI_MODEL,
+        "gemini_input_size models=%s prompt_chars=%d prompt_tokens_est=%d max_output_tokens=%d",
+        ",".join(GEMINI_MODELS),
         prompt_chars,
         prompt_tokens_est,
         GEMINI_MAX_OUTPUT_TOKENS,
@@ -56,27 +61,29 @@ async def generate_commentary(
     owns_client = client is None
     sdk_client = client if client is not None else genai.Client(api_key=resolved_api_key)
     try:
-        response = await _request_commentary_response(
-            sdk_client.aio.models,
-            prompt,
-            model=GEMINI_MODEL,
-            input_size=(prompt_chars, prompt_tokens_est),
-            enforce_local_rate_limit=owns_client,
-        )
+        for model in GEMINI_MODELS:
+            response = await _request_commentary_response(
+                sdk_client.aio.models,
+                prompt,
+                model=model,
+                input_size=(prompt_chars, prompt_tokens_est),
+                enforce_local_rate_limit=owns_client,
+            )
+            if response is None:
+                logger.warning("Gemini model %s failed. Trying next fallback model.", model)
+                continue
+
+            _log_token_usage(response, model=model)
+            text = _extract_text(response)
+            if text:
+                return text
+            logger.warning("Gemini model %s returned empty text. Trying next fallback model.", model)
     finally:
         if owns_client:
             await sdk_client.aio.aclose()
             sdk_client.close()
 
-    if response is None:
-        return FALLBACK_COMMENTARY
-
-    _log_token_usage(response)
-    text = _extract_text(response)
-    if text:
-        return text
-
-    logger.warning("Gemini returned empty text response; using fallback commentary.")
+    logger.warning("All Gemini models failed or returned empty text; using fallback commentary.")
     return FALLBACK_COMMENTARY
 
 
@@ -292,7 +299,7 @@ def _extract_text(body: object) -> str:
     return "\n".join(parts).strip()
 
 
-def _log_token_usage(body: object) -> None:
+def _log_token_usage(body: object, *, model: str) -> None:
     usage = _field_value(body, "usage_metadata")
     if usage is None:
         usage = _field_value(body, "usageMetadata")
@@ -311,7 +318,7 @@ def _log_token_usage(body: object) -> None:
 
     logger.info(
         "gemini_usage model=%s prompt_tokens=%s candidates_tokens=%s total_tokens=%s",
-        GEMINI_MODEL,
+        model,
         prompt_tokens,
         candidates_tokens,
         total_tokens,

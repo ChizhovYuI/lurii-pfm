@@ -16,6 +16,7 @@ from pfm.ai.analyst import (
     FALLBACK_COMMENTARY,
     GEMINI_MAX_OUTPUT_TOKENS,
     GEMINI_MODEL,
+    GEMINI_MODELS,
     _retry_delay_seconds,
     generate_commentary,
 )
@@ -89,6 +90,27 @@ async def test_generate_commentary_success_with_mock_client():
     assert config["max_output_tokens"] == GEMINI_MAX_OUTPUT_TOKENS
 
 
+async def test_generate_commentary_fallback_to_next_model():
+    response = httpx.Response(
+        500,
+        json={"error": {"message": "boom"}},
+        request=httpx.Request("POST", "https://example.invalid/gemini"),
+    )
+    error = errors.ServerError(500, {"error": {"status": "INTERNAL", "message": "boom"}}, response)
+    fake_models = _FakeAsyncModels(responses=[error, SimpleNamespace(text="Recovered on fallback model.")])
+    fake_client = _FakeClient(aio=_FakeAioClient(models=fake_models))
+    settings = MagicMock()
+    settings.gemini_api_key = SecretStr("gemini-key")
+
+    with patch("pfm.ai.analyst.get_settings", return_value=settings):
+        result = await generate_commentary(_sample_analytics(), api_key="gemini-key", client=fake_client)
+
+    assert result == "Recovered on fallback model."
+    assert len(fake_models.calls) == 2
+    assert fake_models.calls[0]["model"] == GEMINI_MODELS[0]
+    assert fake_models.calls[1]["model"] == GEMINI_MODELS[1]
+
+
 async def test_generate_commentary_fallback_on_api_error():
     response = httpx.Response(
         500,
@@ -138,7 +160,7 @@ async def test_generate_commentary_fallback_after_429_retries_exhausted():
         request=httpx.Request("POST", "https://example.invalid/gemini"),
     )
     limited_error = errors.ClientError(429, {"error": {"status": "RESOURCE_EXHAUSTED"}}, limited_response)
-    fake_models = _FakeAsyncModels(responses=[limited_error, limited_error, limited_error])
+    fake_models = _FakeAsyncModels(responses=[limited_error] * (3 * len(GEMINI_MODELS)))
     fake_client = _FakeClient(aio=_FakeAioClient(models=fake_models))
     settings = MagicMock()
     settings.gemini_api_key = SecretStr("gemini-key")
@@ -151,8 +173,8 @@ async def test_generate_commentary_fallback_after_429_retries_exhausted():
         result = await generate_commentary(_sample_analytics(), api_key="gemini-key", client=fake_client)
 
     assert result == FALLBACK_COMMENTARY
-    assert len(fake_models.calls) == 3
-    assert sleep_mock.await_count == 2
+    assert len(fake_models.calls) == 3 * len(GEMINI_MODELS)
+    assert sleep_mock.await_count == 2 * len(GEMINI_MODELS)
 
 
 async def test_generate_commentary_fallback_on_unexpected_exception():
