@@ -26,8 +26,10 @@ from pfm.source_types import SOURCE_TYPES
 if TYPE_CHECKING:
     from collections.abc import Coroutine
 
+    from pfm.ai import AnalyticsSummary
     from pfm.analytics import PnlResult
     from pfm.db.models import Source
+    from pfm.db.repository import Repository
 
 logger = logging.getLogger(__name__)
 
@@ -556,16 +558,133 @@ def _pnl_result_to_dict(result: PnlResult) -> dict[str, object]:
     }
 
 
+_REQUIRED_ANALYTICS_METRICS = (
+    "net_worth",
+    "allocation_by_asset",
+    "allocation_by_source",
+    "allocation_by_category",
+    "currency_exposure",
+    "risk_metrics",
+    "pnl",
+    "yield",
+)
+
+
 @cli.command()
 def report() -> None:
     """Generate and send the Telegram report."""
-    click.echo("report: not yet implemented")
+    _ensure_db()
+    if not _run(_report_async()):
+        sys.exit(1)
 
 
 @cli.command()
 def run() -> None:
     """Full pipeline: collect → analyze → report."""
-    click.echo("run: not yet implemented")
+    _ensure_db()
+    if not _run(_run_pipeline_async()):
+        sys.exit(1)
+
+
+async def _report_async() -> bool:
+    """Generate and send the Telegram report from cached analytics."""
+    settings = get_settings()
+
+    # Late imports to avoid circular dependencies and keep startup fast
+    from pfm.ai import generate_commentary
+    from pfm.db.repository import Repository
+    from pfm.reporting import format_weekly_report, send_report
+
+    async with Repository(settings.database_path) as repo:
+        analytics = await _load_latest_analytics_summary(repo)
+
+    if analytics is None:
+        return False
+
+    commentary = await generate_commentary(analytics)
+    report_payload = format_weekly_report(analytics, commentary)
+    sent = await send_report(report_payload)
+    if sent:
+        click.echo("Report sent to Telegram.")
+        return True
+
+    click.echo("Failed to send report to Telegram.", err=True)
+    return False
+
+
+async def _run_pipeline_async() -> bool:
+    """Run collect → analyze → report and alert on collection errors."""
+    # Late imports to avoid circular dependencies and keep startup fast
+    from pfm.reporting import send_error_alert
+
+    click.echo("Running: collect")
+    collect_results = await _collect_async(None)
+    collect_errors = [f"{r.source}: {error}" for r in collect_results for error in r.errors]
+    if collect_errors:
+        click.echo(f"Collection completed with {len(collect_errors)} error(s).")
+        if await send_error_alert(collect_errors):
+            click.echo("Error alert sent to Telegram.")
+        else:
+            click.echo("Failed to send error alert to Telegram.", err=True)
+
+    click.echo("Running: analyze")
+    await _analyze_async()
+    click.echo("Running: report")
+    report_ok = await _report_async()
+    if report_ok:
+        click.echo("Pipeline finished successfully.")
+    else:
+        click.echo("Pipeline finished with report errors.", err=True)
+    return report_ok
+
+
+async def _load_latest_analytics_summary(repo: Repository) -> AnalyticsSummary | None:
+    """Load analytics cache for the latest snapshot date."""
+    from pfm.ai import AnalyticsSummary
+
+    latest = await repo.get_latest_snapshots()
+    if not latest:
+        click.echo("No snapshots found. Run 'pfm collect' and 'pfm analyze' first.")
+        return None
+
+    report_date = latest[0].date
+    metrics = await repo.get_analytics_metrics_by_date(report_date)
+    missing = [metric for metric in _REQUIRED_ANALYTICS_METRICS if metric not in metrics]
+    if missing:
+        click.echo(
+            "Missing cached analytics metrics for latest snapshot date: "
+            + ", ".join(missing)
+            + ". Run 'pfm analyze' first.",
+        )
+        return None
+
+    return AnalyticsSummary(
+        as_of_date=report_date,
+        net_worth_usd=_parse_net_worth_usd(metrics["net_worth"]),
+        allocation_by_asset=metrics["allocation_by_asset"],
+        allocation_by_source=metrics["allocation_by_source"],
+        allocation_by_category=metrics["allocation_by_category"],
+        currency_exposure=metrics["currency_exposure"],
+        risk_metrics=metrics["risk_metrics"],
+        pnl=metrics["pnl"],
+        yield_metrics=metrics["yield"],
+    )
+
+
+def _parse_net_worth_usd(raw_json: str) -> Decimal:
+    """Extract net worth USD value from cached metric JSON."""
+    try:
+        parsed = json.loads(raw_json)
+    except json.JSONDecodeError:
+        return Decimal(0)
+
+    if not isinstance(parsed, dict):
+        return Decimal(0)
+    value = parsed.get("usd", "0")
+    try:
+        return Decimal(str(value))
+    except ArithmeticError:
+        return Decimal(0)
 
 
 @cli.command("import-kbank")

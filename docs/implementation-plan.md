@@ -567,7 +567,7 @@ Format analytics + AI commentary into Telegram HTML:
 - AI commentary
 - Footer: errors/warnings
 
-### Task 6.3 — Wire `report` and `run` commands [S]
+### Task 6.3 — Wire `report` and `run` commands [S] ✅
 
 **Dependencies:** 6.1, 6.2
 

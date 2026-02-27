@@ -464,13 +464,125 @@ def test_analyze_computes_and_caches_metrics(runner, db_path):
     assert pnl["daily"]["end_date"] == "2024-01-15"
 
 
-def test_report_stub(runner):
+@pytest.mark.usefixtures("_patched_settings")
+def test_report_no_snapshots(runner):
     result = runner.invoke(cli, ["report"])
-    assert result.exit_code == 0
-    assert "not yet implemented" in result.output
+    assert result.exit_code == 1
+    assert "No snapshots found" in result.output
 
 
-def test_run_stub(runner):
-    result = runner.invoke(cli, ["run"])
+@pytest.mark.usefixtures("_patched_settings")
+def test_report_missing_cached_metrics(runner, db_path):
+    async def _seed_snapshot() -> None:
+        async with Repository(db_path) as repo:
+            await repo.save_snapshot(
+                Snapshot(
+                    date=date(2024, 1, 15),
+                    source="wise",
+                    asset="USD",
+                    amount=Decimal("100.0"),
+                    usd_value=Decimal("100.0"),
+                )
+            )
+
+    asyncio.run(_seed_snapshot())
+
+    result = runner.invoke(cli, ["report"])
+    assert result.exit_code == 1
+    assert "Missing cached analytics metrics" in result.output
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_report_success(runner, db_path):
+    async def _seed_analytics() -> None:
+        async with Repository(db_path) as repo:
+            snapshot_date = date(2024, 1, 15)
+            await repo.save_snapshot(
+                Snapshot(
+                    date=snapshot_date,
+                    source="wise",
+                    asset="USD",
+                    amount=Decimal("100.0"),
+                    usd_value=Decimal("100.0"),
+                )
+            )
+            await repo.save_analytics_metric(snapshot_date, "net_worth", '{"usd":"100.0"}')
+            await repo.save_analytics_metric(snapshot_date, "allocation_by_asset", "[]")
+            await repo.save_analytics_metric(snapshot_date, "allocation_by_source", "[]")
+            await repo.save_analytics_metric(snapshot_date, "allocation_by_category", "[]")
+            await repo.save_analytics_metric(snapshot_date, "currency_exposure", "[]")
+            await repo.save_analytics_metric(snapshot_date, "risk_metrics", "{}")
+            await repo.save_analytics_metric(
+                snapshot_date,
+                "pnl",
+                '{"weekly":{"absolute_change":"1.5","percentage_change":"1.0"}}',
+            )
+            await repo.save_analytics_metric(snapshot_date, "yield", "[]")
+
+    asyncio.run(_seed_analytics())
+
+    with (
+        patch("pfm.ai.generate_commentary", AsyncMock(return_value="All good.")),
+        patch("pfm.reporting.send_report", AsyncMock(return_value=True)),
+    ):
+        result = runner.invoke(cli, ["report"])
+
     assert result.exit_code == 0
-    assert "not yet implemented" in result.output
+    assert "Report sent to Telegram." in result.output
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_run_pipeline_success(runner):
+    with (
+        patch("pfm.cli._collect_async", AsyncMock(return_value=[])),
+        patch("pfm.cli._analyze_async", AsyncMock()),
+        patch("pfm.cli._report_async", AsyncMock(return_value=True)),
+    ):
+        result = runner.invoke(cli, ["run"])
+
+    assert result.exit_code == 0
+    assert "Pipeline finished successfully." in result.output
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_run_pipeline_sends_error_alert(runner):
+    collect_result = CollectorResult(
+        source="wise",
+        snapshots_count=1,
+        transactions_count=0,
+        errors=["timeout"],
+        duration_seconds=0.1,
+    )
+    mock_alert = AsyncMock(return_value=True)
+    with (
+        patch("pfm.cli._collect_async", AsyncMock(return_value=[collect_result])),
+        patch("pfm.cli._analyze_async", AsyncMock()),
+        patch("pfm.cli._report_async", AsyncMock(return_value=True)),
+        patch("pfm.reporting.send_error_alert", mock_alert),
+    ):
+        result = runner.invoke(cli, ["run"])
+
+    assert result.exit_code == 0
+    assert "Collection completed with 1 error(s)." in result.output
+    mock_alert.assert_awaited_once_with(["wise: timeout"])
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_run_pipeline_report_failure(runner):
+    with (
+        patch("pfm.cli._collect_async", AsyncMock(return_value=[])),
+        patch("pfm.cli._analyze_async", AsyncMock()),
+        patch("pfm.cli._report_async", AsyncMock(return_value=False)),
+    ):
+        result = runner.invoke(cli, ["run"])
+
+    assert result.exit_code == 1
+    assert "Pipeline finished with report errors." in result.output
+
+
+def test_import_kbank_stub(runner, tmp_path):
+    pdf_path = tmp_path / "statement.pdf"
+    pdf_path.write_text("dummy")
+    result = runner.invoke(cli, ["import-kbank", str(pdf_path)])
+    assert result.exit_code == 0
+    assert "import-kbank: not yet implemented" in result.output
