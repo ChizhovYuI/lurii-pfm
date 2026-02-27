@@ -488,7 +488,7 @@ Register all 9 collector types. `pfm collect` auto-discovers from DB. Add `--cat
 - Cost basis tracking (average cost method)
 - Handle missing historical data gracefully
 
-### Task 4.3 — Yield tracker `src/pfm/analytics/yield_tracker.py` [M]
+### Task 4.3 — Yield tracker `src/pfm/analytics/yield_tracker.py` [M] ✅
 
 **Dependencies:** 4.1
 
@@ -647,7 +647,7 @@ Phase 0 ── Phase 0.5 (Source Management)
 | 5 — AI Commentary | 3 | 2S + 1M | Pending |
 | 6 — Telegram Reporting | 4 | 2S + 2M | Pending |
 | 7 — Hardening | 5 | 2S + 3M | Pending |
-| **Total** | **48** | | **~40/48 done** |
+| **Total** | **48** | | **~41/48 done** |
 
 ## File Manifest
 

@@ -13,6 +13,7 @@ from pfm.analytics.portfolio import (
     compute_net_worth,
     compute_risk_metrics,
 )
+from pfm.analytics.yield_tracker import YieldResult, compute_yield
 
 __all__ = [
     "AssetAllocation",
@@ -22,6 +23,7 @@ __all__ = [
     "PnlPeriod",
     "PnlResult",
     "RiskMetrics",
+    "YieldResult",
     "compute_allocation_by_asset",
     "compute_allocation_by_category",
     "compute_allocation_by_source",
@@ -29,4 +31,5 @@ __all__ = [
     "compute_net_worth",
     "compute_pnl",
     "compute_risk_metrics",
+    "compute_yield",
 ]
