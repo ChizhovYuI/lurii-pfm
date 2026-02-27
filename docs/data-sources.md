@@ -47,6 +47,7 @@ Salary → Anna Money → GBP → Wise → GBP → USDC (Stellar) → Lobstr →
 1. Log in to [OKX](https://www.okx.com/) → [API Management](https://www.okx.com/account/my-api) → Create API key
 2. Permissions: **Read only** (no trade, no withdraw)
 3. IP whitelist recommended
+4. Add to pfm: `pfm source add` → select `okx` → enter API key, secret, passphrase
 
 ### Python Library
 
@@ -82,6 +83,7 @@ Global rate limit: **6,000 request weight per minute**.
 2. Permissions: **Read only** (`enableReading=true`, all others false)
 3. IP whitelist recommended
 4. Keys unused 90 days without IP whitelist auto-reset to read-only
+5. Add to pfm: `pfm source add` → select `binance` → enter API key, secret
 
 ### Python Library
 
@@ -110,6 +112,7 @@ CSV export via web UI (Wallet → Transaction History → Export). Max 15 export
 ### Setup
 
 1. Log in to [Binance TH](https://www.binance.th/) → [API Management](https://www.binance.th/en/my/settings/api-management) → Create read-only API key
+2. Add to pfm: `pfm source add` → select `binance_th` → enter API key, secret
 
 ### Python Library
 
@@ -135,6 +138,7 @@ Auth: HMAC SHA256 signature via headers (`X-BAPI-SIGN`, `X-BAPI-API-KEY`, `X-BAP
 
 1. Log in to [Bybit](https://www.bybit.com/) → [API Management](https://www.bybit.com/app/user/api-management) → Create API key
 2. Permissions: Read only (Orders, Positions, Trade, Account Transfer)
+3. Add to pfm: `pfm source add` → select `bybit` → enter API key, secret
 
 ### Python Library
 
@@ -177,7 +181,8 @@ The `/accounts/{public_key}` response includes a `balances` array with:
 
 1. Open [Lobstr](https://lobstr.co/) app → copy your Stellar public address (`G...`)
 2. No API key needed — all Stellar data is public on-chain
-3. Horizon API docs: [developers.stellar.org](https://developers.stellar.org/docs/data/horizon)
+3. Add to pfm: `pfm source add` → select `lobstr` → enter Stellar address
+4. Horizon API docs: [developers.stellar.org](https://developers.stellar.org/docs/data/horizon)
 
 ### Python Library
 
@@ -208,9 +213,13 @@ Blend has **no REST API**. It's a Soroban smart contract. Positions are read by 
 3. Call `simulate_transaction()` — returns position data without submitting
 4. Parse result: bToken amounts × `b_rate` = underlying asset value
 
+### Setup
+
+1. Find your pool contract ID via [Blend app](https://mainnet.blend.capital/) or [docs](https://docs.blend.capital/)
+2. Add to pfm: `pfm source add` → select `blend` → enter Stellar address, pool contract ID (optional: Soroban RPC URL)
+
 ### Key Details
 
-- Pool contract IDs: find via [Blend app](https://mainnet.blend.capital/) or [docs](https://docs.blend.capital/)
 - `b_rate` / `d_rate` change every ledger — fetch fresh each time
 - No Python Blend SDK exists — replicate the JS SDK logic via raw Soroban calls
 - Integration reference: [docs.blend.capital/tech-docs/integrations/integrate-pool](https://docs.blend.capital/tech-docs/integrations/integrate-pool)
@@ -252,8 +261,9 @@ soroban = SorobanServer("https://mainnet.stellar.validationcloud.io/v1/...")
 1. Log in to [Wise](https://wise.com/) → Settings → [API tokens](https://wise.com/settings/api-tokens)
 2. Available for personal accounts
 3. Read-only access to balance and transaction endpoints
-4. API docs: [docs.wise.com](https://docs.wise.com/)
-5. Note: EU/UK PSD2 may restrict some actions with personal tokens
+4. Add to pfm: `pfm source add` → select `wise` → enter API token
+5. API docs: [docs.wise.com](https://docs.wise.com/)
+6. Note: EU/UK PSD2 may restrict some actions with personal tokens
 
 ### Python Library
 
@@ -291,7 +301,7 @@ Two modes supported:
 
 1. In [K PLUS](https://www.kasikornbank.com/en/personal/Digital-banking/Pages/KPLUS.aspx) app → request statement (sends password-protected PDF to your email)
 2. Create a [Gmail App Password](https://myaccount.google.com/apppasswords) (requires [2-Step Verification](https://myaccount.google.com/signinoptions/two-step-verification) enabled)
-3. Set env vars: `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, `KBANK_PDF_PASSWORD` (your date of birth, DDMMYYYY format)
+3. Add to pfm: `pfm source add` → select `kbank` → enter Gmail address, app password, PDF password (DDMMYYYY)
 
 ### PDF Format
 
@@ -351,8 +361,9 @@ GET https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService/GetSt
 
 1. Log in to [IBKR Client Portal](https://www.interactivebrokers.com/sso/Login) → [Performance & Reports](https://www.interactivebrokers.com/en/index.php?f=4700) → Flex Queries → create Activity query (positions, trades, cash, dividends)
 2. Flex Web Service → generate token (6-hour default expiry, IP-lockable)
-3. Schedule daily cron job ~30 min after market close
-4. API docs: [interactivebrokers.github.io/tws-api](https://interactivebrokers.github.io/tws-api/)
+3. Add to pfm: `pfm source add` → select `ibkr` → enter flex token and query ID
+4. Schedule daily cron job ~30 min after market close
+5. API docs: [interactivebrokers.github.io/tws-api](https://interactivebrokers.github.io/tws-api/)
 
 ### Python Library
 

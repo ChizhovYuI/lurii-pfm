@@ -232,15 +232,20 @@ Personal Financial Management system that aggregates assets and statements from 
 src/pfm/
 ├── __init__.py
 ├── config.py              # Global settings (.env loading)
+├── source_types.py        # Credential schemas per source type
+├── cli.py                 # Entry point (source, collect, analyze, report)
+├── logging.py             # Structured logging with secret redaction
 ├── db/
 │   ├── __init__.py
-│   ├── models.py          # SQLite schema / ORM models
+│   ├── models.py          # SQLite schema / dataclass models
 │   ├── source_store.py    # Source CRUD (sources table)
-│   ├── migrations/        # Alembic migrations
-│   └── repository.py      # Data access layer
+│   ├── repository.py      # Data access layer
+│   └── migrations/        # Alembic migrations
 ├── collectors/
-│   ├── __init__.py
+│   ├── __init__.py        # COLLECTOR_REGISTRY + auto-import
 │   ├── base.py            # Abstract collector interface
+│   ├── _auth.py           # HMAC signing (OKX, Binance, Bybit)
+│   ├── _retry.py          # Retry decorator + rate limiter
 │   ├── okx.py
 │   ├── binance.py
 │   ├── binance_th.py
@@ -252,7 +257,7 @@ src/pfm/
 │   └── ibkr.py            # Flex Query
 ├── pricing/
 │   ├── __init__.py
-│   └── fx.py              # USD conversion, price feeds
+│   └── coingecko.py       # CoinGecko API (crypto prices + fiat rates)
 ├── analytics/
 │   ├── __init__.py
 │   ├── portfolio.py       # Net worth, allocation, exposure
@@ -265,12 +270,11 @@ src/pfm/
 ├── reporting/
 │   ├── __init__.py
 │   └── telegram.py        # Telegram bot (push only)
-└── cli.py                 # Entry point (source, collect, analyze, report)
 ```
 
 ---
 
-## CLI Commands (planned)
+## CLI Commands
 
 ```bash
 # ── Source management ──────────────────────────────────────────────
