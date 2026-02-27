@@ -13,6 +13,7 @@ import pytest
 from click.testing import CliRunner
 
 from pfm.cli import cli
+from pfm.db.gemini_store import GeminiStore
 from pfm.db.models import CollectorResult, Snapshot, init_db
 from pfm.db.repository import Repository
 from pfm.db.source_store import SourceStore
@@ -261,7 +262,7 @@ def test_mask_long():
 # ── collect command ───────────────────────────────────────────────────
 
 
-def _make_mock_collector(source_name, snaps=1, usd_total=Decimal("0"), txns=0, errors=None):
+def _make_mock_collector(source_name, snaps=1, usd_total=Decimal(0), txns=0, errors=None):
     """Create a mock collector class that returns a CollectorResult."""
     result = CollectorResult(
         source=source_name,
@@ -676,6 +677,37 @@ def test_run_pipeline_analyze_exception_triggers_alert(runner):
     assert "Pipeline finished with errors." in result.output
     sent_errors = mock_alert.await_args.args[0]
     assert any("analyze stage failed: analyze boom" in err for err in sent_errors)
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_gemini_set_show_clear(runner, db_path):
+    set_result = runner.invoke(
+        cli,
+        ["gemini", "set", "--api-key", "gemini-secret-123"],
+    )
+    assert set_result.exit_code == 0
+    assert "Gemini API key saved." in set_result.output
+
+    show_result = runner.invoke(cli, ["gemini", "show"])
+    assert show_result.exit_code == 0
+    assert "Gemini configuration:" in show_result.output
+    assert "gem...123" in show_result.output
+
+    clear_result = runner.invoke(cli, ["gemini", "clear"], input="y\n")
+    assert clear_result.exit_code == 0
+    assert "Gemini API key removed." in clear_result.output
+
+    async def _load() -> object:
+        return await GeminiStore(db_path).get()
+
+    assert asyncio.run(_load()) is None
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_gemini_show_empty(runner):
+    result = runner.invoke(cli, ["gemini", "show"])
+    assert result.exit_code == 0
+    assert "Gemini is not configured. Run 'pfm gemini set'." in result.output
 
 
 @pytest.mark.usefixtures("_patched_settings")

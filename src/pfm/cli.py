@@ -15,6 +15,7 @@ import click
 
 from pfm.collectors import COLLECTOR_REGISTRY
 from pfm.config import get_settings
+from pfm.db.gemini_store import GeminiStore
 from pfm.db.models import CollectorResult, init_db
 from pfm.db.source_store import (
     DuplicateSourceError,
@@ -57,6 +58,12 @@ def _get_telegram_store() -> TelegramStore:
     """Get a TelegramStore using the configured database path."""
     settings = get_settings()
     return TelegramStore(settings.database_path)
+
+
+def _get_gemini_store() -> GeminiStore:
+    """Get a GeminiStore using the configured database path."""
+    settings = get_settings()
+    return GeminiStore(settings.database_path)
 
 
 def _run[T](coro: Coroutine[object, object, T]) -> T:
@@ -240,6 +247,60 @@ def source_disable(name: str) -> None:
         click.echo(f"Error: source '{name}' not found.", err=True)
         sys.exit(1)
     click.echo(f"Source '{name}' disabled.")
+
+
+# ── Telegram config ───────────────────────────────────────────────────
+
+
+@cli.group()
+def gemini() -> None:
+    """Manage Gemini API key for AI commentary."""
+
+
+@gemini.command("set")
+@click.option("--api-key", prompt=True, hide_input=True, help="Gemini API key.")
+def gemini_set(api_key: str) -> None:
+    """Set Gemini API key in DB settings."""
+    _ensure_db()
+    store = _get_gemini_store()
+    try:
+        config = _run(store.set(api_key))
+    except ValueError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
+    click.echo("Gemini API key saved.")
+    click.echo(f"API key: {_mask(config.api_key)}")
+
+
+@gemini.command("show")
+def gemini_show() -> None:
+    """Show Gemini API configuration (key masked)."""
+    _ensure_db()
+    store = _get_gemini_store()
+    config = _run(store.get())
+    if config is None:
+        click.echo("Gemini is not configured. Run 'pfm gemini set'.")
+        return
+
+    click.echo("Gemini configuration:")
+    click.echo(f"API key: {_mask(config.api_key)}")
+
+
+@gemini.command("clear")
+def gemini_clear() -> None:
+    """Delete Gemini API key from DB settings."""
+    _ensure_db()
+    if not click.confirm("Delete Gemini API key?"):
+        click.echo("Cancelled.")
+        return
+
+    store = _get_gemini_store()
+    deleted = _run(store.clear())
+    if deleted:
+        click.echo("Gemini API key removed.")
+    else:
+        click.echo("No Gemini API key was stored.")
 
 
 # ── Telegram config ───────────────────────────────────────────────────

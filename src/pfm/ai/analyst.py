@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 import httpx
 
 from pfm.ai.prompts import WEEKLY_REPORT_SYSTEM_PROMPT, AnalyticsSummary, render_weekly_report_user_prompt
 from pfm.config import get_settings
+from pfm.db.gemini_store import GeminiStore
 
 logger = logging.getLogger(__name__)
 
@@ -23,12 +25,13 @@ FALLBACK_COMMENTARY = (
 async def generate_commentary(  # noqa: PLR0911
     analytics: AnalyticsSummary,
     *,
+    api_key: str | None = None,
+    db_path: str | Path | None = None,
     client: httpx.AsyncClient | None = None,
 ) -> str:
     """Generate weekly portfolio commentary using Gemini."""
-    settings = get_settings()
-    api_key = settings.gemini_api_key.get_secret_value()
-    if not api_key:
+    resolved_api_key = await resolve_gemini_api_key(api_key=api_key, db_path=db_path)
+    if not resolved_api_key:
         logger.warning("Gemini API key is not configured; returning fallback commentary.")
         return FALLBACK_COMMENTARY
 
@@ -43,7 +46,7 @@ async def generate_commentary(  # noqa: PLR0911
     owns_client = client is None
     http_client = client if client is not None else httpx.AsyncClient(timeout=30.0)
     try:
-        response = await http_client.post(endpoint, params={"key": api_key}, json=payload)
+        response = await http_client.post(endpoint, params={"key": resolved_api_key}, json=payload)
         response.raise_for_status()
         body: dict[str, Any] = response.json()
     except httpx.HTTPStatusError as exc:
@@ -70,6 +73,38 @@ async def generate_commentary(  # noqa: PLR0911
 
     logger.warning("Gemini returned empty text response; using fallback commentary.")
     return FALLBACK_COMMENTARY
+
+
+async def resolve_gemini_api_key(
+    *,
+    api_key: str | None = None,
+    db_path: str | Path | None = None,
+) -> str | None:
+    """Resolve Gemini API key from explicit param, DB config, then environment."""
+    if api_key is not None and api_key.strip():
+        return api_key.strip()
+
+    settings = get_settings()
+    settings_db_path = getattr(settings, "database_path", None)
+    if db_path is not None:
+        target_db_path: str | Path = db_path
+    elif isinstance(settings_db_path, str | Path):
+        target_db_path = settings_db_path
+    else:
+        target_db_path = Path("data/pfm.db")
+    store = GeminiStore(target_db_path)
+    try:
+        stored = await store.get()
+    except Exception:  # pragma: no cover - defensive guardrail
+        logger.exception("Failed to load Gemini API key from DB settings.")
+    else:
+        if stored is not None:
+            return stored.api_key
+
+    env_value = settings.gemini_api_key.get_secret_value().strip()
+    if env_value:
+        return env_value
+    return None
 
 
 def _extract_text(body: dict[str, Any]) -> str:

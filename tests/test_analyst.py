@@ -12,6 +12,8 @@ from pydantic import SecretStr
 
 from pfm.ai.analyst import FALLBACK_COMMENTARY, GEMINI_MAX_OUTPUT_TOKENS, GEMINI_MODEL, generate_commentary
 from pfm.ai.prompts import AnalyticsSummary
+from pfm.db.gemini_store import GeminiStore
+from pfm.db.models import init_db
 
 
 def _sample_analytics() -> AnalyticsSummary:
@@ -111,3 +113,28 @@ async def test_generate_commentary_fallback_when_key_missing():
         result = await generate_commentary(_sample_analytics())
 
     assert result == FALLBACK_COMMENTARY
+
+
+async def test_generate_commentary_uses_db_key_when_env_missing(tmp_path):
+    db_path = tmp_path / "ai.db"
+    await init_db(db_path)
+    await GeminiStore(db_path).set("gemini-db-key")
+
+    endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+    response = httpx.Response(
+        200,
+        json={"candidates": [{"content": {"parts": [{"text": "From DB key."}]}}]},
+        request=httpx.Request("POST", endpoint),
+    )
+    fake_client = _FakeClient(responses=[response])
+
+    settings = MagicMock()
+    settings.database_path = db_path
+    settings.gemini_api_key = SecretStr("")
+
+    with patch("pfm.ai.analyst.get_settings", return_value=settings):
+        result = await generate_commentary(_sample_analytics(), client=fake_client)
+
+    assert result == "From DB key."
+    _, params, _ = fake_client.calls[0]
+    assert params["key"] == "gemini-db-key"
