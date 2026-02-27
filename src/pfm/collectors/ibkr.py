@@ -134,12 +134,15 @@ class IbkrCollector(BaseCollector):
         today = self._pricing.today()
         snapshots: list[Snapshot] = []
 
-        # Open positions (stocks, ETFs)
+        # Open positions (stocks, ETFs) — SUMMARY level only to avoid lot duplicates
         positions = self._parse_positions_from_xml(xml_text)
         for pos in positions:
+            if pos.get("levelOfDetail", "").upper() != "SUMMARY":
+                continue
+
             symbol = pos.get("symbol", "").upper()
             quantity = Decimal(pos.get("position", "0"))
-            market_value = Decimal(pos.get("markMarketValue", "0"))
+            market_value = Decimal(pos.get("positionValue", "0"))
 
             if quantity == 0 or not symbol:
                 continue
