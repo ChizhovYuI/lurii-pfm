@@ -835,6 +835,46 @@ async def test_ibkr_fetch_balances(pricing):
     assert len(snapshots) == 2  # AAPL + USD cash (BASE_SUMMARY excluded)
 
 
+async def test_ibkr_reuses_statement_between_balances_and_transactions(pricing):
+    collector = IbkrCollector(pricing, flex_token="tok", flex_query_id="qid")
+    pricing._set_cache("USD", Decimal(1))
+
+    request_resp = MagicMock(spec=httpx.Response)
+    request_resp.text = (
+        "<FlexStatementResponse><Status>Success</Status>" "<ReferenceCode>REF1</ReferenceCode></FlexStatementResponse>"
+    )
+    request_resp.raise_for_status = MagicMock()
+
+    statement_xml = """<FlexQueryResponse>
+<FlexStatements>
+<OpenPosition symbol="AAPL" position="10" markMarketValue="1500.00"/>
+<CashReport currency="USD" endingCash="5000.00"/>
+<Trade symbol="AAPL" quantity="1" proceeds="100.00" tradeDate="2024-01-15" tradeID="tx1"/>
+</FlexStatements>
+</FlexQueryResponse>"""
+
+    statement_resp = MagicMock(spec=httpx.Response)
+    statement_resp.text = statement_xml
+    statement_resp.raise_for_status = MagicMock()
+
+    send_request_calls = 0
+
+    async def mock_get(url, **kwargs):
+        nonlocal send_request_calls
+        if "SendRequest" in str(url):
+            send_request_calls += 1
+            return request_resp
+        return statement_resp
+
+    collector._client.get = mock_get  # type: ignore[assignment]
+
+    snapshots = await collector.fetch_balances()
+    txs = await collector.fetch_transactions()
+    assert len(snapshots) == 2
+    assert len(txs) == 1
+    assert send_request_calls == 1
+
+
 # ── Blend ─────────────────────────────────────────────────────────────
 
 
@@ -873,7 +913,7 @@ async def test_blend_fetch_balances_with_positions(pricing):
     snapshots = await collector.fetch_balances()
     assert len(snapshots) == 1
     assert snapshots[0].asset == "USDC"
-    assert snapshots[0].amount == Decimal("1000")
+    assert snapshots[0].amount == Decimal(1000)
 
 
 async def test_blend_fetch_balances_empty_positions(pricing):
@@ -936,7 +976,7 @@ async def test_blend_supply_and_collateral_merged(pricing):
 
     snapshots = await collector.fetch_balances()
     assert len(snapshots) == 1
-    assert snapshots[0].amount == Decimal("1000")
+    assert snapshots[0].amount == Decimal(1000)
 
 
 # ── KBank ─────────────────────────────────────────────────────────────

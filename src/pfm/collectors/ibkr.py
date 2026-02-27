@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from datetime import date
 from decimal import Decimal
 from typing import TYPE_CHECKING
@@ -25,6 +26,8 @@ logger = logging.getLogger(__name__)
 _FLEX_BASE = "https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService"
 _MAX_POLL_ATTEMPTS = 10
 _POLL_DELAY_SECONDS = 5
+_SEND_REQUEST_MIN_INTERVAL_SECONDS = 15.0
+_STATEMENT_CACHE_TTL_SECONDS = 60.0
 
 
 @register_collector
@@ -44,14 +47,25 @@ class IbkrCollector(BaseCollector):
         self._flex_token = flex_token
         self._flex_query_id = flex_query_id
         self._client = httpx.AsyncClient(timeout=60.0)
+        self._last_send_request_at: float = 0.0
+        self._statement_cache: tuple[str, float] | None = None
+
+    async def _throttle_send_request(self) -> None:
+        """Ensure enough delay between Flex SendRequest calls."""
+        now = time.monotonic()
+        elapsed = now - self._last_send_request_at
+        if elapsed < _SEND_REQUEST_MIN_INTERVAL_SECONDS:
+            await asyncio.sleep(_SEND_REQUEST_MIN_INTERVAL_SECONDS - elapsed)
 
     @retry(max_attempts=2)
     async def _request_statement(self) -> str:
         """Step 1: Request Flex statement generation, returns reference code."""
+        await self._throttle_send_request()
         resp = await self._client.get(
             f"{_FLEX_BASE}/SendRequest",
             params={"t": self._flex_token, "q": self._flex_query_id, "v": "3"},
         )
+        self._last_send_request_at = time.monotonic()
         resp.raise_for_status()
         # Response is XML: <FlexStatementResponse><Status>Success</Status><ReferenceCode>xxx</ReferenceCode>...
         text: str = resp.text
@@ -66,6 +80,18 @@ class IbkrCollector(BaseCollector):
             raise ValueError(msg)
 
         return text[start:end]
+
+    async def _get_statement_xml(self) -> str:
+        """Fetch Flex XML with a short-lived cache to avoid duplicate SendRequest calls."""
+        if self._statement_cache is not None:
+            cached_xml, cached_at = self._statement_cache
+            if time.monotonic() - cached_at < _STATEMENT_CACHE_TTL_SECONDS:
+                return cached_xml
+
+        reference_code = await self._request_statement()
+        xml_text = await self._fetch_statement(reference_code)
+        self._statement_cache = (xml_text, time.monotonic())
+        return xml_text
 
     async def _fetch_statement(self, reference_code: str) -> str:
         """Step 2: Poll until the statement is ready, return XML content."""
@@ -129,8 +155,7 @@ class IbkrCollector(BaseCollector):
 
     async def fetch_balances(self) -> list[Snapshot]:
         """Fetch positions and cash balances via Flex Query."""
-        reference_code = await self._request_statement()
-        xml_text = await self._fetch_statement(reference_code)
+        xml_text = await self._get_statement_xml()
         today = self._pricing.today()
         snapshots: list[Snapshot] = []
 
@@ -187,8 +212,7 @@ class IbkrCollector(BaseCollector):
 
     async def fetch_transactions(self, since: date | None = None) -> list[Transaction]:
         """Fetch trades from the Flex Query statement."""
-        reference_code = await self._request_statement()
-        xml_text = await self._fetch_statement(reference_code)
+        xml_text = await self._get_statement_xml()
         trades = self._parse_trades_from_xml(xml_text)
         transactions: list[Transaction] = []
 

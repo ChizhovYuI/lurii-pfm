@@ -1,7 +1,9 @@
 """Tests for CoinGecko pricing service."""
 
 from decimal import Decimal
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from pfm.pricing.coingecko import STABLECOINS, TICKER_TO_COINGECKO, PricingService
@@ -58,3 +60,23 @@ async def test_get_prices_usd_batch(pricing):
     assert results["USDC"] == Decimal(1)
     assert results["BTC"] == Decimal(50000)
     assert results["ETH"] == Decimal(3000)
+
+
+async def test_retries_on_rate_limit_429(pricing):
+    rate_limited = MagicMock(spec=httpx.Response)
+    rate_limited.status_code = 429
+    rate_limited.headers = {}
+
+    ok_resp = MagicMock(spec=httpx.Response)
+    ok_resp.status_code = 200
+    ok_resp.headers = {}
+    ok_resp.json.return_value = {"bitcoin": {"usd": 60000}}
+    ok_resp.raise_for_status = MagicMock()
+
+    pricing._client.get = AsyncMock(side_effect=[rate_limited, ok_resp])
+
+    with patch("pfm.pricing.coingecko.asyncio.sleep", new=AsyncMock()):
+        price = await pricing.get_price_usd("BTC")
+
+    assert price == Decimal(60000)
+    assert pricing._client.get.await_count == 2

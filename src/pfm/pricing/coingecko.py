@@ -46,6 +46,9 @@ FIAT_TICKERS: frozenset[str] = frozenset({"USD", "GBP", "EUR", "THB", "JPY", "CH
 
 _BASE_URL = "https://api.coingecko.com/api/v3"
 _RATE_LIMIT_DELAY = 2.1  # seconds between requests (30 req/min = 1 per 2s)
+_MAX_429_RETRIES = 3
+_RETRY_BACKOFF_BASE_SECONDS = 2.0
+_HTTP_STATUS_TOO_MANY_REQUESTS = 429
 
 
 class PricingService:
@@ -61,6 +64,7 @@ class PricingService:
             timeout=30.0,
         )
         self._last_request_time: float = 0.0
+        self._request_lock = asyncio.Lock()
         self._cache: dict[str, tuple[Decimal, datetime]] = {}
         self._cache_ttl_seconds: float = 3600.0  # 1 hour
 
@@ -144,6 +148,28 @@ class PricingService:
             await asyncio.sleep(_RATE_LIMIT_DELAY - elapsed)
         self._last_request_time = time.monotonic()
 
+    async def _request_json(self, path: str, params: dict[str, str]) -> dict[str, Any]:
+        """Request JSON from CoinGecko with serialized rate limiting and 429 backoff."""
+        for attempt in range(_MAX_429_RETRIES + 1):
+            async with self._request_lock:
+                await self._rate_limit()
+                resp = await self._client.get(path, params=params)
+
+            if resp.status_code == _HTTP_STATUS_TOO_MANY_REQUESTS and attempt < _MAX_429_RETRIES:
+                retry_after_header = resp.headers.get("Retry-After")
+                retry_after = float(retry_after_header) if retry_after_header and retry_after_header.isdigit() else 0.0
+                delay = max(retry_after, _RETRY_BACKOFF_BASE_SECONDS ** (attempt + 1))
+                logger.warning("CoinGecko rate limited (429). Retrying in %.1fs", delay)
+                await asyncio.sleep(delay)
+                continue
+
+            resp.raise_for_status()
+            data: dict[str, Any] = resp.json()
+            return data
+
+        msg = "CoinGecko request failed after retries"
+        raise RuntimeError(msg)
+
     async def _fetch_crypto_price(self, ticker: str) -> Decimal:
         """Fetch a single crypto price from CoinGecko."""
         coingecko_id = TICKER_TO_COINGECKO.get(ticker)
@@ -151,13 +177,10 @@ class PricingService:
             msg = f"Unknown crypto ticker: {ticker}. Add it to TICKER_TO_COINGECKO mapping."
             raise ValueError(msg)
 
-        await self._rate_limit()
-        resp = await self._client.get(
+        data = await self._request_json(
             "/simple/price",
-            params={"ids": coingecko_id, "vs_currencies": "usd"},
+            {"ids": coingecko_id, "vs_currencies": "usd"},
         )
-        resp.raise_for_status()
-        data: dict[str, Any] = resp.json()
 
         price_val = data.get(coingecko_id, {}).get("usd")
         if price_val is None:
@@ -182,13 +205,10 @@ class PricingService:
         if not id_to_ticker:
             return {}
 
-        await self._rate_limit()
-        resp = await self._client.get(
+        data = await self._request_json(
             "/simple/price",
-            params={"ids": ",".join(id_to_ticker.keys()), "vs_currencies": "usd"},
+            {"ids": ",".join(id_to_ticker.keys()), "vs_currencies": "usd"},
         )
-        resp.raise_for_status()
-        data: dict[str, Any] = resp.json()
 
         results: dict[str, Decimal] = {}
         for cg_id, ticker in id_to_ticker.items():
@@ -204,15 +224,12 @@ class PricingService:
 
     async def _fetch_fiat_rate(self, ticker: str) -> Decimal:
         """Fetch fiat-to-USD rate. Returns how much 1 unit of `ticker` is worth in USD."""
-        await self._rate_limit()
-        # CoinGecko /simple/price can accept vs_currencies for fiat
-        # We use BTC as a bridge: get BTC price in both USD and target fiat
-        resp = await self._client.get(
+        # CoinGecko /simple/price can accept vs_currencies for fiat.
+        # We use BTC as a bridge: get BTC price in both USD and target fiat.
+        data = await self._request_json(
             "/simple/price",
-            params={"ids": "bitcoin", "vs_currencies": f"usd,{ticker.lower()}"},
+            {"ids": "bitcoin", "vs_currencies": f"usd,{ticker.lower()}"},
         )
-        resp.raise_for_status()
-        data: dict[str, Any] = resp.json()
 
         btc_usd = data.get("bitcoin", {}).get("usd")
         btc_fiat = data.get("bitcoin", {}).get(ticker.lower())
