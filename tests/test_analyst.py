@@ -174,12 +174,15 @@ async def test_generate_commentary_fallback_on_unexpected_exception():
     assert result == FALLBACK_COMMENTARY
 
 
-async def test_generate_commentary_fallback_when_key_missing():
+async def test_generate_commentary_fallback_when_key_missing(tmp_path):
+    db_path = tmp_path / "empty.db"
+    await init_db(db_path)
     settings = MagicMock()
     settings.gemini_api_key = SecretStr("")
+    settings.database_path = db_path
 
     with patch("pfm.ai.analyst.get_settings", return_value=settings):
-        result = await generate_commentary(_sample_analytics())
+        result = await generate_commentary(_sample_analytics(), db_path=db_path)
 
     assert result == FALLBACK_COMMENTARY
 
