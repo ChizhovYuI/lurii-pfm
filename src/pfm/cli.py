@@ -812,10 +812,3 @@ def _parse_net_worth_usd(raw_json: str) -> Decimal:
         return Decimal(str(value))
     except ArithmeticError:
         return Decimal(0)
-
-
-@cli.command("import-kbank")
-@click.argument("path", type=click.Path(exists=True))
-def import_kbank(path: str) -> None:
-    """Import a KBank PDF statement."""
-    click.echo(f"import-kbank: not yet implemented (path={path})")

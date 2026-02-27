@@ -688,11 +688,3 @@ def test_telegram_show_empty(runner):
     result = runner.invoke(cli, ["telegram", "show"])
     assert result.exit_code == 0
     assert "Telegram is not configured. Run 'pfm telegram set'." in result.output
-
-
-def test_import_kbank_stub(runner, tmp_path):
-    pdf_path = tmp_path / "statement.pdf"
-    pdf_path.write_text("dummy")
-    result = runner.invoke(cli, ["import-kbank", str(pdf_path)])
-    assert result.exit_code == 0
-    assert "import-kbank: not yet implemented" in result.output

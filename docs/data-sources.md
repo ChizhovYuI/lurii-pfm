@@ -292,10 +292,9 @@ CSV/PDF/XLSX/JSON export via web UI (Transactions page). Up to 365-day periods. 
 
 ### Approach
 
-Two modes supported:
+Email auto-fetch mode:
 
 1. **Auto (Gmail IMAP):** Collector connects to Gmail via IMAP, searches for emails from `K-ElectronicDocument@kasikornbank.com`, downloads the latest PDF attachment, and parses it automatically.
-2. **Manual:** `pfm import-kbank /path/to/statement.pdf` — parse a local PDF file directly.
 
 Balance handling:
 - Ending balance is parsed in THB and converted to USD at collect time for analytics.

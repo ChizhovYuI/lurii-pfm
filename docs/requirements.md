@@ -295,9 +295,6 @@ pfm collect --source <name> # Fetch a single named source
 pfm analyze                 # Run analytics on latest snapshot
 pfm report                  # Generate and send Telegram report
 pfm run                     # Full pipeline: collect → analyze → report
-
-# ── Utilities ─────────────────────────────────────────────────────
-pfm import-kbank /path/to/statement.pdf   # Import KBank PDF manually
 ```
 
 ---

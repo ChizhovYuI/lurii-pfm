@@ -1,9 +1,7 @@
 """KBank collector — parses PDF bank statements from Kasikorn Bank.
 
-Supports two modes:
-1. Manual: `pfm import-kbank <path>` — parse a local PDF file.
-2. Auto (Gmail): when Gmail creds are configured, fetches the latest KBank
-   statement PDF from Gmail via IMAP before parsing.
+Uses Gmail auto-fetch mode: when Gmail creds are configured, fetches the
+latest KBank statement PDF from Gmail via IMAP before parsing.
 """
 
 from __future__ import annotations
@@ -35,8 +33,7 @@ _KBANK_PDF_DIR = Path("data/kbank")
 class KbankCollector(BaseCollector):
     """Collector for Kasikorn Bank (KBank) via PDF statement parsing.
 
-    This collector is triggered manually via `pfm import-kbank <path>`,
-    or auto-fetches from Gmail when credentials are configured.
+    This collector auto-fetches statements from Gmail when credentials are configured.
     """
 
     source_name = "kbank"

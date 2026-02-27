@@ -123,7 +123,6 @@ CLI using `click`:
 - `pfm analyze`
 - `pfm report`
 - `pfm run` — full pipeline
-- `pfm import-kbank PATH`
 
 Stubs for analytics/reporting initially. Wire up settings, DB init, structured logging.
 
@@ -442,7 +441,6 @@ Soroban RPC:
 
 **Additional dep:** `pdfplumber`
 
-- Manual trigger via `pfm import-kbank /path/to/statement.pdf`
 - Auto-fetch from Gmail IMAP (searches for KBank sender, downloads latest PDF)
 - Parse newline-delimited cells: dates, descriptions, amounts, balances
 - Password-protected PDF support (DDMMYYYY date of birth)
