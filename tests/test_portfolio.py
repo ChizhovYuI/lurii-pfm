@@ -133,3 +133,19 @@ async def test_empty_portfolio(repo):
     assert metrics.concentration_percentage == Decimal(0)
     assert metrics.top_5_assets == []
     assert metrics.hhi_index == Decimal(0)
+
+
+async def test_compute_allocation_by_category_unknown_source_fallbacks(repo):
+    target_date = date(2024, 1, 15)
+    await repo.save_snapshots(
+        [
+            Snapshot(target_date, "manual", "EUR", Decimal(100), Decimal(110)),
+            Snapshot(target_date, "manual", "GOLD", Decimal(1), Decimal(90)),
+        ]
+    )
+
+    rows = await compute_allocation_by_category(repo, target_date)
+    by_bucket = {row.bucket: row.usd_value for row in rows}
+    assert by_bucket["fiat"] == Decimal(110)
+    # Unknown non-fiat assets currently map to crypto fallback bucket.
+    assert by_bucket["crypto"] == Decimal(90)

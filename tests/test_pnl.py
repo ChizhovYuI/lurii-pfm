@@ -93,3 +93,62 @@ async def test_compute_pnl_no_data(repo):
     assert result.absolute_change == Decimal(0)
     assert result.percentage_change == Decimal(0)
     assert result.notes
+
+
+async def test_compute_pnl_monthly_uses_first_day_of_month(repo):
+    await repo.save_snapshots(
+        [
+            Snapshot(date=date(2024, 1, 1), source="s", asset="BTC", amount=Decimal(1), usd_value=Decimal(100)),
+            Snapshot(date=date(2024, 1, 15), source="s", asset="BTC", amount=Decimal(1), usd_value=Decimal(120)),
+            Snapshot(date=date(2024, 1, 31), source="s", asset="BTC", amount=Decimal(1), usd_value=Decimal(150)),
+        ]
+    )
+
+    result = await compute_pnl(repo, date(2024, 1, 31), PnlPeriod.MONTHLY)
+    assert result.start_date == date(2024, 1, 1)
+    assert result.end_date == date(2024, 1, 31)
+    assert result.start_value == Decimal(100)
+    assert result.end_value == Decimal(150)
+    assert result.absolute_change == Decimal(50)
+
+
+async def test_compute_pnl_cost_basis_removes_asset_when_fully_exited(repo):
+    await repo.save_snapshots(
+        [
+            Snapshot(date=date(2024, 1, 1), source="s", asset="BTC", amount=Decimal(1), usd_value=Decimal(100)),
+            Snapshot(date=date(2024, 1, 31), source="s", asset="BTC", amount=Decimal(0), usd_value=Decimal(0)),
+        ]
+    )
+    await repo.save_transactions(
+        [
+            Transaction(
+                date=date(2024, 1, 5),
+                source="s",
+                tx_type=TransactionType.DEPOSIT,
+                asset="BTC",
+                amount=Decimal(1),
+                usd_value=Decimal(100),
+            ),
+            Transaction(
+                date=date(2024, 1, 10),
+                source="s",
+                tx_type=TransactionType.DEPOSIT,
+                asset="BTC",
+                amount=Decimal(1),
+                usd_value=Decimal(0),
+            ),
+            Transaction(
+                date=date(2024, 1, 20),
+                source="s",
+                tx_type=TransactionType.WITHDRAWAL,
+                asset="BTC",
+                amount=Decimal(2),
+                usd_value=Decimal(200),
+            ),
+        ]
+    )
+
+    result = await compute_pnl(repo, date(2024, 1, 31), PnlPeriod.ALL_TIME)
+    btc_row = next(row for row in result.top_losers if row.asset == "BTC")
+    assert btc_row.end_value == Decimal(0)
+    assert btc_row.cost_basis_value is None

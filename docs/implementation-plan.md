@@ -502,7 +502,7 @@ Register all 9 collector types. `pfm collect` auto-discovers from DB. Add `--cat
 
 `pfm analyze`: run all analytics on latest snapshot, print summary, cache in DB.
 
-### Task 4.5 — Analytics tests [M]
+### Task 4.5 — Analytics tests [M] ✅
 
 **Dependencies:** 4.1–4.3
 
