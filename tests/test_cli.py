@@ -720,6 +720,7 @@ def test_report_without_cached_ai_commentary_uses_fallback_text(runner, db_path)
     assert result.exit_code == 0
     assert "No cached AI commentary for this analysis date. Using fallback text." in result.output
     assert "Report sent to Telegram." in result.output
+    assert "Report sent to Telegram." in result.output
 
 
 @pytest.mark.usefixtures("_patched_settings")

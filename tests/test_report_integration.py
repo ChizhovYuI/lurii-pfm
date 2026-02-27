@@ -59,6 +59,7 @@ async def test_report_async_loads_cache_formats_and_sends(tmp_path):
     assert ok is True
     sent_report = mock_send.await_args.args[0]
     assert "<b>PFM Weekly Report</b>" in sent_report.text
+    assert "<b>AI Commentary</b>" in (sent_report.ai_summary_text or "")
 
 
 async def test_run_pipeline_async_sends_error_alert_on_collect_failure():

@@ -12,7 +12,7 @@ from pfm.reporting.telegram import WeeklyReport
 if TYPE_CHECKING:
     from pfm.ai.prompts import AnalyticsSummary
 
-HOLDING_MIN_DISPLAY_USD = Decimal("10")
+HOLDING_MIN_DISPLAY_USD = Decimal(10)
 _HOLDING_TYPE_ICONS = {
     "crypto": "🪙",
     "fiat": "💵",
@@ -57,7 +57,7 @@ def format_weekly_report(
     *,
     warnings: list[str] | None = None,
 ) -> WeeklyReport:
-    """Build Telegram HTML report from analytics and AI commentary."""
+    """Build Telegram HTML report from analytics."""
     allocation_rows = _parse_list_json(analytics.allocation_by_asset)
     pnl = _parse_dict_json(analytics.pnl)
     weekly_asset_rows = _parse_list_json(analytics.weekly_pnl_by_asset)
@@ -105,13 +105,19 @@ def format_weekly_report(
     if not shown_holding:
         lines.append("• No holdings data available.")
 
-    lines.extend(["", "<b>AI Commentary</b>", html.escape(commentary).replace("\n", "<br>")])
-
     if warnings:
         lines.extend(["", "<b>Warnings</b>"])
         lines.extend([f"• {html.escape(warning)}" for warning in warnings])
 
-    return WeeklyReport(text="\n".join(lines))
+    return WeeklyReport(
+        text="\n".join(lines),
+        ai_summary_text=format_ai_commentary(commentary),
+    )
+
+
+def format_ai_commentary(commentary: str) -> str:
+    """Build a separate Telegram HTML message for AI commentary."""
+    return "\n".join(["<b>AI Commentary</b>", html.escape(commentary).replace("\n", "<br>")])
 
 
 def _parse_list_json(raw_json: str) -> list[dict[str, object]]:

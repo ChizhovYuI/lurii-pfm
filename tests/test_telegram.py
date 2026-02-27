@@ -174,6 +174,34 @@ async def test_send_report_uses_db_credentials(tmp_path):
     )
 
 
+async def test_send_report_sends_ai_summary_separately():
+    mock_send = AsyncMock(side_effect=[True, True])
+    report = WeeklyReport(text="core report", ai_summary_text="<b>AI Commentary</b>\nGood.")
+
+    with patch("pfm.reporting.telegram.send_message", mock_send):
+        ok = await send_report(report, chat_id="chat", bot_token="token")
+
+    assert ok is True
+    assert mock_send.await_count == 2
+    first_call = mock_send.await_args_list[0]
+    second_call = mock_send.await_args_list[1]
+    assert first_call.args[1] == "core report"
+    assert first_call.kwargs["parse_mode"] == "HTML"
+    assert second_call.args[1] == "<b>AI Commentary</b>\nGood."
+    assert second_call.kwargs["parse_mode"] == "HTML"
+
+
+async def test_send_report_returns_true_when_ai_summary_fails(caplog):
+    mock_send = AsyncMock(side_effect=[True, False])
+    report = WeeklyReport(text="core report", ai_summary_text="<b>AI Commentary</b>\nGood.")
+
+    with patch("pfm.reporting.telegram.send_message", mock_send):
+        ok = await send_report(report, chat_id="chat", bot_token="token")
+
+    assert ok is True
+    assert "AI summary message failed" in caplog.text
+
+
 async def test_send_error_alert_formats_errors():
     mock_send = AsyncMock(return_value=True)
     with patch("pfm.reporting.telegram.send_message", mock_send):

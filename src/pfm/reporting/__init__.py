@@ -1,6 +1,6 @@
 """Reporting clients and formatters."""
 
-from pfm.reporting.formatter import format_weekly_report
+from pfm.reporting.formatter import format_ai_commentary, format_weekly_report
 from pfm.reporting.telegram import (
     WeeklyReport,
     is_telegram_configured,
@@ -12,6 +12,7 @@ from pfm.reporting.telegram import (
 
 __all__ = [
     "WeeklyReport",
+    "format_ai_commentary",
     "format_weekly_report",
     "is_telegram_configured",
     "resolve_telegram_credentials",

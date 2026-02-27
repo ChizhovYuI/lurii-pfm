@@ -6,7 +6,7 @@ from datetime import date
 from decimal import Decimal
 
 from pfm.ai.prompts import AnalyticsSummary
-from pfm.reporting.formatter import format_weekly_report
+from pfm.reporting.formatter import format_ai_commentary, format_weekly_report
 
 
 def test_format_weekly_report_contains_required_sections():
@@ -31,10 +31,10 @@ def test_format_weekly_report_contains_required_sections():
     assert "<b>PnL (Monthly)</b>: ↑ $456.78 (4.56%)" in report.text
     assert "<b>All Holdings</b> (Total | 7d PnL)" in report.text
     assert "🪙 BTC: $7,000.00 (56.70%) | $80.00 (1.16%)" in report.text
-    assert "<b>AI Commentary</b>" in report.text
-    assert "Watch &lt;volatility&gt;.<br>Rebalance slowly." in report.text
     assert "<b>Warnings</b>" in report.text
     assert "• Data is partial" in report.text
+    assert report.ai_summary_text is not None
+    assert "Watch &lt;volatility&gt;.<br>Rebalance slowly." in report.ai_summary_text
 
 
 def test_format_weekly_report_handles_missing_data_branches():
@@ -99,3 +99,9 @@ def test_format_weekly_report_includes_all_holdings_not_truncated():
     assert "📈 A9: $9.00 (1.00%)" not in report.text
     assert "📈 A10: $10.00 (1.00%) | $0.00 (0.00%)" in report.text
     assert "📈 A11: $11.00 (1.00%) | $0.00 (0.00%)" in report.text
+
+
+def test_format_ai_commentary_escapes_html_and_preserves_lines():
+    message = format_ai_commentary("Watch <volatility>.\nRebalance slowly.")
+    assert message.startswith("<b>AI Commentary</b>\n")
+    assert "Watch &lt;volatility&gt;.<br>Rebalance slowly." in message

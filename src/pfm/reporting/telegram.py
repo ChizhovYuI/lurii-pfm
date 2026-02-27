@@ -33,6 +33,7 @@ class WeeklyReport:
     """Formatted report payload ready to send."""
 
     text: str
+    ai_summary_text: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,8 +204,8 @@ async def send_report(
     db_path: str | Path | None = None,
     client: httpx.AsyncClient | None = None,
 ) -> bool:
-    """Send a formatted weekly report to Telegram."""
-    return await send_message(
+    """Send a formatted weekly report and optional AI summary to Telegram."""
+    report_sent = await send_message(
         chat_id,
         report.text,
         parse_mode="HTML",
@@ -212,6 +213,24 @@ async def send_report(
         db_path=db_path,
         client=client,
     )
+    if not report_sent:
+        return False
+
+    ai_summary = (report.ai_summary_text or "").strip()
+    if not ai_summary:
+        return True
+
+    ai_sent = await send_message(
+        chat_id,
+        ai_summary,
+        parse_mode="HTML",
+        bot_token=bot_token,
+        db_path=db_path,
+        client=client,
+    )
+    if not ai_sent:
+        logger.warning("Main report sent, but AI summary message failed.")
+    return True
 
 
 async def send_error_alert(
