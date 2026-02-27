@@ -56,6 +56,7 @@ class KbankCollector(BaseCollector):
         self._pdf_password = pdf_password
         self._cached_snapshots: list[Snapshot] = []
         self._cached_transactions: list[Transaction] = []
+        self._last_statement_date: date | None = None
 
     @property
     def _gmail_configured(self) -> bool:
@@ -65,6 +66,11 @@ class KbankCollector(BaseCollector):
         """Set the PDF file path for parsing."""
         self._pdf_path = path
 
+    @property
+    def last_statement_date(self) -> date | None:
+        """Date of the latest transaction found in the parsed statement."""
+        return self._last_statement_date
+
     async def fetch_balances(self) -> list[Snapshot]:
         """Return the ending balance from the most recently parsed statement."""
         if not self._pdf_path and self._gmail_configured:
@@ -73,10 +79,12 @@ class KbankCollector(BaseCollector):
                 self._pdf_path = fetched
 
         if not self._pdf_path:
+            self._last_statement_date = None
             logger.info("KBank: no PDF path set and Gmail not configured, skipping")
             return []
 
         snapshots, transactions = self._parse_pdf(self._pdf_path)
+        self._last_statement_date = self._infer_statement_date(transactions)
         converted_snapshots: list[Snapshot] = []
         for snap in snapshots:
             usd_value = snap.usd_value
@@ -220,6 +228,12 @@ class KbankCollector(BaseCollector):
 
         logger.info("KBank: parsed %d transactions, ending balance: %s THB", len(transactions), ending_balance)
         return snapshots, transactions
+
+    @staticmethod
+    def _infer_statement_date(transactions: list[Transaction]) -> date | None:
+        if not transactions:
+            return None
+        return max((tx.date for tx in transactions), default=None)
 
     def _parse_header_balance(self, table: list[list[Any]]) -> Decimal:
         """Extract ending balance from the header table on page 1.

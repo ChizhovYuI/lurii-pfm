@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import sys
+from datetime import date
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -448,6 +449,11 @@ async def _collect_async(source_name: str | None) -> list[CollectorResult]:
                     )
                     continue
 
+                _print_kbank_statement_freshness(
+                    source_type=src.type,
+                    collector=collector,
+                    today=pricing.today(),
+                )
                 results.append(result)
     finally:
         await pricing.close()
@@ -484,6 +490,32 @@ def _print_collect_results(results: list[CollectorResult]) -> None:
 
     click.echo("-" * 72)
     click.echo(f"{'TOTAL':<20}  {total_snaps:>5}  ${_fmt_money(total_usd):>13}  {total_txns:>5}  {total_errors:>6}")
+
+
+def _print_kbank_statement_freshness(*, source_type: str, collector: object, today: date) -> None:
+    """Print KBank statement date and staleness hint when available."""
+    if source_type != "kbank":
+        return
+
+    statement_date = getattr(collector, "last_statement_date", None)
+    if not isinstance(statement_date, date):
+        click.secho("  KBank statement date: unavailable.", fg="yellow")
+        click.secho(
+            "    Hint: request a new statement from K PLUS and send it to your email.",
+            fg="yellow",
+        )
+        return
+
+    click.secho(f"  KBank statement date: {statement_date.isoformat()}", fg="cyan")
+    if statement_date != today:
+        click.secho(
+            f"    Statement is not from today ({today.isoformat()}).",
+            fg="yellow",
+        )
+        click.secho(
+            "    Request a new statement from K PLUS and send it to your email, then run collect again.",
+            fg="yellow",
+        )
 
 
 def _print_collect_error(err: str) -> None:

@@ -1357,6 +1357,42 @@ async def test_kbank_fetch_transactions_with_cache(pricing):
     assert len(txs) == 1
 
 
+async def test_kbank_tracks_last_statement_date(pricing):
+    collector = KbankCollector(pricing)
+    fake_snapshot = Snapshot(
+        date=date(2026, 2, 27),
+        source="kbank",
+        asset="THB",
+        amount=Decimal("1000"),
+        usd_value=Decimal(0),
+        raw_json="{}",
+    )
+    fake_txs = [
+        Transaction(
+            date=date(2026, 2, 24),
+            source="kbank",
+            tx_type=TransactionType.DEPOSIT,
+            asset="THB",
+            amount=Decimal("100"),
+            usd_value=Decimal(0),
+        ),
+        Transaction(
+            date=date(2026, 2, 25),
+            source="kbank",
+            tx_type=TransactionType.WITHDRAWAL,
+            asset="THB",
+            amount=Decimal("50"),
+            usd_value=Decimal(0),
+        ),
+    ]
+    with patch.object(collector, "_parse_pdf", return_value=([fake_snapshot], fake_txs)):
+        collector._pdf_path = Path("/tmp/fake.pdf")
+        pricing._set_cache("THB", Decimal("0.028"))
+        await collector.fetch_balances()
+
+    assert collector.last_statement_date == date(2026, 2, 25)
+
+
 # ── Collector Registry ────────────────────────────────────────────────
 
 

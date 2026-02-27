@@ -262,7 +262,14 @@ def test_mask_long():
 # ── collect command ───────────────────────────────────────────────────
 
 
-def _make_mock_collector(source_name, snaps=1, usd_total=Decimal(0), txns=0, errors=None):
+def _make_mock_collector(  # noqa: PLR0913
+    source_name,
+    snaps=1,
+    usd_total=Decimal(0),
+    txns=0,
+    errors=None,
+    statement_date: date | None = None,
+):
     """Create a mock collector class that returns a CollectorResult."""
     result = CollectorResult(
         source=source_name,
@@ -276,6 +283,7 @@ def _make_mock_collector(source_name, snaps=1, usd_total=Decimal(0), txns=0, err
     mock_cls = MagicMock()
     mock_instance = MagicMock()
     mock_instance.collect = AsyncMock(return_value=result)
+    mock_instance.last_statement_date = statement_date
     mock_cls.return_value = mock_instance
     return mock_cls
 
@@ -292,6 +300,7 @@ def _mock_pricing_repo():
     """Mock PricingService and Repository for collect tests."""
     mock_pricing = MagicMock()
     mock_pricing.close = AsyncMock()
+    mock_pricing.today.return_value = date(2026, 2, 27)
 
     mock_repo = MagicMock()
     mock_repo.__aenter__ = AsyncMock(return_value=mock_repo)
@@ -430,6 +439,45 @@ def test_collect_handles_unexpected_collector_exception(runner, store):
 
     assert result.exit_code == 0
     assert "Unhandled collector error: boom" in result.output
+
+
+@pytest.mark.usefixtures("_patched_settings", "_mock_pricing_repo")
+def test_collect_kbank_logs_statement_date_and_stale_hint(runner, store):
+    asyncio.run(
+        store.add(
+            "kbank-main",
+            "kbank",
+            {"gmail_address": "a@b.com", "gmail_app_password": "pass", "pdf_password": "01011990"},
+        )
+    )
+
+    mock_cls = _make_mock_collector("kbank", statement_date=date(2026, 2, 26))
+    with patch("pfm.cli.COLLECTOR_REGISTRY", {"kbank": mock_cls}):
+        result = runner.invoke(cli, ["collect", "--source", "kbank-main"])
+
+    assert result.exit_code == 0
+    assert "KBank statement date: 2026-02-26" in result.output
+    assert "Statement is not from today (2026-02-27)." in result.output
+    assert "Request a new statement from K PLUS and send it to your email" in result.output
+
+
+@pytest.mark.usefixtures("_patched_settings", "_mock_pricing_repo")
+def test_collect_kbank_logs_statement_date_without_stale_hint_when_fresh(runner, store):
+    asyncio.run(
+        store.add(
+            "kbank-main",
+            "kbank",
+            {"gmail_address": "a@b.com", "gmail_app_password": "pass", "pdf_password": "01011990"},
+        )
+    )
+
+    mock_cls = _make_mock_collector("kbank", statement_date=date(2026, 2, 27))
+    with patch("pfm.cli.COLLECTOR_REGISTRY", {"kbank": mock_cls}):
+        result = runner.invoke(cli, ["collect", "--source", "kbank-main"])
+
+    assert result.exit_code == 0
+    assert "KBank statement date: 2026-02-27" in result.output
+    assert "Request a new statement from K PLUS and send it to your email" not in result.output
 
 
 # ── pipeline stubs ────────────────────────────────────────────────────
