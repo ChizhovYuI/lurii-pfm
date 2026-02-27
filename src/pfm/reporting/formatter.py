@@ -117,7 +117,8 @@ def format_weekly_report(
 
 def format_ai_commentary(commentary: str) -> str:
     """Build a separate Telegram HTML message for AI commentary."""
-    return "\n".join(["<b>AI Commentary</b>", html.escape(commentary).replace("\n", "<br>")])
+    normalized = commentary.replace("\r\n", "\n").replace("\r", "\n")
+    return "\n".join(["<b>AI Commentary</b>", html.escape(normalized)])
 
 
 def _parse_list_json(raw_json: str) -> list[dict[str, object]]:

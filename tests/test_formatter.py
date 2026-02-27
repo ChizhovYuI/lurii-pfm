@@ -34,7 +34,7 @@ def test_format_weekly_report_contains_required_sections():
     assert "<b>Warnings</b>" in report.text
     assert "• Data is partial" in report.text
     assert report.ai_summary_text is not None
-    assert "Watch &lt;volatility&gt;.<br>Rebalance slowly." in report.ai_summary_text
+    assert "Watch &lt;volatility&gt;.\nRebalance slowly." in report.ai_summary_text
 
 
 def test_format_weekly_report_handles_missing_data_branches():
@@ -104,4 +104,4 @@ def test_format_weekly_report_includes_all_holdings_not_truncated():
 def test_format_ai_commentary_escapes_html_and_preserves_lines():
     message = format_ai_commentary("Watch <volatility>.\nRebalance slowly.")
     assert message.startswith("<b>AI Commentary</b>\n")
-    assert "Watch &lt;volatility&gt;.<br>Rebalance slowly." in message
+    assert "Watch &lt;volatility&gt;.\nRebalance slowly." in message
