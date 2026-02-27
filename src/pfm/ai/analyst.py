@@ -24,6 +24,7 @@ GEMINI_MAX_OUTPUT_TOKENS = 1024
 GEMINI_MAX_RETRIES = 3
 GEMINI_BASE_BACKOFF_SECONDS = 2.0
 GEMINI_MAX_BACKOFF_SECONDS = 30.0
+GEMINI_TOKEN_ESTIMATE_CHARS = 4
 HTTP_TOO_MANY_REQUESTS = 429
 FALLBACK_COMMENTARY = (
     "AI commentary is currently unavailable. " "Review net worth trend, concentration risk, and PnL changes manually."
@@ -44,6 +45,15 @@ async def generate_commentary(
         return FALLBACK_COMMENTARY
 
     prompt = render_weekly_report_user_prompt(analytics)
+    prompt_chars = len(prompt)
+    prompt_tokens_est = _estimate_tokens(prompt_chars)
+    logger.info(
+        "gemini_input_size model=%s prompt_chars=%d prompt_tokens_est=%d max_output_tokens=%d",
+        GEMINI_MODEL,
+        prompt_chars,
+        prompt_tokens_est,
+        GEMINI_MAX_OUTPUT_TOKENS,
+    )
     payload: dict[str, object] = {
         "system_instruction": {"parts": [{"text": WEEKLY_REPORT_SYSTEM_PROMPT}]},
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
@@ -54,7 +64,13 @@ async def generate_commentary(
     owns_client = client is None
     http_client = client if client is not None else httpx.AsyncClient(timeout=30.0)
     try:
-        body = await _request_commentary_body(http_client, endpoint, resolved_api_key, payload)
+        body = await _request_commentary_body(
+            http_client,
+            endpoint,
+            resolved_api_key,
+            payload,
+            input_size=(prompt_chars, prompt_tokens_est),
+        )
     finally:
         if owns_client:
             await http_client.aclose()
@@ -90,7 +106,10 @@ async def _request_commentary_body(
     endpoint: str,
     api_key: str,
     payload: Mapping[str, object],
+    *,
+    input_size: tuple[int, int],
 ) -> dict[str, Any] | None:
+    prompt_chars, prompt_tokens_est = input_size
     for attempt in range(1, GEMINI_MAX_RETRIES + 1):
         try:
             response = await client.post(endpoint, params={"key": api_key}, json=payload)
@@ -105,15 +124,21 @@ async def _request_commentary_body(
             if status == HTTP_TOO_MANY_REQUESTS and attempt < GEMINI_MAX_RETRIES:
                 retry_delay = _retry_delay_seconds(exc.response, attempt)
                 logger.warning(
-                    "Gemini rate limited (HTTP 429). Retrying in %.1fs (%d/%d).",
+                    "Gemini rate limited (HTTP 429). Retrying in %.1fs (%d/%d). input_chars=%d input_tokens_est=%d",
                     retry_delay,
                     attempt,
                     GEMINI_MAX_RETRIES,
+                    prompt_chars,
+                    prompt_tokens_est,
                 )
                 await asyncio.sleep(retry_delay)
                 continue
             if status == HTTP_TOO_MANY_REQUESTS:
-                logger.warning("Gemini rate limited (HTTP 429). Using fallback commentary.")
+                logger.warning(
+                    "Gemini rate limited (HTTP 429). Using fallback commentary. input_chars=%d input_tokens_est=%d",
+                    prompt_chars,
+                    prompt_tokens_est,
+                )
             else:
                 logger.warning("Gemini API request failed with HTTP %d. Using fallback commentary.", status)
             break
@@ -130,6 +155,12 @@ async def _request_commentary_body(
     else:
         logger.warning("Gemini commentary request failed after retries. Using fallback commentary.")
     return None
+
+
+def _estimate_tokens(text_chars: int) -> int:
+    if text_chars <= 0:
+        return 0
+    return (text_chars + GEMINI_TOKEN_ESTIMATE_CHARS - 1) // GEMINI_TOKEN_ESTIMATE_CHARS
 
 
 async def resolve_gemini_api_key(
