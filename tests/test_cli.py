@@ -493,13 +493,12 @@ def test_analyze_computes_and_caches_metrics(runner, db_path):
         "net_worth",
         "pnl",
         "risk_metrics",
-        "yield",
+        "weekly_pnl_by_asset",
     }
     assert json.loads(metrics["net_worth"]) == {"usd": "570.0"}
-    yield_rows = json.loads(metrics["yield"])
-    assert len(yield_rows) == 1
-    assert yield_rows[0]["source"] == "okx"
-    assert yield_rows[0]["asset"] == "BTC"
+    weekly_rows = json.loads(metrics["weekly_pnl_by_asset"])
+    assert len(weekly_rows) >= 1
+    assert any(row["asset"] == "BTC" for row in weekly_rows)
     pnl = json.loads(metrics["pnl"])
     assert pnl["daily"]["start_date"] == "2024-01-14"
     assert pnl["daily"]["end_date"] == "2024-01-15"
@@ -558,7 +557,7 @@ def test_report_success(runner, db_path):
                 "pnl",
                 '{"weekly":{"absolute_change":"1.5","percentage_change":"1.0"}}',
             )
-            await repo.save_analytics_metric(snapshot_date, "yield", "[]")
+            await repo.save_analytics_metric(snapshot_date, "weekly_pnl_by_asset", "[]")
 
     asyncio.run(_seed_analytics())
 
@@ -598,7 +597,7 @@ def test_report_handles_internal_exception(runner, db_path):
                 "pnl",
                 '{"weekly":{"absolute_change":"1.5","percentage_change":"1.0"}}',
             )
-            await repo.save_analytics_metric(snapshot_date, "yield", "[]")
+            await repo.save_analytics_metric(snapshot_date, "weekly_pnl_by_asset", "[]")
 
     asyncio.run(_seed_analytics())
 

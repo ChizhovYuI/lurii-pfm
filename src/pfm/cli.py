@@ -7,7 +7,6 @@ import json
 import logging
 import re
 import sys
-from datetime import date
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -517,7 +516,6 @@ async def _analyze_async() -> None:
         compute_net_worth,
         compute_pnl,
         compute_risk_metrics,
-        compute_yield,
     )
     from pfm.db.repository import Repository
 
@@ -528,10 +526,6 @@ async def _analyze_async() -> None:
             return
 
         analysis_date = latest[0].date
-        all_snapshots = await repo.get_snapshots_for_range(analysis_date, analysis_date)
-        earliest_snapshots = await repo.get_snapshots_for_range(date.min, analysis_date)
-        start_date = min((s.date for s in earliest_snapshots), default=analysis_date)
-
         net_worth = await compute_net_worth(repo, analysis_date)
         alloc_asset = await compute_allocation_by_asset(repo, analysis_date)
         alloc_source = await compute_allocation_by_source(repo, analysis_date)
@@ -543,25 +537,6 @@ async def _analyze_async() -> None:
         pnl_weekly = await compute_pnl(repo, analysis_date, PnlPeriod.WEEKLY)
         pnl_monthly = await compute_pnl(repo, analysis_date, PnlPeriod.MONTHLY)
         pnl_all_time = await compute_pnl(repo, analysis_date, PnlPeriod.ALL_TIME)
-
-        snapshot_assets = {(s.source, s.asset.upper()) for s in all_snapshots}
-        yield_inputs: list[tuple[str, str]] = []
-        for source, asset in [
-            ("blend", "USDC"),
-            ("bybit", "SOL"),
-            ("bybit", "USDC"),
-            ("bybit", "USDT"),
-            ("okx", "BTC"),
-            ("okx", "ETH"),
-            ("okx", "USDC"),
-            ("okx", "USDT"),
-        ]:
-            if (source, asset) in snapshot_assets:
-                yield_inputs.append((source, asset))
-
-        yield_results = [
-            await compute_yield(repo, source, asset, start_date, analysis_date) for source, asset in yield_inputs
-        ]
 
         # Cache computed metrics in analytics_cache table
         await repo.save_analytics_metric(analysis_date, "net_worth", json.dumps({"usd": str(net_worth)}))
@@ -654,19 +629,17 @@ async def _analyze_async() -> None:
         )
         await repo.save_analytics_metric(
             analysis_date,
-            "yield",
+            "weekly_pnl_by_asset",
             json.dumps(
                 [
                     {
-                        "source": row.source,
                         "asset": row.asset,
-                        "principal_estimate": str(row.principal_estimate),
-                        "current_value": str(row.current_value),
-                        "yield_amount": str(row.yield_amount),
-                        "yield_percentage": str(row.yield_percentage),
-                        "annualized_rate": str(row.annualized_rate),
+                        "start_value": str(row.start_value),
+                        "end_value": str(row.end_value),
+                        "absolute_change": str(row.absolute_change),
+                        "percentage_change": str(row.percentage_change),
                     }
-                    for row in yield_results
+                    for row in pnl_weekly.by_asset
                 ]
             ),
         )
@@ -689,14 +662,14 @@ async def _analyze_async() -> None:
         click.echo(
             f"  {label}: ${_fmt_money(pnl.absolute_change)} ({pnl.percentage_change.quantize(Decimal('0.01'))}%)"
         )
-    if yield_results:
-        click.echo("Yield:")
-        for yield_row in yield_results:
-            click.echo(
-                f"  {yield_row.source}/{yield_row.asset}: ${_fmt_money(yield_row.yield_amount)} "
-                f"({yield_row.yield_percentage.quantize(Decimal('0.01'))}%)"
-            )
-    click.echo("Cached analytics metrics: net_worth, allocations, currency_exposure, risk_metrics, pnl, yield")
+    click.echo("Weekly PnL by asset:")
+    for row in pnl_weekly.by_asset:
+        click.echo(
+            f"  {row.asset}: ${_fmt_money(row.absolute_change)} ({row.percentage_change.quantize(Decimal('0.01'))}%)"
+        )
+    click.echo(
+        "Cached analytics metrics: net_worth, allocations, currency_exposure, risk_metrics, pnl, weekly_pnl_by_asset"
+    )
 
 
 def _pnl_result_to_dict(result: PnlResult) -> dict[str, object]:
@@ -709,6 +682,17 @@ def _pnl_result_to_dict(result: PnlResult) -> dict[str, object]:
         "end_value": str(pnl.end_value),
         "absolute_change": str(pnl.absolute_change),
         "percentage_change": str(pnl.percentage_change),
+        "by_asset": [
+            {
+                "asset": row.asset,
+                "start_value": str(row.start_value),
+                "end_value": str(row.end_value),
+                "absolute_change": str(row.absolute_change),
+                "percentage_change": str(row.percentage_change),
+                "cost_basis_value": str(row.cost_basis_value) if row.cost_basis_value is not None else None,
+            }
+            for row in pnl.by_asset
+        ],
         "top_gainers": [
             {
                 "asset": row.asset,
@@ -743,7 +727,7 @@ _REQUIRED_ANALYTICS_METRICS = (
     "currency_exposure",
     "risk_metrics",
     "pnl",
-    "yield",
+    "weekly_pnl_by_asset",
 )
 
 
@@ -888,7 +872,7 @@ async def _load_latest_analytics_summary(repo: Repository) -> AnalyticsSummary |
         currency_exposure=metrics["currency_exposure"],
         risk_metrics=metrics["risk_metrics"],
         pnl=metrics["pnl"],
-        yield_metrics=metrics["yield"],
+        weekly_pnl_by_asset=metrics["weekly_pnl_by_asset"],
     )
 
 

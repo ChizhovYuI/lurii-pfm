@@ -41,7 +41,7 @@ async def test_report_async_loads_cache_formats_and_sends(tmp_path):
             "pnl",
             '{"weekly":{"absolute_change":"0","percentage_change":"0"}}',
         )
-        await repo.save_analytics_metric(snapshot_date, "yield", "[]")
+        await repo.save_analytics_metric(snapshot_date, "weekly_pnl_by_asset", "[]")
 
     settings = SimpleNamespace(
         database_path=db_path,

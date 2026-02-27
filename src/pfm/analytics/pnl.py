@@ -48,6 +48,7 @@ class PnlResult:
     end_value: Decimal
     absolute_change: Decimal
     percentage_change: Decimal
+    by_asset: list[AssetPnl] = field(default_factory=list)
     top_gainers: list[AssetPnl] = field(default_factory=list)
     top_losers: list[AssetPnl] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
@@ -64,6 +65,7 @@ async def compute_pnl(repo: Repository, as_of: date, period: PnlPeriod) -> PnlRe
             end_value=Decimal(0),
             absolute_change=Decimal(0),
             percentage_change=Decimal(0),
+            by_asset=[],
             notes=["No snapshots available on or before requested date."],
         )
 
@@ -121,6 +123,7 @@ async def compute_pnl(repo: Repository, as_of: date, period: PnlPeriod) -> PnlRe
         end_value=end_total,
         absolute_change=absolute_change,
         percentage_change=percentage_change,
+        by_asset=asset_rows,
         top_gainers=top_gainers,
         top_losers=top_losers,
         notes=notes,

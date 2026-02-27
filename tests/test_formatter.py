@@ -20,8 +20,7 @@ def test_format_weekly_report_contains_required_sections():
         risk_metrics="{}",
         pnl='{"weekly":{"absolute_change":"123.45","percentage_change":"1.23"},'
         '"monthly":{"absolute_change":"456.78","percentage_change":"4.56"}}',
-        yield_metrics='[{"source":"blend","asset":"USDC","yield_amount":"10","yield_percentage":"2.5"},'
-        '{"source":"bybit","asset":"SOL","yield_amount":"3","yield_percentage":"1.2"}]',
+        weekly_pnl_by_asset='[{"asset":"BTC","absolute_change":"80","percentage_change":"1.16"}]',
     )
 
     report = format_weekly_report(analytics, "Watch <volatility>.\nRebalance slowly.", warnings=["Data is partial"])
@@ -31,10 +30,7 @@ def test_format_weekly_report_contains_required_sections():
     assert "<b>PnL (Weekly)</b>: ↑ $123.45 (1.23%)" in report.text
     assert "<b>PnL (Monthly)</b>: ↑ $456.78 (4.56%)" in report.text
     assert "<b>All Holdings</b>" in report.text
-    assert "• BTC: $7,000.00 (56.70%)" in report.text
-    assert "<b>Yield</b>" in report.text
-    assert "• BLEND/USDC: $10.00 (2.50%)" in report.text
-    assert "• BYBIT/SOL: $3.00 (1.20%)" in report.text
+    assert "• BTC: $7,000.00 (56.70%) | 7d PnL: ↑ $80.00 (1.16%)" in report.text
     assert "<b>AI Commentary</b>" in report.text
     assert "Watch &lt;volatility&gt;.<br>Rebalance slowly." in report.text
     assert "<b>Warnings</b>" in report.text
@@ -52,7 +48,7 @@ def test_format_weekly_report_handles_missing_data_branches():
         risk_metrics="{}",
         pnl='{"weekly":{"absolute_change":"-5","percentage_change":"-1.0"},'
         '"monthly":{"absolute_change":"-20","percentage_change":"-3.0"}}',
-        yield_metrics="[]",
+        weekly_pnl_by_asset="[]",
     )
 
     report = format_weekly_report(analytics, "No major changes.")
@@ -60,7 +56,6 @@ def test_format_weekly_report_handles_missing_data_branches():
     assert "<b>PnL (Weekly)</b>: ↓ $-5.00 (-1.00%)" in report.text
     assert "<b>PnL (Monthly)</b>: ↓ $-20.00 (-3.00%)" in report.text
     assert "• No holdings data available." in report.text
-    assert "• No yield data available." in report.text
 
 
 def test_format_weekly_report_tolerates_invalid_numeric_values():
@@ -74,7 +69,7 @@ def test_format_weekly_report_tolerates_invalid_numeric_values():
         risk_metrics="{}",
         pnl='{"weekly":{"absolute_change":"oops","percentage_change":"nan-ish"},'
         '"monthly":{"absolute_change":"oops","percentage_change":"nan-ish"}}',
-        yield_metrics='[{"source":"blend","asset":"USDC","yield_amount":"oops","yield_percentage":"bad"}]',
+        weekly_pnl_by_asset='[{"asset":"BTC","absolute_change":"oops","percentage_change":"bad"}]',
     )
 
     report = format_weekly_report(analytics, "Still works.")
@@ -82,7 +77,6 @@ def test_format_weekly_report_tolerates_invalid_numeric_values():
     assert "<b>PnL (Monthly)</b>: → $0.00 (0.00%)" in report.text
     assert "• BTC: $0.00 (0.00%)" not in report.text
     assert "• No holdings data available." in report.text
-    assert "• BLEND/USDC: $0.00 (0.00%)" in report.text
 
 
 def test_format_weekly_report_includes_all_holdings_not_truncated():
@@ -96,10 +90,10 @@ def test_format_weekly_report_includes_all_holdings_not_truncated():
         currency_exposure="[]",
         risk_metrics="{}",
         pnl='{"weekly":{"absolute_change":"0","percentage_change":"0"}}',
-        yield_metrics="[]",
+        weekly_pnl_by_asset="[]",
     )
 
     report = format_weekly_report(analytics, "All holdings visible.")
     assert "• A9: $9.00 (1.00%)" not in report.text
-    assert "• A10: $10.00 (1.00%)" in report.text
-    assert "• A11: $11.00 (1.00%)" in report.text
+    assert "• A10: $10.00 (1.00%) | 7d PnL: → $0.00 (0.00%)" in report.text
+    assert "• A11: $11.00 (1.00%) | 7d PnL: → $0.00 (0.00%)" in report.text

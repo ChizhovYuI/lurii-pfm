@@ -32,7 +32,7 @@ def test_render_weekly_report_user_prompt_formats_analytics():
         currency_exposure='[{"currency":"USD","usd_value":"5000"}]',
         risk_metrics='{"concentration_percentage":"56.7"}',
         pnl='{"weekly":{"absolute_change":"120"}}',
-        yield_metrics='[{"source":"blend","asset":"USDC","yield_amount":"10"}]',
+        weekly_pnl_by_asset='[{"asset":"BTC","absolute_change":"120","percentage_change":"1.8"}]',
     )
 
     prompt = render_weekly_report_user_prompt(analytics)
@@ -44,4 +44,4 @@ def test_render_weekly_report_user_prompt_formats_analytics():
     assert '"currency": "USD"' in prompt
     assert '"concentration_percentage": "56.7"' in prompt
     assert '"absolute_change": "120"' in prompt
-    assert '"yield_amount": "10"' in prompt
+    assert "Weekly PnL by asset" in prompt

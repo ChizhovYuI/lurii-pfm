@@ -38,8 +38,8 @@ Risk metrics:
 PnL:
 {pnl}
 
-Yield:
-{yield_metrics}
+Weekly PnL by asset:
+{weekly_pnl_by_asset}
 
 Write a report with these sections:
 1) Market context
@@ -67,7 +67,7 @@ class AnalyticsSummary:
     currency_exposure: str
     risk_metrics: str
     pnl: str
-    yield_metrics: str
+    weekly_pnl_by_asset: str
 
 
 def render_weekly_report_user_prompt(analytics: AnalyticsSummary) -> str:
@@ -81,7 +81,7 @@ def render_weekly_report_user_prompt(analytics: AnalyticsSummary) -> str:
         currency_exposure=_pretty_json(analytics.currency_exposure),
         risk_metrics=_pretty_json(analytics.risk_metrics),
         pnl=_pretty_json(analytics.pnl),
-        yield_metrics=_pretty_json(analytics.yield_metrics),
+        weekly_pnl_by_asset=_pretty_json(analytics.weekly_pnl_by_asset),
     )
 
 

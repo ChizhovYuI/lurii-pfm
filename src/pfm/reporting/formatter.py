@@ -24,7 +24,7 @@ def format_weekly_report(
     """Build Telegram HTML report from analytics and AI commentary."""
     allocation_rows = _parse_list_json(analytics.allocation_by_asset)
     pnl = _parse_dict_json(analytics.pnl)
-    yield_rows = _parse_list_json(analytics.yield_metrics)
+    weekly_asset_rows = _parse_list_json(analytics.weekly_pnl_by_asset)
 
     weekly_pnl = _parse_dict_json(json.dumps(pnl.get("weekly", {})))
     weekly_abs = _to_decimal(weekly_pnl.get("absolute_change", "0"))
@@ -32,6 +32,9 @@ def format_weekly_report(
     monthly_pnl = _parse_dict_json(json.dumps(pnl.get("monthly", {})))
     monthly_abs = _to_decimal(monthly_pnl.get("absolute_change", "0"))
     monthly_pct = _to_decimal(monthly_pnl.get("percentage_change", "0"))
+    weekly_pnl_by_asset = {
+        str(row.get("asset", "")).upper(): row for row in weekly_asset_rows if str(row.get("asset", "")).strip()
+    }
 
     lines = [
         f"<b>PFM Weekly Report</b> — {analytics.as_of_date.isoformat()}",
@@ -53,22 +56,17 @@ def format_weekly_report(
             if usd_value < HOLDING_MIN_DISPLAY_USD:
                 continue
             percentage = _to_decimal(row.get("percentage", "0")).quantize(Decimal("0.01"))
-            lines.append(f"• {asset}: ${_fmt_money(usd_value)} ({percentage}%)")
+            weekly_row = weekly_pnl_by_asset.get(str(row.get("asset", "")).upper(), {})
+            weekly_abs_change = _to_decimal(weekly_row.get("absolute_change", "0"))
+            weekly_pct_change = _to_decimal(weekly_row.get("percentage_change", "0")).quantize(Decimal("0.01"))
+            lines.append(
+                f"• {asset}: ${_fmt_money(usd_value)} ({percentage}%) | "
+                f"7d PnL: {_pnl_arrow(weekly_abs_change)} ${_fmt_money(weekly_abs_change)} ({weekly_pct_change}%)"
+            )
             shown_holding = True
 
     if not shown_holding:
         lines.append("• No holdings data available.")
-
-    lines.extend(["", "<b>Yield</b>"])
-    if yield_rows:
-        for row in yield_rows:
-            source = html.escape(str(row.get("source", "unknown")).upper())
-            asset = html.escape(str(row.get("asset", "UNKNOWN")).upper())
-            yield_amount = _to_decimal(row.get("yield_amount", "0"))
-            yield_pct = _to_decimal(row.get("yield_percentage", "0")).quantize(Decimal("0.01"))
-            lines.append(f"• {source}/{asset}: ${_fmt_money(yield_amount)} ({yield_pct}%)")
-    else:
-        lines.append("• No yield data available.")
 
     lines.extend(["", "<b>AI Commentary</b>", html.escape(commentary).replace("\n", "<br>")])
 
