@@ -69,11 +69,12 @@ Personal Financial Management system that aggregates assets and statements from 
 - F1.5: Handle IBKR Flex Query (scheduled, EOD data)
 - F1.6: Handle Blend Soroban contract position reading
 - F1.7: Store raw responses for auditability
+- F1.8: Snapshot writes are idempotent per `source+date` (latest run replaces previous rows for that source/day)
 
 ### F2 — Storage
 
 - F2.1: Local SQLite database
-- F2.2: Daily snapshots of all positions (historical tracking)
+- F2.2: Daily snapshots of all positions (historical tracking), with one effective snapshot set per source/day
 - F2.3: Transaction log (normalized across all sources)
 - F2.4: Price history cache (for PnL calculations)
 - F2.5: Schema migrations (alembic or similar)
@@ -138,8 +139,9 @@ Personal Financial Management system that aggregates assets and statements from 
 
 - Graceful degradation: if one source fails, report the rest + flag the error
 - Retry with backoff for transient API failures
-- Idempotent fetchers (safe to re-run)
+- Idempotent snapshot persistence (safe to re-run collect multiple times per day)
 - Logging with structured output
+- CoinGecko calls serialized and retried on `429` with backoff
 
 ### NF4 — Performance
 
@@ -164,7 +166,7 @@ Personal Financial Management system that aggregates assets and statements from 
 | IBKR | [ibflex](https://pypi.org/project/ibflex/) (Flex Query parser) |
 | PDF parsing | [pdfplumber](https://github.com/jsvine/pdfplumber) |
 | KBank email | Python stdlib (`imaplib` + `email`) |
-| Pricing | [CoinGecko API](https://docs.coingecko.com/reference/introduction) (free tier) |
+| Pricing | [CoinGecko API](https://docs.coingecko.com/reference/introduction) + SQLite-backed persistent cache (`prices` table) |
 | AI | [anthropic](https://docs.anthropic.com/) (Claude API) |
 | Telegram | Raw httpx (push-only bot) |
 | Scheduler | cron / systemd timer (external) |
@@ -309,7 +311,7 @@ pfm import-kbank /path/to/statement.pdf   # Import KBank PDF manually
 ## Open Questions
 
 1. **IBKR token refresh** — Flex tokens expire after 6 hours. Automation strategy?
-2. ~~**Blend pool IDs**~~ — resolved: `BLEND_POOL_CONTRACT_ID` env var
+2. ~~**Blend pool IDs**~~ — resolved: per-source credential in `pfm source add` (`pool_contract_id`)
 3. ~~**KBank statement format**~~ — resolved: parser handles newline-delimited cells, password-protected PDFs, Gmail IMAP auto-fetch
 4. ~~**Binance TH API differences**~~ — resolved: uses v1 API endpoints instead of v3
 5. **Tax reporting** — future scope? (capital gains, FIFO/LIFO cost basis methods)

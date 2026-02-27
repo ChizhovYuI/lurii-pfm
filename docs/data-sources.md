@@ -297,6 +297,10 @@ Two modes supported:
 1. **Auto (Gmail IMAP):** Collector connects to Gmail via IMAP, searches for emails from `K-ElectronicDocument@kasikornbank.com`, downloads the latest PDF attachment, and parses it automatically.
 2. **Manual:** `pfm import-kbank /path/to/statement.pdf` — parse a local PDF file directly.
 
+Balance handling:
+- Ending balance is parsed in THB and converted to USD at collect time for analytics.
+- Transactions remain recorded in THB (`usd_value=0` currently; historical FX conversion is deferred).
+
 ### Setup (Gmail auto-fetch)
 
 1. In [K PLUS](https://www.kasikornbank.com/en/personal/Digital-banking/Pages/KPLUS.aspx) app → request statement (sends password-protected PDF to your email)
@@ -364,6 +368,12 @@ GET https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService/GetSt
 3. Add to pfm: `pfm source add` → select `ibkr` → enter flex token and query ID
 4. Schedule daily cron job ~30 min after market close
 5. API docs: [interactivebrokers.github.io/tws-api](https://interactivebrokers.github.io/tws-api/)
+
+### Collector Runtime Notes
+
+- `SendRequest` calls are throttled with a minimum delay between requests.
+- The collector reuses a short-lived statement cache across `fetch_balances()` and `fetch_transactions()` within one run.
+- This reduces `ErrorCode 1018` ("Too many requests") during concurrent collect runs.
 
 ### Python Library
 
