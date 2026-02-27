@@ -27,6 +27,9 @@ def format_weekly_report(
     weekly_pnl = _parse_dict_json(json.dumps(pnl.get("weekly", {})))
     weekly_abs = _to_decimal(weekly_pnl.get("absolute_change", "0"))
     weekly_pct = _to_decimal(weekly_pnl.get("percentage_change", "0"))
+    monthly_pnl = _parse_dict_json(json.dumps(pnl.get("monthly", {})))
+    monthly_abs = _to_decimal(monthly_pnl.get("absolute_change", "0"))
+    monthly_pct = _to_decimal(monthly_pnl.get("percentage_change", "0"))
 
     lines = [
         f"<b>PFM Weekly Report</b> — {analytics.as_of_date.isoformat()}",
@@ -34,12 +37,14 @@ def format_weekly_report(
         "",
         f"<b>PnL (Weekly)</b>: {_pnl_arrow(weekly_abs)} ${_fmt_money(weekly_abs)} "
         f"({weekly_pct.quantize(Decimal('0.01'))}%)",
+        f"<b>PnL (Monthly)</b>: {_pnl_arrow(monthly_abs)} ${_fmt_money(monthly_abs)} "
+        f"({monthly_pct.quantize(Decimal('0.01'))}%)",
         "",
-        "<b>Top Holdings</b>",
+        "<b>All Holdings</b>",
     ]
 
     if allocation_rows:
-        for row in allocation_rows[:10]:
+        for row in allocation_rows:
             asset = html.escape(str(row.get("asset", "UNKNOWN")))
             usd_value = _to_decimal(row.get("usd_value", "0"))
             percentage = _to_decimal(row.get("percentage", "0")).quantize(Decimal("0.01"))
