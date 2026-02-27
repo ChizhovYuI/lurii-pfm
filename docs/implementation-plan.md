@@ -555,7 +555,7 @@ Push-only using raw `httpx`:
 - `async def send_error_alert(errors: list[str]) -> bool`
 - Handle 4096 char limit (split messages)
 
-### Task 6.2 — Report formatter `src/pfm/reporting/formatter.py` [M]
+### Task 6.2 — Report formatter `src/pfm/reporting/formatter.py` [M] ✅
 
 **Dependencies:** 6.1, Phase 4, Phase 5
 
