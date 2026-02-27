@@ -306,7 +306,7 @@ def collect(source_name: str | None) -> None:
     _print_collect_results(results)
 
 
-async def _collect_async(source_name: str | None) -> list[CollectorResult]:  # noqa: PLR0912
+async def _collect_async(source_name: str | None) -> list[CollectorResult]:
     """Run collection for enabled sources (or a single named source)."""
     settings = get_settings()
     store = SourceStore(settings.database_path)
@@ -335,11 +335,9 @@ async def _collect_async(source_name: str | None) -> list[CollectorResult]:  # n
         cache_db_path=settings.database_path,
     )
     results: list[CollectorResult] = []
-    task_sources: list[str] = []
 
     try:
         async with Repository(settings.database_path) as repo:
-            tasks = []
             for src in sources_to_run:
                 collector_cls = COLLECTOR_REGISTRY.get(src.type)
                 if collector_cls is None:
@@ -351,27 +349,22 @@ async def _collect_async(source_name: str | None) -> list[CollectorResult]:  # n
                 creds = json.loads(src.credentials)
                 collector = collector_cls(pricing, **creds)
                 click.echo(f"Collecting: {src.name} ({src.type})...")
-                tasks.append(collector.collect(repo))
-                task_sources.append(src.name)
-
-            task_results = await asyncio.gather(*tasks, return_exceptions=True)
-            for source, result in zip(task_sources, task_results, strict=True):
-                if isinstance(result, BaseException):
-                    if isinstance(result, Exception):
-                        logger.exception("Unhandled collector exception from '%s': %s", source, result)
-                    else:  # pragma: no cover - defensive guardrail
-                        logger.error("Collector raised a base exception from '%s': %s", source, result)
+                try:
+                    result = await collector.collect(repo)
+                except BaseException as exc:
+                    logger.exception("Unhandled collector exception from '%s'", src.name)
                     results.append(
                         CollectorResult(
-                            source=source,
+                            source=src.name,
                             snapshots_count=0,
                             transactions_count=0,
-                            errors=[f"Unhandled collector error: {result}"],
+                            errors=[f"Unhandled collector error: {exc}"],
                             duration_seconds=0.0,
                         )
                     )
-                else:
-                    results.append(result)
+                    continue
+
+                results.append(result)
     finally:
         await pricing.close()
 

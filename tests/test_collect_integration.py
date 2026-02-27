@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -124,3 +125,51 @@ async def test_collect_async_source_filter_runs_one_source(tmp_path):
         snapshots = await repo.get_latest_snapshots()
     assert len(snapshots) == 1
     assert snapshots[0].source == "wise"
+
+
+async def test_collect_async_runs_sources_sequentially(tmp_path):
+    db_path = tmp_path / "collect-sequential.db"
+    await init_db(db_path)
+    store = SourceStore(db_path)
+    await store.add("wise-main", "wise", {"api_token": "wise-token"})
+    await store.add("lobstr-main", "lobstr", {"stellar_address": "GABC123"})
+
+    events: list[str] = []
+
+    class _SlowWiseCollector(BaseCollector):
+        source_name = "wise"
+
+        def __init__(self, pricing, *, api_token: str) -> None:
+            super().__init__(pricing)
+            self._api_token = api_token
+
+        async def fetch_balances(self) -> list[Snapshot]:
+            events.append("wise-start")
+            await asyncio.sleep(0.02)
+            events.append("wise-end")
+            return []
+
+        async def fetch_transactions(self, since: date | None = None) -> list[Transaction]:
+            return []
+
+    class _FastLobstrCollector(BaseCollector):
+        source_name = "lobstr"
+
+        def __init__(self, pricing, *, stellar_address: str) -> None:
+            super().__init__(pricing)
+            self._stellar_address = stellar_address
+
+        async def fetch_balances(self) -> list[Snapshot]:
+            events.append("lobstr-start")
+            return []
+
+        async def fetch_transactions(self, since: date | None = None) -> list[Transaction]:
+            return []
+
+    settings = SimpleNamespace(database_path=db_path, coingecko_api_key="")
+    registry = {"wise": _SlowWiseCollector, "lobstr": _FastLobstrCollector}
+    with patch("pfm.cli.get_settings", return_value=settings), patch("pfm.cli.COLLECTOR_REGISTRY", registry):
+        results = await _collect_async(None)
+
+    assert len(results) == 2
+    assert events == ["wise-start", "wise-end", "lobstr-start"]
