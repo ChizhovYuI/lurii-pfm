@@ -105,3 +105,14 @@ def test_format_ai_commentary_escapes_html_and_preserves_lines():
     message = format_ai_commentary("Watch <volatility>.\nRebalance slowly.")
     assert message.startswith("<b>AI Commentary</b>\n")
     assert "Watch &lt;volatility&gt;.\nRebalance slowly." in message
+
+
+def test_format_ai_commentary_normalizes_markdown():
+    message = format_ai_commentary(
+        "### 1) Market Context\n" "* **Net Worth:** $60,922.81\n" "* Use `cash` buffer\n" "Plain line"
+    )
+    assert "###" not in message
+    assert "• <b>Net Worth:</b> $60,922.81" in message
+    assert "• Use cash buffer" in message
+    assert "<b>1) Market Context</b>" in message
+    assert "Plain line" in message

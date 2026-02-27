@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -49,6 +50,10 @@ _KNOWN_CRYPTO_ASSETS = {
     "DOT",
     "LINK",
 }
+_AI_COMMENTARY_HEADING_RE = re.compile(r"^\s*#{1,6}\s*(.+?)\s*$")
+_AI_COMMENTARY_BULLET_RE = re.compile(r"^\s*[*-]\s+(.+?)\s*$")
+_AI_COMMENTARY_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+_AI_COMMENTARY_MAX_CHARS = 1800
 
 
 def format_weekly_report(
@@ -118,7 +123,51 @@ def format_weekly_report(
 def format_ai_commentary(commentary: str) -> str:
     """Build a separate Telegram HTML message for AI commentary."""
     normalized = commentary.replace("\r\n", "\n").replace("\r", "\n")
-    return "\n".join(["<b>AI Commentary</b>", html.escape(normalized)])
+    cleaned = _normalize_ai_commentary(normalized)
+    return f"<b>AI Commentary</b>\n{cleaned}"
+
+
+def _normalize_ai_commentary(text: str) -> str:
+    rendered_lines: list[str] = []
+    previous_blank = False
+    for raw_line in text.split("\n"):
+        line = raw_line.strip()
+        if not line:
+            if rendered_lines and not previous_blank:
+                rendered_lines.append("")
+            previous_blank = True
+            continue
+
+        previous_blank = False
+        heading_match = _AI_COMMENTARY_HEADING_RE.match(line)
+        if heading_match:
+            heading = _render_inline(heading_match.group(1))
+            rendered_lines.append(f"<b>{heading}</b>")
+            continue
+
+        bullet_match = _AI_COMMENTARY_BULLET_RE.match(line)
+        if bullet_match:
+            bullet = _render_inline(bullet_match.group(1))
+            rendered_lines.append(f"• {bullet}")
+            continue
+
+        rendered_lines.append(_render_inline(line))
+
+    result = "\n".join(rendered_lines).strip()
+    if len(result) <= _AI_COMMENTARY_MAX_CHARS:
+        return result
+
+    clipped = result[:_AI_COMMENTARY_MAX_CHARS].rstrip()
+    last_newline = clipped.rfind("\n")
+    if last_newline > 0:
+        clipped = clipped[:last_newline].rstrip()
+    return f"{clipped}\n…"
+
+
+def _render_inline(text: str) -> str:
+    escaped = html.escape(text)
+    escaped = escaped.replace("`", "")
+    return _AI_COMMENTARY_BOLD_RE.sub(r"<b>\1</b>", escaped)
 
 
 def _parse_list_json(raw_json: str) -> list[dict[str, object]]:
