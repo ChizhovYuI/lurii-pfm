@@ -545,7 +545,7 @@ Mocked Anthropic client. Test prompt rendering + fallback.
 
 ## Phase 6 — Telegram Reporting
 
-### Task 6.1 — Telegram bot client `src/pfm/reporting/telegram.py` [M]
+### Task 6.1 — Telegram bot client `src/pfm/reporting/telegram.py` [M] ✅
 
 **Dependencies:** Phase 0
 
