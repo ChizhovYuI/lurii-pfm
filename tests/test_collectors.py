@@ -22,7 +22,7 @@ from pfm.collectors.kbank import KbankCollector
 from pfm.collectors.lobstr import LobstrCollector
 from pfm.collectors.okx import OkxCollector
 from pfm.collectors.wise import WiseCollector
-from pfm.db.models import Transaction, TransactionType
+from pfm.db.models import Snapshot, Transaction, TransactionType
 from pfm.pricing.coingecko import PricingService
 
 
@@ -995,6 +995,25 @@ async def test_kbank_no_pdf_no_gmail_skips(pricing):
     collector = KbankCollector(pricing, gmail_address="", gmail_app_password="")
     snapshots = await collector.fetch_balances()
     assert snapshots == []
+
+
+async def test_kbank_converts_thb_to_usd(pricing):
+    collector = KbankCollector(pricing)
+    fake_snapshot = Snapshot(
+        date=date(2024, 1, 15),
+        source="kbank",
+        asset="THB",
+        amount=Decimal("1000"),
+        usd_value=Decimal(0),
+        raw_json="{}",
+    )
+    with patch.object(collector, "_parse_pdf", return_value=([fake_snapshot], [])):
+        collector._pdf_path = Path("/tmp/fake.pdf")
+        pricing._set_cache("THB", Decimal("0.028"))
+        snapshots = await collector.fetch_balances()
+
+    assert len(snapshots) == 1
+    assert snapshots[0].usd_value == Decimal("28.000")
 
 
 async def test_kbank_set_pdf_path(pricing):

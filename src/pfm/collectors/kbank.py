@@ -80,9 +80,28 @@ class KbankCollector(BaseCollector):
             return []
 
         snapshots, transactions = self._parse_pdf(self._pdf_path)
-        self._cached_snapshots = snapshots
+        converted_snapshots: list[Snapshot] = []
+        for snap in snapshots:
+            usd_value = snap.usd_value
+            if snap.asset:
+                try:
+                    usd_value = await self._pricing.convert_to_usd(snap.amount, snap.asset)
+                except Exception:
+                    logger.exception("KBank: failed to convert %s %s to USD", snap.amount, snap.asset)
+            converted_snapshots.append(
+                Snapshot(
+                    date=snap.date,
+                    source=snap.source,
+                    asset=snap.asset,
+                    amount=snap.amount,
+                    usd_value=usd_value,
+                    raw_json=snap.raw_json,
+                )
+            )
+
+        self._cached_snapshots = converted_snapshots
         self._cached_transactions = transactions
-        return snapshots
+        return converted_snapshots
 
     async def fetch_transactions(self, since: date | None = None) -> list[Transaction]:
         """Return transactions from the most recently parsed statement."""
