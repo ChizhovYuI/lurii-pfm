@@ -20,7 +20,8 @@ def test_format_weekly_report_contains_required_sections():
         risk_metrics="{}",
         pnl='{"weekly":{"absolute_change":"123.45","percentage_change":"1.23"},'
         '"monthly":{"absolute_change":"456.78","percentage_change":"4.56"}}',
-        yield_metrics='[{"source":"blend","asset":"USDC","yield_amount":"10","yield_percentage":"2.5"}]',
+        yield_metrics='[{"source":"blend","asset":"USDC","yield_amount":"10","yield_percentage":"2.5"},'
+        '{"source":"bybit","asset":"SOL","yield_amount":"3","yield_percentage":"1.2"}]',
     )
 
     report = format_weekly_report(analytics, "Watch <volatility>.\nRebalance slowly.", warnings=["Data is partial"])
@@ -31,8 +32,9 @@ def test_format_weekly_report_contains_required_sections():
     assert "<b>PnL (Monthly)</b>: ↑ $456.78 (4.56%)" in report.text
     assert "<b>All Holdings</b>" in report.text
     assert "• BTC: $7,000.00 (56.70%)" in report.text
-    assert "<b>Yield (Blend)</b>" in report.text
-    assert "• USDC: $10.00 (2.50%)" in report.text
+    assert "<b>Yield</b>" in report.text
+    assert "• BLEND/USDC: $10.00 (2.50%)" in report.text
+    assert "• BYBIT/SOL: $3.00 (1.20%)" in report.text
     assert "<b>AI Commentary</b>" in report.text
     assert "Watch &lt;volatility&gt;.<br>Rebalance slowly." in report.text
     assert "<b>Warnings</b>" in report.text
@@ -58,7 +60,7 @@ def test_format_weekly_report_handles_missing_data_branches():
     assert "<b>PnL (Weekly)</b>: ↓ $-5.00 (-1.00%)" in report.text
     assert "<b>PnL (Monthly)</b>: ↓ $-20.00 (-3.00%)" in report.text
     assert "• No holdings data available." in report.text
-    assert "• No Blend yield data available." in report.text
+    assert "• No yield data available." in report.text
 
 
 def test_format_weekly_report_tolerates_invalid_numeric_values():
@@ -79,7 +81,7 @@ def test_format_weekly_report_tolerates_invalid_numeric_values():
     assert "<b>PnL (Weekly)</b>: → $0.00 (0.00%)" in report.text
     assert "<b>PnL (Monthly)</b>: → $0.00 (0.00%)" in report.text
     assert "• BTC: $0.00 (0.00%)" in report.text
-    assert "• USDC: $0.00 (0.00%)" in report.text
+    assert "• BLEND/USDC: $0.00 (0.00%)" in report.text
 
 
 def test_format_weekly_report_includes_all_holdings_not_truncated():

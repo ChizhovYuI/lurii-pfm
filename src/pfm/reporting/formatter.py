@@ -52,16 +52,16 @@ def format_weekly_report(
     else:
         lines.append("• No holdings data available.")
 
-    lines.extend(["", "<b>Yield (Blend)</b>"])
-    blend_rows = [row for row in yield_rows if str(row.get("source", "")).lower() == "blend"]
-    if blend_rows:
-        for row in blend_rows:
-            asset = html.escape(str(row.get("asset", "UNKNOWN")))
+    lines.extend(["", "<b>Yield</b>"])
+    if yield_rows:
+        for row in yield_rows:
+            source = html.escape(str(row.get("source", "unknown")).upper())
+            asset = html.escape(str(row.get("asset", "UNKNOWN")).upper())
             yield_amount = _to_decimal(row.get("yield_amount", "0"))
             yield_pct = _to_decimal(row.get("yield_percentage", "0")).quantize(Decimal("0.01"))
-            lines.append(f"• {asset}: ${_fmt_money(yield_amount)} ({yield_pct}%)")
+            lines.append(f"• {source}/{asset}: ${_fmt_money(yield_amount)} ({yield_pct}%)")
     else:
-        lines.append("• No Blend yield data available.")
+        lines.append("• No yield data available.")
 
     lines.extend(["", "<b>AI Commentary</b>", html.escape(commentary).replace("\n", "<br>")])
 
