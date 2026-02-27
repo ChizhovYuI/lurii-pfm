@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sys
 from typing import TYPE_CHECKING
 
 import click
 
+from pfm.collectors import COLLECTOR_REGISTRY
 from pfm.config import get_settings
-from pfm.db.models import init_db
+from pfm.db.models import CollectorResult, init_db
 from pfm.db.source_store import (
     DuplicateSourceError,
     InvalidCredentialsError,
@@ -23,6 +25,8 @@ if TYPE_CHECKING:
     from collections.abc import Coroutine
 
     from pfm.db.models import Source
+
+logger = logging.getLogger(__name__)
 
 
 def _mask(value: str) -> str:
@@ -226,9 +230,89 @@ def source_disable(name: str) -> None:
 
 @cli.command()
 @click.option("--source", "source_name", default=None, help="Run a single source by name.")
-def collect(source_name: str | None) -> None:  # noqa: ARG001
+def collect(source_name: str | None) -> None:
     """Fetch balances and transactions from configured sources."""
-    click.echo("collect: not yet implemented")
+    _ensure_db()
+    results = _run(_collect_async(source_name))
+    _print_collect_results(results)
+
+
+async def _collect_async(source_name: str | None) -> list[CollectorResult]:
+    """Run collection for enabled sources (or a single named source)."""
+    settings = get_settings()
+    store = SourceStore(settings.database_path)
+
+    if source_name:
+        try:
+            src = await store.get(source_name)
+        except SourceNotFoundError:
+            click.echo(f"Error: source '{source_name}' not found.", err=True)
+            sys.exit(1)
+        if not src.enabled:
+            click.echo(f"Warning: source '{source_name}' is disabled. Running anyway.")
+        sources_to_run = [src]
+    else:
+        sources_to_run = await store.list_enabled()
+        if not sources_to_run:
+            click.echo("No enabled sources. Run 'pfm source add' first.")
+            return []
+
+    # Late imports to avoid circular dependencies and keep startup fast
+    from pfm.db.repository import Repository
+    from pfm.pricing import PricingService
+
+    pricing = PricingService(api_key=settings.coingecko_api_key)
+    results: list[CollectorResult] = []
+
+    try:
+        async with Repository(settings.database_path) as repo:
+            tasks = []
+            for src in sources_to_run:
+                collector_cls = COLLECTOR_REGISTRY.get(src.type)
+                if collector_cls is None:
+                    msg = f"No collector registered for type '{src.type}'"
+                    logger.warning(msg)
+                    click.echo(f"Skipping '{src.name}': {msg}", err=True)
+                    continue
+
+                creds = json.loads(src.credentials)
+                collector = collector_cls(pricing, **creds)
+                click.echo(f"Collecting: {src.name} ({src.type})...")
+                tasks.append(collector.collect(repo))
+
+            results = await asyncio.gather(*tasks)
+    finally:
+        await pricing.close()
+
+    return list(results)
+
+
+def _print_collect_results(results: list[CollectorResult]) -> None:
+    """Print a summary table of collection results."""
+    if not results:
+        return
+
+    click.echo()
+    click.echo("Collection complete:")
+    click.echo(f"{'SOURCE':<20}  {'SNAPS':>5}  {'TXNS':>5}  {'ERRORS':>6}  {'TIME':>7}")
+    click.echo("-" * 55)
+
+    total_snaps = 0
+    total_txns = 0
+    total_errors = 0
+    for r in results:
+        total_snaps += r.snapshots_count
+        total_txns += r.transactions_count
+        total_errors += len(r.errors)
+        status = f"{r.duration_seconds:.1f}s"
+        click.echo(
+            f"{r.source:<20}  {r.snapshots_count:>5}  " f"{r.transactions_count:>5}  {len(r.errors):>6}  {status:>7}",
+        )
+        for err in r.errors:
+            click.echo(f"  ! {err}", err=True)
+
+    click.echo("-" * 55)
+    click.echo(f"{'TOTAL':<20}  {total_snaps:>5}  {total_txns:>5}  {total_errors:>6}")
 
 
 @cli.command()

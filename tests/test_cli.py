@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import asyncio
 from typing import TYPE_CHECKING
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
 
 from pfm.cli import cli
-from pfm.db.models import init_db
+from pfm.db.models import CollectorResult, init_db
 from pfm.db.source_store import SourceStore
 
 if TYPE_CHECKING:
@@ -36,6 +36,7 @@ def _patched_settings(db_path):
     with patch("pfm.cli.get_settings") as mock_settings:
         settings = mock_settings.return_value
         settings.database_path = db_path
+        settings.coingecko_api_key = ""
         yield
 
 
@@ -252,13 +253,144 @@ def test_mask_long():
     assert _mask("123456789") == "123...789"
 
 
-# ── pipeline stubs ────────────────────────────────────────────────────
+# ── collect command ───────────────────────────────────────────────────
 
 
-def test_collect_stub(runner):
+def _make_mock_collector(source_name, snaps=1, txns=0, errors=None):
+    """Create a mock collector class that returns a CollectorResult."""
+    result = CollectorResult(
+        source=source_name,
+        snapshots_count=snaps,
+        transactions_count=txns,
+        errors=errors or [],
+        duration_seconds=0.1,
+    )
+
+    mock_cls = MagicMock()
+    mock_instance = MagicMock()
+    mock_instance.collect = AsyncMock(return_value=result)
+    mock_cls.return_value = mock_instance
+    return mock_cls
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_collect_no_sources(runner):
     result = runner.invoke(cli, ["collect"])
     assert result.exit_code == 0
-    assert "not yet implemented" in result.output
+    assert "No enabled sources" in result.output
+
+
+@pytest.fixture
+def _mock_pricing_repo():
+    """Mock PricingService and Repository for collect tests."""
+    mock_pricing = MagicMock()
+    mock_pricing.close = AsyncMock()
+
+    mock_repo = MagicMock()
+    mock_repo.__aenter__ = AsyncMock(return_value=mock_repo)
+    mock_repo.__aexit__ = AsyncMock(return_value=None)
+
+    with (
+        patch("pfm.pricing.PricingService", return_value=mock_pricing),
+        patch("pfm.db.repository.Repository", return_value=mock_repo),
+    ):
+        yield
+
+
+@pytest.mark.usefixtures("_patched_settings", "_mock_pricing_repo")
+def test_collect_single_source(runner, store):
+    asyncio.run(store.add("wise-main", "wise", {"api_token": "t"}))
+
+    mock_cls = _make_mock_collector("wise")
+    with patch("pfm.cli.COLLECTOR_REGISTRY", {"wise": mock_cls}):
+        result = runner.invoke(cli, ["collect", "--source", "wise-main"])
+
+    assert result.exit_code == 0
+    assert "Collecting: wise-main" in result.output
+    assert "Collection complete" in result.output
+    mock_cls.assert_called_once()
+
+
+@pytest.mark.usefixtures("_patched_settings", "_mock_pricing_repo")
+def test_collect_all_enabled(runner, store):
+    asyncio.run(
+        store.add(
+            "okx-main",
+            "okx",
+            {"api_key": "k", "api_secret": "s", "passphrase": "p"},
+        )
+    )
+    asyncio.run(store.add("wise-main", "wise", {"api_token": "t"}))
+
+    mock_okx = _make_mock_collector("okx")
+    mock_wise = _make_mock_collector("wise")
+    registry = {"okx": mock_okx, "wise": mock_wise}
+    with patch("pfm.cli.COLLECTOR_REGISTRY", registry):
+        result = runner.invoke(cli, ["collect"])
+
+    assert result.exit_code == 0
+    assert "Collecting: okx-main" in result.output
+    assert "Collecting: wise-main" in result.output
+    assert "TOTAL" in result.output
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_collect_skips_disabled(runner, store):
+    asyncio.run(store.add("wise-main", "wise", {"api_token": "t"}))
+    asyncio.run(store.update("wise-main", enabled=False))
+
+    result = runner.invoke(cli, ["collect"])
+    assert result.exit_code == 0
+    assert "No enabled sources" in result.output
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_collect_source_not_found(runner):
+    result = runner.invoke(cli, ["collect", "--source", "nonexistent"])
+    assert result.exit_code == 1
+    assert "not found" in result.output
+
+
+@pytest.mark.usefixtures("_patched_settings", "_mock_pricing_repo")
+def test_collect_disabled_source_by_name(runner, store):
+    """Running a disabled source by name should warn but still run."""
+    asyncio.run(store.add("wise-main", "wise", {"api_token": "t"}))
+    asyncio.run(store.update("wise-main", enabled=False))
+
+    mock_cls = _make_mock_collector("wise")
+    with patch("pfm.cli.COLLECTOR_REGISTRY", {"wise": mock_cls}):
+        result = runner.invoke(cli, ["collect", "--source", "wise-main"])
+
+    assert result.exit_code == 0
+    assert "disabled" in result.output
+    assert "Collecting: wise-main" in result.output
+
+
+@pytest.mark.usefixtures("_patched_settings", "_mock_pricing_repo")
+def test_collect_unknown_collector_type(runner, store):
+    """Source in DB with no registered collector should be skipped."""
+    asyncio.run(store.add("wise-main", "wise", {"api_token": "t"}))
+
+    with patch("pfm.cli.COLLECTOR_REGISTRY", {}):
+        result = runner.invoke(cli, ["collect"])
+
+    assert result.exit_code == 0
+    assert "Skipping" in result.output
+
+
+@pytest.mark.usefixtures("_patched_settings", "_mock_pricing_repo")
+def test_collect_with_errors(runner, store):
+    asyncio.run(store.add("wise-main", "wise", {"api_token": "t"}))
+
+    mock_cls = _make_mock_collector("wise", errors=["Connection timeout"])
+    with patch("pfm.cli.COLLECTOR_REGISTRY", {"wise": mock_cls}):
+        result = runner.invoke(cli, ["collect", "--source", "wise-main"])
+
+    assert result.exit_code == 0
+    assert "Connection timeout" in result.output
+
+
+# ── pipeline stubs ────────────────────────────────────────────────────
 
 
 def test_analyze_stub(runner):

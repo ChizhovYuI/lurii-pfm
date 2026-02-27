@@ -5,7 +5,7 @@ from __future__ import annotations
 from pfm.collectors.base import BaseCollector
 
 # Registry: source_name -> collector class
-# Populated as collectors are implemented
+# Populated as collectors are imported below
 COLLECTOR_REGISTRY: dict[str, type[BaseCollector]] = {}
 
 
@@ -15,8 +15,31 @@ def register_collector(cls: type[BaseCollector]) -> type[BaseCollector]:
     return cls
 
 
+# Import all collector modules to populate the registry.
+# Each module uses @register_collector on its class.
+from pfm.collectors import (  # noqa: E402
+    binance,
+    binance_th,
+    blend,
+    bybit,
+    ibkr,
+    kbank,
+    lobstr,
+    okx,
+    wise,
+)
+
 __all__ = [
     "COLLECTOR_REGISTRY",
     "BaseCollector",
+    "binance",
+    "binance_th",
+    "blend",
+    "bybit",
+    "ibkr",
+    "kbank",
+    "lobstr",
+    "okx",
     "register_collector",
+    "wise",
 ]
