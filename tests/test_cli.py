@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from click.testing import CliRunner
 
+from pfm.ai import CommentaryResult
 from pfm.cli import cli
 from pfm.db.gemini_store import GeminiStore
 from pfm.db.models import CollectorResult, Snapshot, init_db
@@ -667,7 +668,11 @@ def test_report_uses_cached_ai_commentary(runner, db_path):
                 '{"weekly":{"absolute_change":"1.5","percentage_change":"1.0"}}',
             )
             await repo.save_analytics_metric(snapshot_date, "weekly_pnl_by_asset", "[]")
-            await repo.save_analytics_metric(snapshot_date, "ai_commentary", '{"text":"Cached comment"}')
+            await repo.save_analytics_metric(
+                snapshot_date,
+                "ai_commentary",
+                '{"text":"Cached comment","model":"gemini-2.5-flash"}',
+            )
 
     asyncio.run(_seed_analytics())
 
@@ -679,6 +684,7 @@ def test_report_uses_cached_ai_commentary(runner, db_path):
 
     assert result.exit_code == 0
     assert "Using cached AI commentary." in result.output
+    assert "AI commentary model: gemini-2.5-flash" in result.output
     assert "Report sent to Telegram." in result.output
 
 
@@ -752,11 +758,15 @@ def test_comment_command_generates_prints_and_caches(runner, db_path):
 
     asyncio.run(_seed_analytics())
 
-    with patch("pfm.ai.generate_commentary", AsyncMock(return_value="AI says hold steady.")):
+    with patch(
+        "pfm.ai.generate_commentary_with_model",
+        AsyncMock(return_value=CommentaryResult(text="AI says hold steady.", model="gemini-2.5-flash")),
+    ):
         result = runner.invoke(cli, ["comment"])
 
     assert result.exit_code == 0
     assert "AI commentary date: 2024-01-15" in result.output
+    assert "AI model: gemini-2.5-flash" in result.output
     assert "AI says hold steady." in result.output
     assert "AI commentary cached." in result.output
 
@@ -765,7 +775,10 @@ def test_comment_command_generates_prints_and_caches(runner, db_path):
             return await repo.get_analytics_metrics_by_date(date(2024, 1, 15))
 
     metrics = asyncio.run(_load_metrics())
-    assert json.loads(metrics["ai_commentary"]) == {"text": "AI says hold steady."}
+    assert json.loads(metrics["ai_commentary"]) == {
+        "text": "AI says hold steady.",
+        "model": "gemini-2.5-flash",
+    }
 
 
 @pytest.mark.usefixtures("_patched_settings")

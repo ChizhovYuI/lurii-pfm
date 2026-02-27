@@ -6,6 +6,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 from google import genai
@@ -36,6 +37,12 @@ FALLBACK_COMMENTARY = (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class CommentaryResult:
+    text: str
+    model: str | None
+
+
 async def generate_commentary(
     analytics: AnalyticsSummary,
     *,
@@ -43,11 +50,27 @@ async def generate_commentary(
     db_path: str | Path | None = None,
     client: genai.Client | None = None,
 ) -> str:
+    result = await generate_commentary_with_model(
+        analytics,
+        api_key=api_key,
+        db_path=db_path,
+        client=client,
+    )
+    return result.text
+
+
+async def generate_commentary_with_model(
+    analytics: AnalyticsSummary,
+    *,
+    api_key: str | None = None,
+    db_path: str | Path | None = None,
+    client: genai.Client | None = None,
+) -> CommentaryResult:
     """Generate weekly portfolio commentary using Gemini."""
     resolved_api_key = await resolve_gemini_api_key(api_key=api_key, db_path=db_path)
     if not resolved_api_key:
         logger.warning("Gemini API key is not configured; returning fallback commentary.")
-        return FALLBACK_COMMENTARY
+        return CommentaryResult(text=FALLBACK_COMMENTARY, model=None)
 
     prompt = render_weekly_report_user_prompt(analytics)
     prompt_chars = len(prompt)
@@ -77,7 +100,7 @@ async def generate_commentary(
             _log_token_usage(response, model=model)
             text = _extract_text(response)
             if text:
-                return _finalize_commentary_text(text)
+                return CommentaryResult(text=_finalize_commentary_text(text), model=model)
             logger.warning("Gemini model %s returned empty text. Trying next fallback model.", model)
     finally:
         if owns_client:
@@ -85,7 +108,7 @@ async def generate_commentary(
             sdk_client.close()
 
     logger.warning("All Gemini models failed or returned empty text; using fallback commentary.")
-    return FALLBACK_COMMENTARY
+    return CommentaryResult(text=FALLBACK_COMMENTARY, model=None)
 
 
 def _retry_delay_seconds(retry_after: str | None, attempt: int, model: str) -> float:

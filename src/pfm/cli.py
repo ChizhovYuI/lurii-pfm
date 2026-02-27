@@ -863,8 +863,11 @@ async def _report_async() -> bool:
             metrics = await repo.get_analytics_metrics_by_date(analytics.as_of_date)
 
         commentary = _parse_cached_ai_commentary(metrics.get("ai_commentary"))
+        commentary_model = _parse_cached_ai_commentary_model(metrics.get("ai_commentary"))
         if commentary:
             click.echo("Using cached AI commentary.")
+            if commentary_model:
+                click.echo(f"AI commentary model: {commentary_model}")
         else:
             commentary = (
                 "AI commentary is not cached for this analysis date. " "Run 'pfm comment' to generate and store it."
@@ -891,7 +894,7 @@ async def _comment_async() -> bool:
     settings = get_settings()
 
     # Late imports to avoid circular dependencies and keep startup fast
-    from pfm.ai import generate_commentary
+    from pfm.ai import generate_commentary_with_model
     from pfm.db.repository import Repository
 
     async with Repository(settings.database_path) as repo:
@@ -901,22 +904,30 @@ async def _comment_async() -> bool:
         return False
 
     try:
-        commentary = await generate_commentary(analytics)
+        result = await generate_commentary_with_model(analytics)
     except Exception as exc:  # pragma: no cover - defensive guardrail
         logger.exception("Unexpected AI commentary generation error")
         click.echo(f"Failed to generate AI commentary: {exc}", err=True)
         return False
 
+    metric_payload: dict[str, str] = {"text": result.text}
+    if result.model:
+        metric_payload["model"] = result.model
+
     async with Repository(settings.database_path) as repo:
         await repo.save_analytics_metric(
             analytics.as_of_date,
             "ai_commentary",
-            json.dumps({"text": commentary}),
+            json.dumps(metric_payload),
         )
 
     click.echo(f"AI commentary date: {analytics.as_of_date.isoformat()}")
+    if result.model:
+        click.echo(f"AI model: {result.model}")
+    else:
+        click.echo("AI model: fallback")
     click.echo("AI commentary:")
-    click.echo(commentary)
+    click.echo(result.text)
     click.echo("AI commentary cached.")
     return True
 
@@ -1039,16 +1050,35 @@ def _parse_cached_ai_commentary(raw_json: str | None) -> str | None:
         parsed = json.loads(raw_json)
     except json.JSONDecodeError:
         text = raw_json.strip()
-        return text if text else None
+        return text or None
 
     if isinstance(parsed, str):
         text = parsed.strip()
-        return text if text else None
+        return text or None
 
     if isinstance(parsed, dict):
         text_value = parsed.get("text")
         if isinstance(text_value, str):
             value = text_value.strip()
-            return value if value else None
+            return value or None
+
+    return None
+
+
+def _parse_cached_ai_commentary_model(raw_json: str | None) -> str | None:
+    """Parse cached AI commentary metric model name, if present."""
+    if raw_json is None:
+        return None
+
+    try:
+        parsed = json.loads(raw_json)
+    except json.JSONDecodeError:
+        return None
+
+    if isinstance(parsed, dict):
+        model_value = parsed.get("model")
+        if isinstance(model_value, str):
+            value = model_value.strip()
+            return value or None
 
     return None
