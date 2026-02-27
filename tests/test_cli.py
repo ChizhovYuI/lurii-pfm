@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from datetime import date
+from decimal import Decimal
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -10,7 +13,8 @@ import pytest
 from click.testing import CliRunner
 
 from pfm.cli import cli
-from pfm.db.models import CollectorResult, init_db
+from pfm.db.models import CollectorResult, Snapshot, init_db
+from pfm.db.repository import Repository
 from pfm.db.source_store import SourceStore
 
 if TYPE_CHECKING:
@@ -393,10 +397,71 @@ def test_collect_with_errors(runner, store):
 # ── pipeline stubs ────────────────────────────────────────────────────
 
 
-def test_analyze_stub(runner):
+@pytest.mark.usefixtures("_patched_settings")
+def test_analyze_no_snapshots(runner):
     result = runner.invoke(cli, ["analyze"])
     assert result.exit_code == 0
-    assert "not yet implemented" in result.output
+    assert "No snapshots found" in result.output
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_analyze_computes_and_caches_metrics(runner, db_path):
+    async def _seed_data() -> None:
+        async with Repository(db_path) as repo:
+            await repo.save_snapshots(
+                [
+                    Snapshot(
+                        date=date(2024, 1, 14),
+                        source="wise",
+                        asset="USD",
+                        amount=Decimal("100.0"),
+                        usd_value=Decimal("100.0"),
+                    ),
+                    Snapshot(
+                        date=date(2024, 1, 15),
+                        source="wise",
+                        asset="USD",
+                        amount=Decimal("120.0"),
+                        usd_value=Decimal("120.0"),
+                    ),
+                    Snapshot(
+                        date=date(2024, 1, 15),
+                        source="okx",
+                        asset="BTC",
+                        amount=Decimal("0.01"),
+                        usd_value=Decimal("450.0"),
+                    ),
+                ]
+            )
+
+    asyncio.run(_seed_data())
+
+    result = runner.invoke(cli, ["analyze"])
+    assert result.exit_code == 0
+    assert "Analytics date: 2024-01-15" in result.output
+    assert "Net worth (USD): 570.00" in result.output
+    assert "Cached analytics metrics" in result.output
+
+    async def _load_metrics() -> dict[str, str]:
+        async with Repository(db_path) as repo:
+            return await repo.get_analytics_metrics_by_date(date(2024, 1, 15))
+
+    metrics = asyncio.run(_load_metrics())
+    assert set(metrics) == {
+        "allocation_by_asset",
+        "allocation_by_category",
+        "allocation_by_source",
+        "currency_exposure",
+        "net_worth",
+        "pnl",
+        "risk_metrics",
+        "yield",
+    }
+    assert json.loads(metrics["net_worth"]) == {"usd": "570.0"}
+    assert json.loads(metrics["yield"]) == []
+    pnl = json.loads(metrics["pnl"])
+    assert pnl["daily"]["start_date"] == "2024-01-14"
+    assert pnl["daily"]["end_date"] == "2024-01-15"
 
 
 def test_report_stub(runner):

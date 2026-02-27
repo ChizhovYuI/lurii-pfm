@@ -6,6 +6,8 @@ import asyncio
 import json
 import logging
 import sys
+from datetime import date
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 import click
@@ -24,6 +26,7 @@ from pfm.source_types import SOURCE_TYPES
 if TYPE_CHECKING:
     from collections.abc import Coroutine
 
+    from pfm.analytics import PnlResult
     from pfm.db.models import Source
 
 logger = logging.getLogger(__name__)
@@ -321,7 +324,236 @@ def _print_collect_results(results: list[CollectorResult]) -> None:
 @cli.command()
 def analyze() -> None:
     """Run analytics on the latest snapshot."""
-    click.echo("analyze: not yet implemented")
+    _ensure_db()
+    _run(_analyze_async())
+
+
+def _fmt_money(value: Decimal) -> str:
+    """Format a decimal amount as money with 2 decimals and separators."""
+    return f"{value.quantize(Decimal('0.01')):,}"
+
+
+async def _analyze_async() -> None:
+    """Compute analytics for the latest snapshot date and cache results."""
+    settings = get_settings()
+
+    # Late imports to avoid circular dependencies and keep startup fast
+    from pfm.analytics import (
+        PnlPeriod,
+        compute_allocation_by_asset,
+        compute_allocation_by_category,
+        compute_allocation_by_source,
+        compute_currency_exposure,
+        compute_net_worth,
+        compute_pnl,
+        compute_risk_metrics,
+        compute_yield,
+    )
+    from pfm.db.repository import Repository
+
+    async with Repository(settings.database_path) as repo:
+        latest = await repo.get_latest_snapshots()
+        if not latest:
+            click.echo("No snapshots found. Run 'pfm collect' first.")
+            return
+
+        analysis_date = latest[0].date
+        all_snapshots = await repo.get_snapshots_for_range(analysis_date, analysis_date)
+        earliest_snapshots = await repo.get_snapshots_for_range(date.min, analysis_date)
+        start_date = min((s.date for s in earliest_snapshots), default=analysis_date)
+
+        net_worth = await compute_net_worth(repo, analysis_date)
+        alloc_asset = await compute_allocation_by_asset(repo, analysis_date)
+        alloc_source = await compute_allocation_by_source(repo, analysis_date)
+        alloc_category = await compute_allocation_by_category(repo, analysis_date)
+        currency_exposure = await compute_currency_exposure(repo, analysis_date)
+        risk = await compute_risk_metrics(repo, analysis_date)
+
+        pnl_daily = await compute_pnl(repo, analysis_date, PnlPeriod.DAILY)
+        pnl_weekly = await compute_pnl(repo, analysis_date, PnlPeriod.WEEKLY)
+        pnl_monthly = await compute_pnl(repo, analysis_date, PnlPeriod.MONTHLY)
+        pnl_all_time = await compute_pnl(repo, analysis_date, PnlPeriod.ALL_TIME)
+
+        snapshot_assets = {(s.source, s.asset.upper()) for s in all_snapshots}
+        yield_inputs: list[tuple[str, str]] = []
+        for source, asset in [("blend", "USDC"), ("okx", "USDC"), ("okx", "USDT")]:
+            if (source, asset) in snapshot_assets:
+                yield_inputs.append((source, asset))
+
+        yield_results = [
+            await compute_yield(repo, source, asset, start_date, analysis_date) for source, asset in yield_inputs
+        ]
+
+        # Cache computed metrics in analytics_cache table
+        await repo.save_analytics_metric(analysis_date, "net_worth", json.dumps({"usd": str(net_worth)}))
+        await repo.save_analytics_metric(
+            analysis_date,
+            "allocation_by_asset",
+            json.dumps(
+                [
+                    {
+                        "asset": row.asset,
+                        "amount": str(row.amount),
+                        "usd_value": str(row.usd_value),
+                        "percentage": str(row.percentage),
+                    }
+                    for row in alloc_asset
+                ]
+            ),
+        )
+        await repo.save_analytics_metric(
+            analysis_date,
+            "allocation_by_source",
+            json.dumps(
+                [
+                    {
+                        "source": row.bucket,
+                        "usd_value": str(row.usd_value),
+                        "percentage": str(row.percentage),
+                    }
+                    for row in alloc_source
+                ]
+            ),
+        )
+        await repo.save_analytics_metric(
+            analysis_date,
+            "allocation_by_category",
+            json.dumps(
+                [
+                    {
+                        "category": row.bucket,
+                        "usd_value": str(row.usd_value),
+                        "percentage": str(row.percentage),
+                    }
+                    for row in alloc_category
+                ]
+            ),
+        )
+        await repo.save_analytics_metric(
+            analysis_date,
+            "currency_exposure",
+            json.dumps(
+                [
+                    {
+                        "currency": row.currency,
+                        "usd_value": str(row.usd_value),
+                        "percentage": str(row.percentage),
+                    }
+                    for row in currency_exposure
+                ]
+            ),
+        )
+        await repo.save_analytics_metric(
+            analysis_date,
+            "risk_metrics",
+            json.dumps(
+                {
+                    "concentration_percentage": str(risk.concentration_percentage),
+                    "hhi_index": str(risk.hhi_index),
+                    "top_5_assets": [
+                        {
+                            "asset": row.asset,
+                            "usd_value": str(row.usd_value),
+                            "percentage": str(row.percentage),
+                        }
+                        for row in risk.top_5_assets
+                    ],
+                }
+            ),
+        )
+        await repo.save_analytics_metric(
+            analysis_date,
+            "pnl",
+            json.dumps(
+                {
+                    "daily": _pnl_result_to_dict(pnl_daily),
+                    "weekly": _pnl_result_to_dict(pnl_weekly),
+                    "monthly": _pnl_result_to_dict(pnl_monthly),
+                    "all_time": _pnl_result_to_dict(pnl_all_time),
+                }
+            ),
+        )
+        await repo.save_analytics_metric(
+            analysis_date,
+            "yield",
+            json.dumps(
+                [
+                    {
+                        "source": row.source,
+                        "asset": row.asset,
+                        "principal_estimate": str(row.principal_estimate),
+                        "current_value": str(row.current_value),
+                        "yield_amount": str(row.yield_amount),
+                        "yield_percentage": str(row.yield_percentage),
+                        "annualized_rate": str(row.annualized_rate),
+                    }
+                    for row in yield_results
+                ]
+            ),
+        )
+
+    click.echo(f"Analytics date: {analysis_date.isoformat()}")
+    click.echo(f"Net worth (USD): {_fmt_money(net_worth)}")
+    click.echo("Top assets:")
+    for asset_row in alloc_asset[:5]:
+        click.echo(
+            f"  {asset_row.asset}: ${_fmt_money(asset_row.usd_value)} "
+            f"({asset_row.percentage.quantize(Decimal('0.01'))}%)"
+        )
+    click.echo("PnL:")
+    for label, pnl in [
+        ("daily", pnl_daily),
+        ("weekly", pnl_weekly),
+        ("monthly", pnl_monthly),
+        ("all_time", pnl_all_time),
+    ]:
+        click.echo(
+            f"  {label}: ${_fmt_money(pnl.absolute_change)} ({pnl.percentage_change.quantize(Decimal('0.01'))}%)"
+        )
+    if yield_results:
+        click.echo("Yield:")
+        for yield_row in yield_results:
+            click.echo(
+                f"  {yield_row.source}/{yield_row.asset}: ${_fmt_money(yield_row.yield_amount)} "
+                f"({yield_row.yield_percentage.quantize(Decimal('0.01'))}%)"
+            )
+    click.echo("Cached analytics metrics: net_worth, allocations, currency_exposure, risk_metrics, pnl, yield")
+
+
+def _pnl_result_to_dict(result: PnlResult) -> dict[str, object]:
+    """Serialize PnL dataclass to a JSON-safe dict."""
+    pnl = result
+    return {
+        "start_date": pnl.start_date.isoformat() if pnl.start_date else None,
+        "end_date": pnl.end_date.isoformat() if pnl.end_date else None,
+        "start_value": str(pnl.start_value),
+        "end_value": str(pnl.end_value),
+        "absolute_change": str(pnl.absolute_change),
+        "percentage_change": str(pnl.percentage_change),
+        "top_gainers": [
+            {
+                "asset": row.asset,
+                "start_value": str(row.start_value),
+                "end_value": str(row.end_value),
+                "absolute_change": str(row.absolute_change),
+                "percentage_change": str(row.percentage_change),
+                "cost_basis_value": str(row.cost_basis_value) if row.cost_basis_value is not None else None,
+            }
+            for row in pnl.top_gainers
+        ],
+        "top_losers": [
+            {
+                "asset": row.asset,
+                "start_value": str(row.start_value),
+                "end_value": str(row.end_value),
+                "absolute_change": str(row.absolute_change),
+                "percentage_change": str(row.percentage_change),
+                "cost_basis_value": str(row.cost_basis_value) if row.cost_basis_value is not None else None,
+            }
+            for row in pnl.top_losers
+        ],
+        "notes": list(pnl.notes),
+    }
 
 
 @cli.command()

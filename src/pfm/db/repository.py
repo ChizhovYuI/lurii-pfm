@@ -243,3 +243,26 @@ class Repository:
             (str(raw.date), raw.source, raw.endpoint, raw.response_body),
         )
         await self._db.commit()
+
+    # ── Analytics Cache ───────────────────────────────────────────────
+
+    async def save_analytics_metric(self, metric_date: date, metric_name: str, metric_json: str) -> None:
+        """Upsert one analytics metric JSON blob for a date."""
+        await self._db.execute(
+            "DELETE FROM analytics_cache WHERE date = ? AND metric_name = ?",
+            (str(metric_date), metric_name),
+        )
+        await self._db.execute(
+            "INSERT INTO analytics_cache (date, metric_name, metric_json) VALUES (?, ?, ?)",
+            (str(metric_date), metric_name, metric_json),
+        )
+        await self._db.commit()
+
+    async def get_analytics_metrics_by_date(self, metric_date: date) -> dict[str, str]:
+        """Get cached analytics metrics for a date."""
+        cursor = await self._db.execute(
+            "SELECT metric_name, metric_json FROM analytics_cache WHERE date = ? ORDER BY metric_name",
+            (str(metric_date),),
+        )
+        rows = await cursor.fetchall()
+        return {str(row[0]): str(row[1]) for row in rows}

@@ -496,7 +496,7 @@ Register all 9 collector types. `pfm collect` auto-discovers from DB. Add `--cat
 - YieldResult: principal_estimate, current_value, yield_amount, yield_percentage, annualized_rate
 - Compare balance snapshots over time for Blend + OKX earn
 
-### Task 4.4 — Wire `analyze` command [S]
+### Task 4.4 — Wire `analyze` command [S] ✅
 
 **Dependencies:** 4.1–4.3
 

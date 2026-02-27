@@ -144,3 +144,22 @@ async def test_save_and_get_price(repo):
 async def test_get_price_not_found(repo):
     result = await repo.get_price("BTC", "USD", date(2024, 1, 15))
     assert result is None
+
+
+async def test_save_and_get_analytics_metric(repo):
+    metric_date = date(2024, 1, 15)
+    await repo.save_analytics_metric(metric_date, "net_worth", '{"usd":"123.45"}')
+    await repo.save_analytics_metric(metric_date, "allocation", '{"top":"BTC"}')
+
+    metrics = await repo.get_analytics_metrics_by_date(metric_date)
+    assert metrics["net_worth"] == '{"usd":"123.45"}'
+    assert metrics["allocation"] == '{"top":"BTC"}'
+
+
+async def test_save_analytics_metric_replaces_existing(repo):
+    metric_date = date(2024, 1, 15)
+    await repo.save_analytics_metric(metric_date, "net_worth", '{"usd":"100"}')
+    await repo.save_analytics_metric(metric_date, "net_worth", '{"usd":"200"}')
+
+    metrics = await repo.get_analytics_metrics_by_date(metric_date)
+    assert metrics["net_worth"] == '{"usd":"200"}'
