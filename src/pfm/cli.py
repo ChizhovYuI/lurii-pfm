@@ -816,6 +816,14 @@ _REQUIRED_ANALYTICS_METRICS = (
 )
 
 
+@cli.command("comment")
+def comment_command() -> None:
+    """Generate AI commentary for latest analytics, print it, and cache it."""
+    _ensure_db()
+    if not _run(_comment_async()):
+        sys.exit(1)
+
+
 @cli.command()
 def report() -> None:
     """Generate and send the Telegram report."""
@@ -852,7 +860,22 @@ async def _report_async() -> bool:
         return False
 
     try:
-        commentary = await generate_commentary(analytics)
+        async with Repository(settings.database_path) as repo:
+            metrics = await repo.get_analytics_metrics_by_date(analytics.as_of_date)
+
+        commentary = _parse_cached_ai_commentary(metrics.get("ai_commentary"))
+        if commentary:
+            click.echo("Using cached AI commentary.")
+        else:
+            commentary = await generate_commentary(analytics)
+            async with Repository(settings.database_path) as repo:
+                await repo.save_analytics_metric(
+                    analytics.as_of_date,
+                    "ai_commentary",
+                    json.dumps({"text": commentary}),
+                )
+            click.echo("Generated and cached AI commentary.")
+
         report_payload = format_weekly_report(analytics, commentary)
         sent = await send_report(report_payload)
     except Exception as exc:  # pragma: no cover - defensive guardrail
@@ -866,6 +889,41 @@ async def _report_async() -> bool:
 
     click.echo("Failed to send report to Telegram.", err=True)
     return False
+
+
+async def _comment_async() -> bool:
+    """Generate AI commentary for latest analytics and cache it by date."""
+    settings = get_settings()
+
+    # Late imports to avoid circular dependencies and keep startup fast
+    from pfm.ai import generate_commentary
+    from pfm.db.repository import Repository
+
+    async with Repository(settings.database_path) as repo:
+        analytics = await _load_latest_analytics_summary(repo)
+
+    if analytics is None:
+        return False
+
+    try:
+        commentary = await generate_commentary(analytics)
+    except Exception as exc:  # pragma: no cover - defensive guardrail
+        logger.exception("Unexpected AI commentary generation error")
+        click.echo(f"Failed to generate AI commentary: {exc}", err=True)
+        return False
+
+    async with Repository(settings.database_path) as repo:
+        await repo.save_analytics_metric(
+            analytics.as_of_date,
+            "ai_commentary",
+            json.dumps({"text": commentary}),
+        )
+
+    click.echo(f"AI commentary date: {analytics.as_of_date.isoformat()}")
+    click.echo("AI commentary:")
+    click.echo(commentary)
+    click.echo("AI commentary cached.")
+    return True
 
 
 async def _run_pipeline_async() -> bool:
@@ -975,3 +1033,27 @@ def _parse_net_worth_usd(raw_json: str) -> Decimal:
         return Decimal(str(value))
     except ArithmeticError:
         return Decimal(0)
+
+
+def _parse_cached_ai_commentary(raw_json: str | None) -> str | None:
+    """Parse cached AI commentary metric text, if present."""
+    if raw_json is None:
+        return None
+
+    try:
+        parsed = json.loads(raw_json)
+    except json.JSONDecodeError:
+        text = raw_json.strip()
+        return text if text else None
+
+    if isinstance(parsed, str):
+        text = parsed.strip()
+        return text if text else None
+
+    if isinstance(parsed, dict):
+        text_value = parsed.get("text")
+        if isinstance(text_value, str):
+            value = text_value.strip()
+            return value if value else None
+
+    return None

@@ -637,7 +637,97 @@ def test_report_success(runner, db_path):
         result = runner.invoke(cli, ["report"])
 
     assert result.exit_code == 0
+    assert "Generated and cached AI commentary." in result.output
     assert "Report sent to Telegram." in result.output
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_report_uses_cached_ai_commentary(runner, db_path):
+    async def _seed_analytics() -> None:
+        async with Repository(db_path) as repo:
+            snapshot_date = date(2024, 1, 15)
+            await repo.save_snapshot(
+                Snapshot(
+                    date=snapshot_date,
+                    source="wise",
+                    asset="USD",
+                    amount=Decimal("100.0"),
+                    usd_value=Decimal("100.0"),
+                )
+            )
+            await repo.save_analytics_metric(snapshot_date, "net_worth", '{"usd":"100.0"}')
+            await repo.save_analytics_metric(snapshot_date, "allocation_by_asset", "[]")
+            await repo.save_analytics_metric(snapshot_date, "allocation_by_source", "[]")
+            await repo.save_analytics_metric(snapshot_date, "allocation_by_category", "[]")
+            await repo.save_analytics_metric(snapshot_date, "currency_exposure", "[]")
+            await repo.save_analytics_metric(snapshot_date, "risk_metrics", "{}")
+            await repo.save_analytics_metric(
+                snapshot_date,
+                "pnl",
+                '{"weekly":{"absolute_change":"1.5","percentage_change":"1.0"}}',
+            )
+            await repo.save_analytics_metric(snapshot_date, "weekly_pnl_by_asset", "[]")
+            await repo.save_analytics_metric(snapshot_date, "ai_commentary", '{"text":"Cached comment"}')
+
+    asyncio.run(_seed_analytics())
+
+    mock_generate = AsyncMock(return_value="Should not be used")
+    with (
+        patch("pfm.reporting.is_telegram_configured", AsyncMock(return_value=True)),
+        patch("pfm.ai.generate_commentary", mock_generate),
+        patch("pfm.reporting.send_report", AsyncMock(return_value=True)),
+    ):
+        result = runner.invoke(cli, ["report"])
+
+    assert result.exit_code == 0
+    assert "Using cached AI commentary." in result.output
+    assert "Report sent to Telegram." in result.output
+    mock_generate.assert_not_awaited()
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_comment_command_generates_prints_and_caches(runner, db_path):
+    async def _seed_analytics() -> None:
+        async with Repository(db_path) as repo:
+            snapshot_date = date(2024, 1, 15)
+            await repo.save_snapshot(
+                Snapshot(
+                    date=snapshot_date,
+                    source="wise",
+                    asset="USD",
+                    amount=Decimal("100.0"),
+                    usd_value=Decimal("100.0"),
+                )
+            )
+            await repo.save_analytics_metric(snapshot_date, "net_worth", '{"usd":"100.0"}')
+            await repo.save_analytics_metric(snapshot_date, "allocation_by_asset", "[]")
+            await repo.save_analytics_metric(snapshot_date, "allocation_by_source", "[]")
+            await repo.save_analytics_metric(snapshot_date, "allocation_by_category", "[]")
+            await repo.save_analytics_metric(snapshot_date, "currency_exposure", "[]")
+            await repo.save_analytics_metric(snapshot_date, "risk_metrics", "{}")
+            await repo.save_analytics_metric(
+                snapshot_date,
+                "pnl",
+                '{"weekly":{"absolute_change":"1.5","percentage_change":"1.0"}}',
+            )
+            await repo.save_analytics_metric(snapshot_date, "weekly_pnl_by_asset", "[]")
+
+    asyncio.run(_seed_analytics())
+
+    with patch("pfm.ai.generate_commentary", AsyncMock(return_value="AI says hold steady.")):
+        result = runner.invoke(cli, ["comment"])
+
+    assert result.exit_code == 0
+    assert "AI commentary date: 2024-01-15" in result.output
+    assert "AI says hold steady." in result.output
+    assert "AI commentary cached." in result.output
+
+    async def _load_metrics() -> dict[str, str]:
+        async with Repository(db_path) as repo:
+            return await repo.get_analytics_metrics_by_date(date(2024, 1, 15))
+
+    metrics = asyncio.run(_load_metrics())
+    assert json.loads(metrics["ai_commentary"]) == {"text": "AI says hold steady."}
 
 
 @pytest.mark.usefixtures("_patched_settings")
