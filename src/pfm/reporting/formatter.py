@@ -98,7 +98,7 @@ def format_weekly_report(
             weekly_pct_change = _to_decimal(weekly_row.get("percentage_change", "0")).quantize(Decimal("0.01"))
             lines.append(
                 f"{icon} {asset}: ${_fmt_money(usd_value)} ({percentage}%) | "
-                f"7d PnL: ${_fmt_money(weekly_abs_change)} ({weekly_pct_change}%)"
+                f"${_fmt_money(weekly_abs_change)} ({weekly_pct_change}%)"
             )
             shown_holding = True
 

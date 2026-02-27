@@ -30,7 +30,7 @@ def test_format_weekly_report_contains_required_sections():
     assert "<b>PnL (Weekly)</b>: ↑ $123.45 (1.23%)" in report.text
     assert "<b>PnL (Monthly)</b>: ↑ $456.78 (4.56%)" in report.text
     assert "<b>All Holdings</b> (Total | 7d PnL)" in report.text
-    assert "🪙 BTC: $7,000.00 (56.70%) | 7d PnL: $80.00 (1.16%)" in report.text
+    assert "🪙 BTC: $7,000.00 (56.70%) | $80.00 (1.16%)" in report.text
     assert "<b>AI Commentary</b>" in report.text
     assert "Watch &lt;volatility&gt;.<br>Rebalance slowly." in report.text
     assert "<b>Warnings</b>" in report.text
@@ -97,5 +97,5 @@ def test_format_weekly_report_includes_all_holdings_not_truncated():
 
     report = format_weekly_report(analytics, "All holdings visible.")
     assert "📈 A9: $9.00 (1.00%)" not in report.text
-    assert "📈 A10: $10.00 (1.00%) | 7d PnL: $0.00 (0.00%)" in report.text
-    assert "📈 A11: $11.00 (1.00%) | 7d PnL: $0.00 (0.00%)" in report.text
+    assert "📈 A10: $10.00 (1.00%) | $0.00 (0.00%)" in report.text
+    assert "📈 A11: $11.00 (1.00%) | $0.00 (0.00%)" in report.text
