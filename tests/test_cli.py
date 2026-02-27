@@ -261,11 +261,12 @@ def test_mask_long():
 # ── collect command ───────────────────────────────────────────────────
 
 
-def _make_mock_collector(source_name, snaps=1, txns=0, errors=None):
+def _make_mock_collector(source_name, snaps=1, usd_total=Decimal("0"), txns=0, errors=None):
     """Create a mock collector class that returns a CollectorResult."""
     result = CollectorResult(
         source=source_name,
         snapshots_count=snaps,
+        snapshots_usd_total=usd_total,
         transactions_count=txns,
         errors=errors or [],
         duration_seconds=0.1,
@@ -327,8 +328,8 @@ def test_collect_all_enabled(runner, store):
     )
     asyncio.run(store.add("wise-main", "wise", {"api_token": "t"}))
 
-    mock_okx = _make_mock_collector("okx")
-    mock_wise = _make_mock_collector("wise")
+    mock_okx = _make_mock_collector("okx", usd_total=Decimal("450.0"))
+    mock_wise = _make_mock_collector("wise", usd_total=Decimal("100.0"))
     registry = {"okx": mock_okx, "wise": mock_wise}
     with patch("pfm.cli.COLLECTOR_REGISTRY", registry):
         result = runner.invoke(cli, ["collect"])
@@ -337,6 +338,7 @@ def test_collect_all_enabled(runner, store):
     assert "Collecting: okx-main" in result.output
     assert "Collecting: wise-main" in result.output
     assert "TOTAL" in result.output
+    assert "550.00" in result.output
 
 
 @pytest.mark.usefixtures("_patched_settings")

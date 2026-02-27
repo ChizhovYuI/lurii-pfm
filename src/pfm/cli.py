@@ -383,25 +383,28 @@ def _print_collect_results(results: list[CollectorResult]) -> None:
 
     click.echo()
     click.echo("Collection complete:")
-    click.echo(f"{'SOURCE':<20}  {'SNAPS':>5}  {'TXNS':>5}  {'ERRORS':>6}  {'TIME':>7}")
-    click.echo("-" * 55)
+    click.echo(f"{'SOURCE':<20}  {'SNAPS':>5}  {'USD':>14}  {'TXNS':>5}  {'ERRORS':>6}  {'TIME':>7}")
+    click.echo("-" * 72)
 
     total_snaps = 0
+    total_usd = Decimal(0)
     total_txns = 0
     total_errors = 0
     for r in results:
         total_snaps += r.snapshots_count
+        total_usd += r.snapshots_usd_total
         total_txns += r.transactions_count
         total_errors += len(r.errors)
         status = f"{r.duration_seconds:.1f}s"
         click.echo(
-            f"{r.source:<20}  {r.snapshots_count:>5}  " f"{r.transactions_count:>5}  {len(r.errors):>6}  {status:>7}",
+            f"{r.source:<20}  {r.snapshots_count:>5}  ${_fmt_money(r.snapshots_usd_total):>13}  "
+            f"{r.transactions_count:>5}  {len(r.errors):>6}  {status:>7}",
         )
         for err in r.errors:
             _print_collect_error(err)
 
-    click.echo("-" * 55)
-    click.echo(f"{'TOTAL':<20}  {total_snaps:>5}  {total_txns:>5}  {total_errors:>6}")
+    click.echo("-" * 72)
+    click.echo(f"{'TOTAL':<20}  {total_snaps:>5}  ${_fmt_money(total_usd):>13}  {total_txns:>5}  {total_errors:>6}")
 
 
 def _print_collect_error(err: str) -> None:

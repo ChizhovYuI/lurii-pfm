@@ -102,6 +102,7 @@ class CollectorResult:
 
     source: str
     snapshots_count: int = 0
+    snapshots_usd_total: Decimal = Decimal(0)
     transactions_count: int = 0
     errors: list[str] = field(default_factory=list)
     duration_seconds: float = 0.0

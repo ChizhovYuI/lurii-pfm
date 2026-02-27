@@ -6,6 +6,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from pfm.collectors._retry import is_dns_resolution_error
@@ -63,6 +64,7 @@ class BaseCollector(ABC):
             if snapshots:
                 await repo.save_snapshots(snapshots)
                 result.snapshots_count = len(snapshots)
+                result.snapshots_usd_total = sum((snapshot.usd_value for snapshot in snapshots), start=Decimal(0))
         except Exception as exc:
             msg, is_network_access_error = _format_fetch_error(self.source_name, "balances", exc)
             if is_network_access_error:
