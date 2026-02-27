@@ -600,7 +600,7 @@ Format analytics + AI commentary into Telegram HTML:
 - `@retry(max_attempts=3, backoff_base=2.0)` decorator
 - `RateLimiter(requests_per_minute)` class
 
-### Task 7.3 — Scheduling docs [S]
+### Task 7.3 — Scheduling docs [S] ✅
 
 **Dependencies:** Phase 6
 
