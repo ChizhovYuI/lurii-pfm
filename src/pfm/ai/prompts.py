@@ -18,6 +18,7 @@ Output plain text only for Telegram:
 - no markdown syntax (`#`, `*`, `**`, backticks)
 - max 8 short lines
 - each line should be directly actionable or data-backed
+- keep total output under 900 characters
 """.strip()
 
 WEEKLY_REPORT_USER_PROMPT_TEMPLATE = """
@@ -39,18 +40,17 @@ PnL summary:
 Top weekly movers by asset:
 {weekly_pnl_by_asset}
 
-Write a report with these sections:
-1) Market context
-2) Portfolio health assessment
-3) Rebalancing opportunities
-4) Risk alerts
-5) Actionable recommendations for next 7 days
+Write a compact report with these sections in plain text:
+Market context
+Portfolio health
+Actions for next 7 days
 
 Rules:
 - Ground every claim in provided data.
 - If data is missing or noisy, state that clearly.
 - Use concise short lines and include concrete numbers.
 - Do not use markdown symbols.
+- End every line with proper punctuation.
 """.strip()
 
 

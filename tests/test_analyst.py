@@ -17,6 +17,7 @@ from pfm.ai.analyst import (
     GEMINI_MAX_OUTPUT_TOKENS,
     GEMINI_MODEL,
     GEMINI_MODELS,
+    _finalize_commentary_text,
     _retry_delay_seconds,
     generate_commentary,
 )
@@ -230,3 +231,18 @@ async def test_generate_commentary_uses_db_key_when_env_missing(tmp_path):
 def test_retry_delay_applies_model_minimum_even_with_small_retry_after():
     assert _retry_delay_seconds("0.01", 1, "gemini-2.5-pro") == 30.0
     assert _retry_delay_seconds("0.01", 1, "gemini-2.5-flash") == 7.0
+
+
+def test_finalize_commentary_text_drops_incomplete_tail_line():
+    text = (
+        "Market context.\n"
+        "Portfolio health is stable.\n"
+        "Actions: rebalance small FX exposure.\n"
+        "Review your target"
+    )
+    assert _finalize_commentary_text(text).endswith("Actions: rebalance small FX exposure.")
+
+
+def test_finalize_commentary_text_keeps_complete_tail_line():
+    text = "Market context.\nPortfolio health is stable.\nReview your target allocation."
+    assert _finalize_commentary_text(text).endswith("Review your target allocation.")

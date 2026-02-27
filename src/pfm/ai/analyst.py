@@ -23,11 +23,12 @@ GEMINI_MODELS: tuple[str, ...] = (
     "gemini-2.5-flash-lite",
 )
 GEMINI_MODEL = GEMINI_MODELS[0]
-GEMINI_MAX_OUTPUT_TOKENS = 1024
+GEMINI_MAX_OUTPUT_TOKENS = 2048
 GEMINI_MAX_RETRIES = 3
 GEMINI_BASE_BACKOFF_SECONDS = 2.0
 GEMINI_MAX_BACKOFF_SECONDS = 120.0
 GEMINI_TOKEN_ESTIMATE_CHARS = 4
+INCOMPLETE_TAIL_MAX_WORDS = 5
 GEMINI_RATE_LIMIT_STATE_FILE = Path("data/gemini_last_request_at.txt")
 HTTP_TOO_MANY_REQUESTS = 429
 FALLBACK_COMMENTARY = (
@@ -76,7 +77,7 @@ async def generate_commentary(
             _log_token_usage(response, model=model)
             text = _extract_text(response)
             if text:
-                return text
+                return _finalize_commentary_text(text)
             logger.warning("Gemini model %s returned empty text. Trying next fallback model.", model)
     finally:
         if owns_client:
@@ -278,6 +279,40 @@ def _extract_text(body: object) -> str:
                 parts.append(part_text.strip())
 
     return "\n".join(parts).strip()
+
+
+def _finalize_commentary_text(text: str) -> str:
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not normalized:
+        return normalized
+
+    lines = [line.rstrip() for line in normalized.split("\n")]
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if not lines:
+        return ""
+
+    last_line = lines[-1].strip()
+    if _looks_incomplete_tail(last_line):
+        lines.pop()
+        while lines and not lines[-1].strip():
+            lines.pop()
+        if not lines:
+            return ""
+
+    return "\n".join(lines).strip()
+
+
+def _looks_incomplete_tail(line: str) -> bool:
+    if not line:
+        return False
+    if line[-1] in ".!?)]":
+        return False
+    words = line.split()
+    line_lower = line.lower()
+    return len(words) <= INCOMPLETE_TAIL_MAX_WORDS or line_lower.endswith(
+        ("to", "for", "with", "and", "or", "the", "a", "an", "your")
+    )
 
 
 def _log_token_usage(body: object, *, model: str) -> None:
