@@ -394,6 +394,22 @@ def test_collect_with_errors(runner, store):
     assert "Connection timeout" in result.output
 
 
+@pytest.mark.usefixtures("_patched_settings", "_mock_pricing_repo")
+def test_collect_handles_unexpected_collector_exception(runner, store):
+    asyncio.run(store.add("wise-main", "wise", {"api_token": "t"}))
+
+    mock_cls = MagicMock()
+    mock_instance = MagicMock()
+    mock_instance.collect = AsyncMock(side_effect=RuntimeError("boom"))
+    mock_cls.return_value = mock_instance
+
+    with patch("pfm.cli.COLLECTOR_REGISTRY", {"wise": mock_cls}):
+        result = runner.invoke(cli, ["collect", "--source", "wise-main"])
+
+    assert result.exit_code == 0
+    assert "Unhandled collector error: boom" in result.output
+
+
 # ── pipeline stubs ────────────────────────────────────────────────────
 
 
@@ -532,6 +548,45 @@ def test_report_success(runner, db_path):
 
 
 @pytest.mark.usefixtures("_patched_settings")
+def test_report_handles_internal_exception(runner, db_path):
+    async def _seed_analytics() -> None:
+        async with Repository(db_path) as repo:
+            snapshot_date = date(2024, 1, 15)
+            await repo.save_snapshot(
+                Snapshot(
+                    date=snapshot_date,
+                    source="wise",
+                    asset="USD",
+                    amount=Decimal("100.0"),
+                    usd_value=Decimal("100.0"),
+                )
+            )
+            await repo.save_analytics_metric(snapshot_date, "net_worth", '{"usd":"100.0"}')
+            await repo.save_analytics_metric(snapshot_date, "allocation_by_asset", "[]")
+            await repo.save_analytics_metric(snapshot_date, "allocation_by_source", "[]")
+            await repo.save_analytics_metric(snapshot_date, "allocation_by_category", "[]")
+            await repo.save_analytics_metric(snapshot_date, "currency_exposure", "[]")
+            await repo.save_analytics_metric(snapshot_date, "risk_metrics", "{}")
+            await repo.save_analytics_metric(
+                snapshot_date,
+                "pnl",
+                '{"weekly":{"absolute_change":"1.5","percentage_change":"1.0"}}',
+            )
+            await repo.save_analytics_metric(snapshot_date, "yield", "[]")
+
+    asyncio.run(_seed_analytics())
+
+    with (
+        patch("pfm.ai.generate_commentary", AsyncMock(return_value="All good.")),
+        patch("pfm.reporting.format_weekly_report", side_effect=RuntimeError("format failed")),
+    ):
+        result = runner.invoke(cli, ["report"])
+
+    assert result.exit_code == 1
+    assert "Failed to generate/send report: format failed" in result.output
+
+
+@pytest.mark.usefixtures("_patched_settings")
 def test_run_pipeline_success(runner):
     with (
         patch("pfm.cli._collect_async", AsyncMock(return_value=[])),
@@ -577,7 +632,25 @@ def test_run_pipeline_report_failure(runner):
         result = runner.invoke(cli, ["run"])
 
     assert result.exit_code == 1
-    assert "Pipeline finished with report errors." in result.output
+    assert "Pipeline finished with errors." in result.output
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_run_pipeline_analyze_exception_triggers_alert(runner):
+    mock_alert = AsyncMock(return_value=True)
+    with (
+        patch("pfm.cli._collect_async", AsyncMock(return_value=[])),
+        patch("pfm.cli._analyze_async", AsyncMock(side_effect=RuntimeError("analyze boom"))),
+        patch("pfm.cli._report_async", AsyncMock(return_value=True)),
+        patch("pfm.reporting.send_error_alert", mock_alert),
+    ):
+        result = runner.invoke(cli, ["run"])
+
+    assert result.exit_code == 1
+    assert "Analyze failed: analyze boom" in result.output
+    assert "Pipeline finished with errors." in result.output
+    sent_errors = mock_alert.await_args.args[0]
+    assert any("analyze stage failed: analyze boom" in err for err in sent_errors)
 
 
 def test_import_kbank_stub(runner, tmp_path):

@@ -55,3 +55,22 @@ def test_format_weekly_report_handles_missing_data_branches():
     assert "<b>PnL (Weekly)</b>: ↓ $-5.00 (-1.00%)" in report.text
     assert "• No holdings data available." in report.text
     assert "• No Blend yield data available." in report.text
+
+
+def test_format_weekly_report_tolerates_invalid_numeric_values():
+    analytics = AnalyticsSummary(
+        as_of_date=date(2024, 1, 15),
+        net_worth_usd=Decimal(100),
+        allocation_by_asset='[{"asset":"BTC","usd_value":"not-a-number","percentage":"bad"}]',
+        allocation_by_source="[]",
+        allocation_by_category="[]",
+        currency_exposure="[]",
+        risk_metrics="{}",
+        pnl='{"weekly":{"absolute_change":"oops","percentage_change":"nan-ish"}}',
+        yield_metrics='[{"source":"blend","asset":"USDC","yield_amount":"oops","yield_percentage":"bad"}]',
+    )
+
+    report = format_weekly_report(analytics, "Still works.")
+    assert "<b>PnL (Weekly)</b>: → $0.00 (0.00%)" in report.text
+    assert "• BTC: $0.00 (0.00%)" in report.text
+    assert "• USDC: $0.00 (0.00%)" in report.text

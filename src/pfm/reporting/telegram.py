@@ -55,7 +55,11 @@ async def send_message(
 
             resp = await http_client.post(endpoint, json=payload)
             resp.raise_for_status()
-            body = resp.json()
+            try:
+                body = resp.json()
+            except ValueError as exc:
+                logger.warning("Telegram API returned invalid JSON response: %s", exc)
+                return False
             if not body.get("ok", False):
                 logger.warning("Telegram API returned ok=false: %s", body)
                 return False

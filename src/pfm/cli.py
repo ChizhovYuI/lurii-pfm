@@ -242,7 +242,7 @@ def collect(source_name: str | None) -> None:
     _print_collect_results(results)
 
 
-async def _collect_async(source_name: str | None) -> list[CollectorResult]:
+async def _collect_async(source_name: str | None) -> list[CollectorResult]:  # noqa: PLR0912
     """Run collection for enabled sources (or a single named source)."""
     settings = get_settings()
     store = SourceStore(settings.database_path)
@@ -271,6 +271,7 @@ async def _collect_async(source_name: str | None) -> list[CollectorResult]:
         cache_db_path=settings.database_path,
     )
     results: list[CollectorResult] = []
+    task_sources: list[str] = []
 
     try:
         async with Repository(settings.database_path) as repo:
@@ -287,12 +288,30 @@ async def _collect_async(source_name: str | None) -> list[CollectorResult]:
                 collector = collector_cls(pricing, **creds)
                 click.echo(f"Collecting: {src.name} ({src.type})...")
                 tasks.append(collector.collect(repo))
+                task_sources.append(src.name)
 
-            results = await asyncio.gather(*tasks)
+            task_results = await asyncio.gather(*tasks, return_exceptions=True)
+            for source, result in zip(task_sources, task_results, strict=True):
+                if isinstance(result, BaseException):
+                    if isinstance(result, Exception):
+                        logger.exception("Unhandled collector exception from '%s': %s", source, result)
+                    else:  # pragma: no cover - defensive guardrail
+                        logger.error("Collector raised a base exception from '%s': %s", source, result)
+                    results.append(
+                        CollectorResult(
+                            source=source,
+                            snapshots_count=0,
+                            transactions_count=0,
+                            errors=[f"Unhandled collector error: {result}"],
+                            duration_seconds=0.0,
+                        )
+                    )
+                else:
+                    results.append(result)
     finally:
         await pricing.close()
 
-    return list(results)
+    return results
 
 
 def _print_collect_results(results: list[CollectorResult]) -> None:
@@ -601,9 +620,15 @@ async def _report_async() -> bool:
     if analytics is None:
         return False
 
-    commentary = await generate_commentary(analytics)
-    report_payload = format_weekly_report(analytics, commentary)
-    sent = await send_report(report_payload)
+    try:
+        commentary = await generate_commentary(analytics)
+        report_payload = format_weekly_report(analytics, commentary)
+        sent = await send_report(report_payload)
+    except Exception as exc:  # pragma: no cover - defensive guardrail
+        logger.exception("Unexpected report pipeline error")
+        click.echo(f"Failed to generate/send report: {exc}", err=True)
+        return False
+
     if sent:
         click.echo("Report sent to Telegram.")
         return True
@@ -617,25 +642,55 @@ async def _run_pipeline_async() -> bool:
     # Late imports to avoid circular dependencies and keep startup fast
     from pfm.reporting import send_error_alert
 
+    collect_ok = True
+    analyze_ok = True
+    report_ok = False
+    alert_errors: list[str] = []
+
     click.echo("Running: collect")
-    collect_results = await _collect_async(None)
+    try:
+        collect_results = await _collect_async(None)
+    except Exception as exc:  # pragma: no cover - defensive guardrail
+        collect_ok = False
+        collect_results = []
+        alert_errors.append(f"collect stage failed: {exc}")
+        logger.exception("Collect stage failed unexpectedly")
+
     collect_errors = [f"{r.source}: {error}" for r in collect_results for error in r.errors]
+    alert_errors.extend(collect_errors)
     if collect_errors:
         click.echo(f"Collection completed with {len(collect_errors)} error(s).")
-        if await send_error_alert(collect_errors):
+
+    click.echo("Running: analyze")
+    try:
+        await _analyze_async()
+    except Exception as exc:  # pragma: no cover - defensive guardrail
+        analyze_ok = False
+        alert_errors.append(f"analyze stage failed: {exc}")
+        logger.exception("Analyze stage failed unexpectedly")
+        click.echo(f"Analyze failed: {exc}", err=True)
+
+    click.echo("Running: report")
+    try:
+        report_ok = await _report_async()
+    except Exception as exc:  # pragma: no cover - defensive guardrail
+        report_ok = False
+        alert_errors.append(f"report stage failed: {exc}")
+        logger.exception("Report stage failed unexpectedly")
+        click.echo(f"Report failed: {exc}", err=True)
+
+    if alert_errors:
+        if await send_error_alert(alert_errors):
             click.echo("Error alert sent to Telegram.")
         else:
             click.echo("Failed to send error alert to Telegram.", err=True)
 
-    click.echo("Running: analyze")
-    await _analyze_async()
-    click.echo("Running: report")
-    report_ok = await _report_async()
-    if report_ok:
+    success = collect_ok and analyze_ok and report_ok
+    if success:
         click.echo("Pipeline finished successfully.")
     else:
-        click.echo("Pipeline finished with report errors.", err=True)
-    return report_ok
+        click.echo("Pipeline finished with errors.", err=True)
+    return success
 
 
 async def _load_latest_analytics_summary(repo: Repository) -> AnalyticsSummary | None:

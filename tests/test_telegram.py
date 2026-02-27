@@ -71,6 +71,22 @@ async def test_send_message_returns_false_on_http_error():
     assert ok is False
 
 
+async def test_send_message_returns_false_on_invalid_json_body():
+    endpoint = "https://api.telegram.org/bottoken/sendMessage"
+    client = _FakeClient(
+        responses=[
+            httpx.Response(
+                200,
+                content=b"not-json",
+                request=httpx.Request("POST", endpoint),
+            )
+        ]
+    )
+
+    ok = await send_message("chat-1", "hello", bot_token="token-1", client=client)
+    assert ok is False
+
+
 async def test_send_report_uses_default_chat_id_from_settings():
     settings = SimpleNamespace(
         telegram_chat_id="chat-42",

@@ -88,7 +88,10 @@ def _parse_dict_json(raw_json: str) -> dict[str, object]:
 
 
 def _to_decimal(value: object) -> Decimal:
-    return Decimal(str(value))
+    try:
+        return Decimal(str(value))
+    except ArithmeticError:
+        return Decimal(0)
 
 
 def _fmt_money(value: Decimal) -> str:

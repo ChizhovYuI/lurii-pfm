@@ -68,6 +68,16 @@ async def test_generate_commentary_fallback_on_api_error():
     assert result == FALLBACK_COMMENTARY
 
 
+async def test_generate_commentary_fallback_on_unexpected_exception():
+    mock_client = MagicMock()
+    mock_client.messages = MagicMock()
+    mock_client.messages.create = AsyncMock(side_effect=RuntimeError("unexpected"))
+
+    result = await generate_commentary(_sample_analytics(), client=mock_client)
+
+    assert result == FALLBACK_COMMENTARY
+
+
 async def test_generate_commentary_fallback_when_key_missing():
     settings = MagicMock()
     settings.anthropic_api_key = SecretStr("")

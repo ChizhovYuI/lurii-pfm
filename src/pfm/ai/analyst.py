@@ -49,6 +49,9 @@ async def generate_commentary(
     except APIError as exc:
         logger.warning("Claude API request failed: %s", exc)
         return FALLBACK_COMMENTARY
+    except Exception:  # pragma: no cover - defensive guardrail
+        logger.exception("Unexpected Claude API error")
+        return FALLBACK_COMMENTARY
 
     _log_token_usage(response)
     text = _extract_text(response)
