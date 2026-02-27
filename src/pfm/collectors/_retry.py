@@ -26,7 +26,7 @@ RETRYABLE_EXCEPTIONS: tuple[type[Exception], ...] = (
 )
 
 
-def _is_dns_resolution_error(exc: Exception) -> bool:
+def is_dns_resolution_error(exc: Exception) -> bool:
     """Return True when an exception chain contains a DNS resolution failure."""
     seen: set[int] = set()
     current: BaseException | None = exc
@@ -55,7 +55,7 @@ def retry(
                     return await func(*args, **kwargs)
                 except retryable as exc:
                     last_exc = exc
-                    if _is_dns_resolution_error(exc):
+                    if is_dns_resolution_error(exc):
                         logger.warning("DNS resolution failed for %s: %s. Not retrying.", func.__name__, exc)
                         raise
                     if attempt < max_attempts:

@@ -8,6 +8,7 @@ from abc import ABC, abstractmethod
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from pfm.collectors._retry import is_dns_resolution_error
 from pfm.db.models import CollectorResult, RawResponse, Snapshot, Transaction
 
 if TYPE_CHECKING:
@@ -17,6 +18,14 @@ if TYPE_CHECKING:
     from pfm.pricing.coingecko import PricingService
 
 logger = logging.getLogger(__name__)
+_COUNTRY_ACCESS_HINT = "you don't have access from this country. use vpn or smth to handle this"
+
+
+def _format_fetch_error(source_name: str, stage: str, exc: Exception) -> tuple[str, bool]:
+    """Return user-facing collector error text and whether it is a DNS access issue."""
+    if is_dns_resolution_error(exc):
+        return (f"Failed to fetch {stage} from {source_name}: {_COUNTRY_ACCESS_HINT}", True)
+    return (f"Failed to fetch {stage} from {source_name}: {exc}", False)
 
 
 class BaseCollector(ABC):
@@ -54,8 +63,11 @@ class BaseCollector(ABC):
                 await repo.save_snapshots(snapshots)
                 result.snapshots_count = len(snapshots)
         except Exception as exc:
-            msg = f"Failed to fetch balances from {self.source_name}: {exc}"
-            logger.exception(msg)
+            msg, is_network_access_error = _format_fetch_error(self.source_name, "balances", exc)
+            if is_network_access_error:
+                logger.warning("%s (original error: %s)", msg, exc)
+            else:
+                logger.exception(msg)
             result.errors.append(msg)
 
         # Fetch transactions
@@ -65,8 +77,11 @@ class BaseCollector(ABC):
                 await repo.save_transactions(transactions)
                 result.transactions_count = len(transactions)
         except Exception as exc:
-            msg = f"Failed to fetch transactions from {self.source_name}: {exc}"
-            logger.exception(msg)
+            msg, is_network_access_error = _format_fetch_error(self.source_name, "transactions", exc)
+            if is_network_access_error:
+                logger.warning("%s (original error: %s)", msg, exc)
+            else:
+                logger.exception(msg)
             result.errors.append(msg)
 
         result.duration_seconds = time.monotonic() - start

@@ -1,8 +1,10 @@
 """Tests for the abstract collector base class."""
 
+import socket
 from datetime import date
 from decimal import Decimal
 
+import httpx
 import pytest
 
 from pfm.collectors.base import BaseCollector
@@ -112,3 +114,17 @@ async def test_collector_result_has_duration(repo, pricing):
     collector = MockCollector(pricing)
     result = await collector.collect(repo)
     assert result.duration_seconds >= 0
+
+
+async def test_collect_formats_dns_error_with_country_access_hint(repo, pricing):
+    class NetworkBlockedCollector(MockCollector):
+        async def fetch_balances(self):
+            exc = httpx.ConnectError("connect error")
+            exc.__cause__ = socket.gaierror(8, "nodename nor servname provided, or not known")
+            raise exc
+
+    collector = NetworkBlockedCollector(pricing)
+    result = await collector.collect(repo)
+
+    assert len(result.errors) == 1
+    assert "you don't have access from this country. use vpn or smth to handle this" in result.errors[0]
