@@ -21,6 +21,7 @@ from pfm.db.source_store import (
     SourceNotFoundError,
     SourceStore,
 )
+from pfm.db.telegram_store import TelegramStore
 from pfm.source_types import SOURCE_TYPES
 
 if TYPE_CHECKING:
@@ -45,6 +46,12 @@ def _get_store() -> SourceStore:
     """Get a SourceStore using the configured database path."""
     settings = get_settings()
     return SourceStore(settings.database_path)
+
+
+def _get_telegram_store() -> TelegramStore:
+    """Get a TelegramStore using the configured database path."""
+    settings = get_settings()
+    return TelegramStore(settings.database_path)
 
 
 def _run[T](coro: Coroutine[object, object, T]) -> T:
@@ -228,6 +235,63 @@ def source_disable(name: str) -> None:
         click.echo(f"Error: source '{name}' not found.", err=True)
         sys.exit(1)
     click.echo(f"Source '{name}' disabled.")
+
+
+# ── Telegram config ───────────────────────────────────────────────────
+
+
+@cli.group()
+def telegram() -> None:
+    """Manage Telegram bot credentials for reporting."""
+
+
+@telegram.command("set")
+@click.option("--bot-token", prompt=True, hide_input=True, help="Telegram bot token.")
+@click.option("--chat-id", prompt=True, help="Telegram chat ID.")
+def telegram_set(bot_token: str, chat_id: str) -> None:
+    """Set Telegram bot token and chat ID in DB settings."""
+    _ensure_db()
+    store = _get_telegram_store()
+    try:
+        creds = _run(store.set(bot_token=bot_token, chat_id=chat_id))
+    except ValueError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
+    click.echo("Telegram credentials saved.")
+    click.echo(f"Bot token: {_mask(creds.bot_token)}")
+    click.echo(f"Chat ID:   {creds.chat_id}")
+
+
+@telegram.command("show")
+def telegram_show() -> None:
+    """Show Telegram configuration (token masked)."""
+    _ensure_db()
+    store = _get_telegram_store()
+    creds = _run(store.get())
+    if creds is None:
+        click.echo("Telegram is not configured. Run 'pfm telegram set'.")
+        return
+
+    click.echo("Telegram configuration:")
+    click.echo(f"Bot token: {_mask(creds.bot_token)}")
+    click.echo(f"Chat ID:   {creds.chat_id}")
+
+
+@telegram.command("clear")
+def telegram_clear() -> None:
+    """Delete Telegram credentials from DB settings."""
+    _ensure_db()
+    if not click.confirm("Delete Telegram credentials?"):
+        click.echo("Cancelled.")
+        return
+
+    store = _get_telegram_store()
+    deleted = _run(store.clear())
+    if deleted:
+        click.echo("Telegram credentials removed.")
+    else:
+        click.echo("No Telegram credentials were stored.")
 
 
 # ── Pipeline stubs ────────────────────────────────────────────────────
@@ -612,7 +676,11 @@ async def _report_async() -> bool:
     # Late imports to avoid circular dependencies and keep startup fast
     from pfm.ai import generate_commentary
     from pfm.db.repository import Repository
-    from pfm.reporting import format_weekly_report, send_report
+    from pfm.reporting import format_weekly_report, is_telegram_configured, send_report
+
+    if not await is_telegram_configured(db_path=settings.database_path):
+        click.echo("Telegram is not configured. Skipping report send.")
+        return True
 
     async with Repository(settings.database_path) as repo:
         analytics = await _load_latest_analytics_summary(repo)
@@ -640,7 +708,7 @@ async def _report_async() -> bool:
 async def _run_pipeline_async() -> bool:
     """Run collect → analyze → report and alert on collection errors."""
     # Late imports to avoid circular dependencies and keep startup fast
-    from pfm.reporting import send_error_alert
+    from pfm.reporting import is_telegram_configured, send_error_alert
 
     collect_ok = True
     analyze_ok = True
@@ -680,10 +748,14 @@ async def _run_pipeline_async() -> bool:
         click.echo(f"Report failed: {exc}", err=True)
 
     if alert_errors:
-        if await send_error_alert(alert_errors):
-            click.echo("Error alert sent to Telegram.")
+        settings = get_settings()
+        if await is_telegram_configured(db_path=settings.database_path):
+            if await send_error_alert(alert_errors):
+                click.echo("Error alert sent to Telegram.")
+            else:
+                click.echo("Failed to send error alert to Telegram.", err=True)
         else:
-            click.echo("Failed to send error alert to Telegram.", err=True)
+            click.echo("Telegram is not configured. Skipping error alert.")
 
     success = collect_ok and analyze_ok and report_ok
     if success:

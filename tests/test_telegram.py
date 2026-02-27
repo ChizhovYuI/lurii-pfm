@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import httpx
-from pydantic import SecretStr
 
+from pfm.db.models import init_db
+from pfm.db.telegram_store import TelegramStore
 from pfm.reporting.telegram import WeeklyReport, send_error_alert, send_message, send_report
 
 
@@ -87,25 +87,23 @@ async def test_send_message_returns_false_on_invalid_json_body():
     assert ok is False
 
 
-async def test_send_report_uses_default_chat_id_from_settings():
-    settings = SimpleNamespace(
-        telegram_chat_id="chat-42",
-        telegram_bot_token=SecretStr("token-42"),
-    )
+async def test_send_report_uses_db_credentials(tmp_path):
+    db_path = tmp_path / "telegram.db"
+    await init_db(db_path)
+    store = TelegramStore(db_path)
+    await store.set(bot_token="token-42", chat_id="chat-42")
     mock_send = AsyncMock(return_value=True)
 
-    with (
-        patch("pfm.reporting.telegram.get_settings", return_value=settings),
-        patch("pfm.reporting.telegram.send_message", mock_send),
-    ):
-        ok = await send_report(WeeklyReport(text="report text"))
+    with patch("pfm.reporting.telegram.send_message", mock_send):
+        ok = await send_report(WeeklyReport(text="report text"), db_path=db_path)
 
     assert ok is True
     mock_send.assert_awaited_once_with(
-        "chat-42",
+        None,
         "report text",
         parse_mode="HTML",
         bot_token=None,
+        db_path=db_path,
         client=None,
     )
 

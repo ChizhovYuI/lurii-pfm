@@ -10,12 +10,15 @@ from unittest.mock import AsyncMock, patch
 from pydantic import SecretStr
 
 from pfm.cli import _report_async, _run_pipeline_async
-from pfm.db.models import CollectorResult, Snapshot
+from pfm.db.models import CollectorResult, Snapshot, init_db
 from pfm.db.repository import Repository
+from pfm.db.telegram_store import TelegramStore
 
 
 async def test_report_async_loads_cache_formats_and_sends(tmp_path):
     db_path = tmp_path / "report.db"
+    await init_db(db_path)
+    await TelegramStore(db_path).set(bot_token="token", chat_id="chat")
     async with Repository(db_path) as repo:
         snapshot_date = date(2024, 1, 15)
         await repo.save_snapshot(
@@ -73,6 +76,7 @@ async def test_run_pipeline_async_sends_error_alert_on_collect_failure():
         patch("pfm.cli._collect_async", AsyncMock(return_value=[collect_result])),
         patch("pfm.cli._analyze_async", AsyncMock()),
         patch("pfm.cli._report_async", AsyncMock(return_value=True)),
+        patch("pfm.reporting.is_telegram_configured", AsyncMock(return_value=True)),
         patch("pfm.reporting.send_error_alert", mock_alert),
     ):
         ok = await _run_pipeline_async()

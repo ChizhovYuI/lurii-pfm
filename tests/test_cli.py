@@ -16,6 +16,7 @@ from pfm.cli import cli
 from pfm.db.models import CollectorResult, Snapshot, init_db
 from pfm.db.repository import Repository
 from pfm.db.source_store import SourceStore
+from pfm.db.telegram_store import TelegramStore
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -483,8 +484,8 @@ def test_analyze_computes_and_caches_metrics(runner, db_path):
 @pytest.mark.usefixtures("_patched_settings")
 def test_report_no_snapshots(runner):
     result = runner.invoke(cli, ["report"])
-    assert result.exit_code == 1
-    assert "No snapshots found" in result.output
+    assert result.exit_code == 0
+    assert "Telegram is not configured. Skipping report send." in result.output
 
 
 @pytest.mark.usefixtures("_patched_settings")
@@ -504,8 +505,8 @@ def test_report_missing_cached_metrics(runner, db_path):
     asyncio.run(_seed_snapshot())
 
     result = runner.invoke(cli, ["report"])
-    assert result.exit_code == 1
-    assert "Missing cached analytics metrics" in result.output
+    assert result.exit_code == 0
+    assert "Telegram is not configured. Skipping report send." in result.output
 
 
 @pytest.mark.usefixtures("_patched_settings")
@@ -538,6 +539,7 @@ def test_report_success(runner, db_path):
     asyncio.run(_seed_analytics())
 
     with (
+        patch("pfm.reporting.is_telegram_configured", AsyncMock(return_value=True)),
         patch("pfm.ai.generate_commentary", AsyncMock(return_value="All good.")),
         patch("pfm.reporting.send_report", AsyncMock(return_value=True)),
     ):
@@ -577,6 +579,7 @@ def test_report_handles_internal_exception(runner, db_path):
     asyncio.run(_seed_analytics())
 
     with (
+        patch("pfm.reporting.is_telegram_configured", AsyncMock(return_value=True)),
         patch("pfm.ai.generate_commentary", AsyncMock(return_value="All good.")),
         patch("pfm.reporting.format_weekly_report", side_effect=RuntimeError("format failed")),
     ):
@@ -613,6 +616,7 @@ def test_run_pipeline_sends_error_alert(runner):
         patch("pfm.cli._collect_async", AsyncMock(return_value=[collect_result])),
         patch("pfm.cli._analyze_async", AsyncMock()),
         patch("pfm.cli._report_async", AsyncMock(return_value=True)),
+        patch("pfm.reporting.is_telegram_configured", AsyncMock(return_value=True)),
         patch("pfm.reporting.send_error_alert", mock_alert),
     ):
         result = runner.invoke(cli, ["run"])
@@ -642,6 +646,7 @@ def test_run_pipeline_analyze_exception_triggers_alert(runner):
         patch("pfm.cli._collect_async", AsyncMock(return_value=[])),
         patch("pfm.cli._analyze_async", AsyncMock(side_effect=RuntimeError("analyze boom"))),
         patch("pfm.cli._report_async", AsyncMock(return_value=True)),
+        patch("pfm.reporting.is_telegram_configured", AsyncMock(return_value=True)),
         patch("pfm.reporting.send_error_alert", mock_alert),
     ):
         result = runner.invoke(cli, ["run"])
@@ -651,6 +656,38 @@ def test_run_pipeline_analyze_exception_triggers_alert(runner):
     assert "Pipeline finished with errors." in result.output
     sent_errors = mock_alert.await_args.args[0]
     assert any("analyze stage failed: analyze boom" in err for err in sent_errors)
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_telegram_set_show_clear(runner, db_path):
+    set_result = runner.invoke(
+        cli,
+        ["telegram", "set", "--bot-token", "token-12345", "--chat-id", "chat-42"],
+    )
+    assert set_result.exit_code == 0
+    assert "Telegram credentials saved." in set_result.output
+
+    show_result = runner.invoke(cli, ["telegram", "show"])
+    assert show_result.exit_code == 0
+    assert "Telegram configuration:" in show_result.output
+    assert "tok...345" in show_result.output
+    assert "chat-42" in show_result.output
+
+    clear_result = runner.invoke(cli, ["telegram", "clear"], input="y\n")
+    assert clear_result.exit_code == 0
+    assert "Telegram credentials removed." in clear_result.output
+
+    async def _load() -> object:
+        return await TelegramStore(db_path).get()
+
+    assert asyncio.run(_load()) is None
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_telegram_show_empty(runner):
+    result = runner.invoke(cli, ["telegram", "show"])
+    assert result.exit_code == 0
+    assert "Telegram is not configured. Run 'pfm telegram set'." in result.output
 
 
 def test_import_kbank_stub(runner, tmp_path):

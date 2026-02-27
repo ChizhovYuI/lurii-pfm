@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import httpx
 
 from pfm.config import get_settings
+from pfm.db.telegram_store import TelegramCredentials, TelegramStore
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -22,32 +27,33 @@ class WeeklyReport:
     text: str
 
 
-async def send_message(
-    chat_id: str,
+async def send_message(  # noqa: PLR0913
+    chat_id: str | None,
     text: str,
     parse_mode: str | None = "HTML",
     *,
     bot_token: str | None = None,
+    db_path: str | Path | None = None,
     client: httpx.AsyncClient | None = None,
 ) -> bool:
     """Send a message (split into Telegram-safe chunks if needed)."""
-    settings = get_settings()
-    token = bot_token if bot_token is not None else settings.telegram_bot_token.get_secret_value()
-    if not token:
-        logger.warning("Telegram bot token is not configured.")
-        return False
-    if not chat_id:
-        logger.warning("Telegram chat ID is not configured.")
+    creds = await resolve_telegram_credentials(
+        chat_id=chat_id,
+        bot_token=bot_token,
+        db_path=db_path,
+    )
+    if creds is None:
+        logger.info("Telegram is not configured; skipping send.")
         return False
 
     chunks = _split_message(text, TELEGRAM_MESSAGE_LIMIT)
-    endpoint = f"{TELEGRAM_API_BASE}/bot{token}/sendMessage"
+    endpoint = f"{TELEGRAM_API_BASE}/bot{creds.bot_token}/sendMessage"
     owns_client = client is None
     http_client = client if client is not None else httpx.AsyncClient(timeout=20.0)
     try:
         for chunk in chunks:
             payload: dict[str, str] = {
-                "chat_id": chat_id,
+                "chat_id": creds.chat_id,
                 "text": chunk,
             }
             if parse_mode:
@@ -78,16 +84,16 @@ async def send_report(
     *,
     chat_id: str | None = None,
     bot_token: str | None = None,
+    db_path: str | Path | None = None,
     client: httpx.AsyncClient | None = None,
 ) -> bool:
     """Send a formatted weekly report to Telegram."""
-    settings = get_settings()
-    destination_chat_id = chat_id if chat_id is not None else settings.telegram_chat_id
     return await send_message(
-        destination_chat_id,
+        chat_id,
         report.text,
         parse_mode="HTML",
         bot_token=bot_token,
+        db_path=db_path,
         client=client,
     )
 
@@ -97,22 +103,50 @@ async def send_error_alert(
     *,
     chat_id: str | None = None,
     bot_token: str | None = None,
+    db_path: str | Path | None = None,
     client: httpx.AsyncClient | None = None,
 ) -> bool:
     """Send pipeline error alerts to Telegram."""
     if not errors:
         return True
 
-    settings = get_settings()
-    destination_chat_id = chat_id if chat_id is not None else settings.telegram_chat_id
     lines = ["PFM pipeline errors detected:"] + [f"- {error}" for error in errors]
     return await send_message(
-        destination_chat_id,
+        chat_id,
         "\n".join(lines),
         parse_mode=None,
         bot_token=bot_token,
+        db_path=db_path,
         client=client,
     )
+
+
+async def is_telegram_configured(*, db_path: str | Path | None = None) -> bool:
+    """Return True when Telegram credentials are available."""
+    creds = await resolve_telegram_credentials(db_path=db_path)
+    return creds is not None
+
+
+async def resolve_telegram_credentials(
+    *,
+    chat_id: str | None = None,
+    bot_token: str | None = None,
+    db_path: str | Path | None = None,
+) -> TelegramCredentials | None:
+    """Resolve Telegram credentials from explicit params, then DB."""
+    if bot_token and chat_id:
+        return TelegramCredentials(bot_token=bot_token, chat_id=chat_id)
+
+    settings = get_settings()
+    store = TelegramStore(db_path if db_path is not None else settings.database_path)
+    stored = await store.get()
+    if stored is not None:
+        resolved_bot_token = bot_token or stored.bot_token
+        resolved_chat_id = chat_id or stored.chat_id
+        if resolved_bot_token and resolved_chat_id:
+            return TelegramCredentials(bot_token=resolved_bot_token, chat_id=resolved_chat_id)
+
+    return None
 
 
 def _split_message(text: str, limit: int) -> list[str]:
