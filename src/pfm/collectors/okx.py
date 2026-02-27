@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _BASE_URL = "https://www.okx.com"
-_RATE_LIMITER = RateLimiter(requests_per_second=5.0)  # 10 req/2s
+_RATE_LIMITER = RateLimiter(requests_per_minute=300.0)  # 10 req/2s
 
 
 @register_collector

@@ -69,7 +69,28 @@ def retry(
 class RateLimiter:
     """Simple token-bucket rate limiter."""
 
-    def __init__(self, requests_per_second: float) -> None:
+    def __init__(
+        self,
+        requests_per_minute: float | None = None,
+        *,
+        requests_per_second: float | None = None,
+    ) -> None:
+        if requests_per_minute is not None and requests_per_second is not None:
+            msg = "Provide either requests_per_minute or requests_per_second, not both."
+            raise ValueError(msg)
+
+        if requests_per_second is None:
+            if requests_per_minute is None:
+                msg = "requests_per_minute is required when requests_per_second is not provided."
+                raise ValueError(msg)
+            if requests_per_minute <= 0:
+                msg = "requests_per_minute must be > 0"
+                raise ValueError(msg)
+            requests_per_second = requests_per_minute / 60.0
+        elif requests_per_second <= 0:
+            msg = "requests_per_second must be > 0"
+            raise ValueError(msg)
+
         self._min_interval = 1.0 / requests_per_second
         self._last_request: float = 0.0
 

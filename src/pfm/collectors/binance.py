@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_RATE_LIMITER = RateLimiter(requests_per_second=10.0)
+_RATE_LIMITER = RateLimiter(requests_per_minute=600.0)
 
 
 @register_collector

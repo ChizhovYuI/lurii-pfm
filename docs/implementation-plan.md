@@ -593,7 +593,7 @@ Format analytics + AI commentary into Telegram HTML:
 
 **Files:** `alembic.ini`, `src/pfm/db/migrations/`
 
-### Task 7.2 — Retry and rate limiting `src/pfm/collectors/_retry.py` [S]
+### Task 7.2 — Retry and rate limiting `src/pfm/collectors/_retry.py` [S] ✅
 
 **Dependencies:** Phase 0
 

@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 _BASE_URL = "https://api.bybit.com"
 _RECV_WINDOW = "20000"
-_RATE_LIMITER = RateLimiter(requests_per_second=10.0)
+_RATE_LIMITER = RateLimiter(requests_per_minute=600.0)
 
 
 @register_collector

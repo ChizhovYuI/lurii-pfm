@@ -86,7 +86,7 @@ async def test_retry_custom_retryable():
 
 
 async def test_rate_limiter_allows_first_request():
-    limiter = RateLimiter(requests_per_second=10.0)
+    limiter = RateLimiter(requests_per_minute=600.0)
     start = time.monotonic()
     await limiter.acquire()
     elapsed = time.monotonic() - start
@@ -94,10 +94,29 @@ async def test_rate_limiter_allows_first_request():
 
 
 async def test_rate_limiter_throttles():
-    limiter = RateLimiter(requests_per_second=20.0)  # 50ms interval
+    limiter = RateLimiter(requests_per_minute=1200.0)  # 50ms interval
     await limiter.acquire()
     start = time.monotonic()
     await limiter.acquire()
     elapsed = time.monotonic() - start
     # Should wait ~50ms
     assert elapsed >= 0.04
+
+
+def test_rate_limiter_accepts_requests_per_second_for_compatibility():
+    limiter = RateLimiter(requests_per_second=20.0)
+    assert limiter is not None
+
+
+def test_rate_limiter_rejects_invalid_args():
+    with pytest.raises(ValueError, match="either requests_per_minute or requests_per_second"):
+        RateLimiter(requests_per_minute=60.0, requests_per_second=1.0)
+
+    with pytest.raises(ValueError, match="requests_per_minute is required"):
+        RateLimiter()
+
+    with pytest.raises(ValueError, match="requests_per_minute must be > 0"):
+        RateLimiter(requests_per_minute=0)
+
+    with pytest.raises(ValueError, match="requests_per_second must be > 0"):
+        RateLimiter(requests_per_second=0)
