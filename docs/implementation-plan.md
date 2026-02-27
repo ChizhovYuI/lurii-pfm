@@ -514,7 +514,7 @@ Seed DB with fixture data across multiple dates, verify all computations.
 
 ## Phase 5 — AI Commentary (Claude API)
 
-### Task 5.1 — Prompt templates `src/pfm/ai/prompts.py` [S]
+### Task 5.1 — Prompt templates `src/pfm/ai/prompts.py` [S] ✅
 
 **Dependencies:** None
 
