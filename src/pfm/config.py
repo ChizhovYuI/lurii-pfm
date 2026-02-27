@@ -21,41 +21,6 @@ class Settings(BaseSettings):
     # ── Database ──────────────────────────────────────────────────────
     database_path: Path = Path("data/pfm.db")
 
-    # ── OKX ───────────────────────────────────────────────────────────
-    okx_api_key: SecretStr = SecretStr("")
-    okx_api_secret: SecretStr = SecretStr("")
-    okx_passphrase: SecretStr = SecretStr("")
-
-    # ── Binance (global) ──────────────────────────────────────────────
-    binance_api_key: SecretStr = SecretStr("")
-    binance_api_secret: SecretStr = SecretStr("")
-
-    # ── Binance TH ────────────────────────────────────────────────────
-    binance_th_api_key: SecretStr = SecretStr("")
-    binance_th_api_secret: SecretStr = SecretStr("")
-
-    # ── Bybit ─────────────────────────────────────────────────────────
-    bybit_api_key: SecretStr = SecretStr("")
-    bybit_api_secret: SecretStr = SecretStr("")
-
-    # ── Stellar / Lobstr / Blend ──────────────────────────────────────
-    stellar_public_address: str = ""
-    blend_pool_contract_id: str = ""
-    soroban_rpc_url: str = "https://soroban-rpc.mainnet.stellar.gateway.fm"
-
-    # ── Wise ──────────────────────────────────────────────────────────
-    wise_api_token: SecretStr = SecretStr("")
-
-    # ── KBank (Gmail) ──────────────────────────────────────────────────
-    gmail_address: str = ""
-    gmail_app_password: SecretStr = SecretStr("")
-    kbank_sender_email: str = "K-ElectronicDocument@kasikornbank.com"
-    kbank_pdf_password: SecretStr = SecretStr("")
-
-    # ── IBKR ──────────────────────────────────────────────────────────
-    ibkr_flex_token: SecretStr = SecretStr("")
-    ibkr_flex_query_id: str = ""
-
     # ── Telegram ──────────────────────────────────────────────────────
     telegram_bot_token: SecretStr = SecretStr("")
     telegram_chat_id: str = ""

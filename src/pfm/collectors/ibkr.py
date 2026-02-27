@@ -134,15 +134,18 @@ class IbkrCollector(BaseCollector):
         today = self._pricing.today()
         snapshots: list[Snapshot] = []
 
-        # Open positions (stocks, ETFs) — SUMMARY level only to avoid lot duplicates
+        # Open positions (stocks, ETFs) — prefer SUMMARY level to avoid lot duplicates.
+        # Some Flex payloads omit levelOfDetail entirely; treat those as acceptable.
         positions = self._parse_positions_from_xml(xml_text)
         for pos in positions:
-            if pos.get("levelOfDetail", "").upper() != "SUMMARY":
+            level_of_detail = pos.get("levelOfDetail", "").upper()
+            if level_of_detail and level_of_detail != "SUMMARY":
                 continue
 
             symbol = pos.get("symbol", "").upper()
             quantity = Decimal(pos.get("position", "0"))
-            market_value = Decimal(pos.get("positionValue", "0"))
+            market_value_str = pos.get("positionValue", pos.get("markMarketValue", "0"))
+            market_value = Decimal(market_value_str)
 
             if quantity == 0 or not symbol:
                 continue

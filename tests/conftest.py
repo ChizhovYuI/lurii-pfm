@@ -20,12 +20,8 @@ def test_settings() -> Settings:
     """Settings with dummy values for testing."""
     return Settings(
         database_path=Path(":memory:"),
-        okx_api_key="test-key",  # type: ignore[arg-type]
-        okx_api_secret="test-secret",  # type: ignore[arg-type]
-        okx_passphrase="test-pass",  # type: ignore[arg-type]
-        binance_api_key="test-key",  # type: ignore[arg-type]
-        binance_api_secret="test-secret",  # type: ignore[arg-type]
-        stellar_public_address="GABC123",
+        telegram_bot_token="test-token",  # type: ignore[arg-type]
+        anthropic_api_key="test-key",  # type: ignore[arg-type]
     )
 
 

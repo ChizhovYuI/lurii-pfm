@@ -1,6 +1,6 @@
 # Implementation Plan
 
-47 tasks across 9 phases. Each phase delivers something testable.
+48 tasks across 9 phases. Each phase delivers something testable.
 
 **Effort key:** S = half day, M = 1 day, L = 2 days
 
@@ -111,7 +111,7 @@ CoinGecko client:
 - Cache hit avoids HTTP call
 - Unknown asset raises typed error
 
-### Task 0.7 — CLI entry point `src/pfm/cli.py` [M]
+### Task 0.7 — CLI entry point `src/pfm/cli.py` [M] ✅
 
 **Dependencies:** 0.1, 0.4, 0.5
 
@@ -164,7 +164,7 @@ Shared fixtures: in-memory DB, test settings, mock httpx client. Tests for all P
 
 Migrate source credentials from `.env` to SQLite. Interactive CLI for adding/managing sources. Global settings (Telegram, Claude API, CoinGecko, logging) stay in `.env`.
 
-### Task 0.5.1 — Source model + DB schema [S]
+### Task 0.5.1 — Source model + DB schema [S] ✅
 
 **Dependencies:** 0.3
 
@@ -185,7 +185,7 @@ Add `sources` table:
 - `Source` round-trip: insert, read back, fields match
 - UNIQUE constraint on `name`
 
-### Task 0.5.2 — Source store CRUD `src/pfm/db/source_store.py` [M]
+### Task 0.5.2 — Source store CRUD `src/pfm/db/source_store.py` [M] ✅
 
 **Dependencies:** 0.5.1
 
@@ -207,7 +207,7 @@ Validate `type` against known source types. Raise typed errors for duplicates, n
 - Unknown type raises error
 - Enable/disable toggle works
 
-### Task 0.5.3 — Credential schemas per source type [S]
+### Task 0.5.3 — Credential schemas per source type [S] ✅
 
 **Dependencies:** 0.5.2
 
@@ -231,7 +231,7 @@ Used by wizard (prompt for each field) and validation.
 - Validation rejects missing required fields
 - Optional fields have defaults where applicable
 
-### Task 0.5.4 — CLI `pfm source` commands [M]
+### Task 0.5.4 — CLI `pfm source` commands [M] ✅
 
 **Dependencies:** 0.5.2, 0.5.3, 0.7
 
@@ -253,25 +253,24 @@ CLI group `pfm source` with subcommands:
 - `pfm source delete` requires confirmation
 - All subcommands handle errors gracefully (not found, duplicate, etc.)
 
-### Task 0.5.5 — Refactor collectors to accept credentials dict [M]
+### Task 0.5.5 — Wire `pfm collect` to registry dispatch [M] ✅
 
 **Dependencies:** 0.5.2
 
-**Files:** modify `src/pfm/collectors/base.py`, modify all 9 collector files
+**Files:** modify `src/pfm/cli.py`, modify `src/pfm/collectors/__init__.py`
 
-Change `BaseCollector.__init__` to accept `credentials: dict[str, str]` instead of reading from `Settings`. Each collector extracts its needed fields from the dict.
+Collectors already accept keyword arguments matching credential field names — no refactoring needed. Main work: wire `pfm collect` to load sources from DB, dispatch via `COLLECTOR_REGISTRY`, run concurrently.
 
-Update `pfm collect` to:
-1. Load enabled sources from DB
-2. For each source: look up collector class by type, instantiate with credentials
-3. Run all concurrently via `asyncio.gather`
+- `collectors/__init__.py` auto-imports all 9 collector modules to populate registry
+- `cli.py` `collect` command: loads enabled sources from DB, looks up collector class by type, instantiates with `**credentials`, runs `asyncio.gather`, prints summary table
 
 **Acceptance:**
-- All existing collector tests pass (update fixtures to pass credentials dict)
-- Collectors no longer depend on `Settings` for source credentials
-- `pfm collect` discovers sources from DB
+- All existing collector tests pass
+- `pfm collect` discovers sources from DB and runs them
+- `pfm collect --source NAME` runs a single named source
+- Summary table shows snapshot/transaction counts, errors, timing
 
-### Task 0.5.6 — Clean up config.py and .env.example [S]
+### Task 0.5.6 — Clean up config.py and .env.example [S] ✅
 
 **Dependencies:** 0.5.5
 
@@ -291,7 +290,7 @@ Update `.env.example` to match.
 - `.env.example` only has global vars
 - All tests pass
 
-### Task 0.5.7 — Source management tests [M]
+### Task 0.5.7 — Source management tests [M] ✅
 
 **Dependencies:** 0.5.1–0.5.6
 
@@ -335,13 +334,15 @@ Wise REST API with personal token (raw httpx, no SDK):
 - `fetch_transactions()`: GET statement, normalize
 - Auth: Bearer token
 
-### Task 1.3 — Wire `collect` command [S]
+### Task 1.3 — Wire `collect` command [S] ✅
 
 **Dependencies:** 1.1, 1.2
 
 **Files:** modify `src/pfm/cli.py`, `src/pfm/collectors/__init__.py`
 
 Register collectors. `pfm collect` discovers enabled sources from DB, runs concurrently via `asyncio.gather`. `--source NAME` filters by instance name.
+
+*Completed as part of Task 0.5.5 — all 9 collectors auto-registered via `@register_collector` decorator and `__init__.py` auto-import.*
 
 ### Task 1.4 — Integration tests [S]
 
@@ -448,11 +449,13 @@ Soroban RPC:
 - THB → USD conversion
 - `fetch_balances()`: ending balance from most recent import
 
-### Task 3.5 — Wire remaining collectors [S]
+### Task 3.5 — Wire remaining collectors [S] ✅
 
 **Dependencies:** 3.2–3.4
 
 Register all 9 collector types. `pfm collect` auto-discovers from DB. Add `--category` filter option.
+
+*Completed as part of Task 0.5.5 — all 9 collectors auto-registered via `@register_collector` decorator.*
 
 ### Task 3.6 — Tests [M] ✅
 
@@ -635,16 +638,16 @@ Phase 0 ── Phase 0.5 (Source Management)
 
 | Phase | Tasks | Effort | Status |
 |-------|-------|--------|--------|
-| 0 — Foundation | 9 | 4S + 5M | ✅ (8/9 — CLI pending) |
-| 0.5 — Source Management | 7 | 3S + 4M | Pending |
-| 1 — Lobstr + Wise | 4 | 2S + 2M | ✅ (collector code done, wiring pending) |
-| 2 — Crypto Exchanges | 6 | 2S + 4M | ✅ (collector code done, wiring pending) |
-| 3 — Remaining Sources | 5 | 1S + 2M + 2L | ✅ (collector code done, wiring pending) |
+| 0 — Foundation | 9 | 4S + 5M | ✅ |
+| 0.5 — Source Management | 7 | 3S + 4M | ✅ |
+| 1 — Lobstr + Wise | 4 | 2S + 2M | ✅ |
+| 2 — Crypto Exchanges | 6 | 2S + 4M | ✅ |
+| 3 — Remaining Sources | 5 | 1S + 2M + 2L | ✅ |
 | 4 — Analytics | 5 | 1S + 3M + 1L | Pending |
 | 5 — AI Commentary | 3 | 2S + 1M | Pending |
 | 6 — Telegram Reporting | 4 | 2S + 2M | Pending |
 | 7 — Hardening | 5 | 2S + 3M | Pending |
-| **Total** | **48** | | **~29/48 done** |
+| **Total** | **48** | | **~37/48 done** |
 
 ## File Manifest
 
