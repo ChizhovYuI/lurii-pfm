@@ -585,7 +585,7 @@ Format analytics + AI commentary into Telegram HTML:
 
 ## Phase 7 — Production Hardening
 
-### Task 7.1 — Alembic migrations [M]
+### Task 7.1 — Alembic migrations [M] ✅
 
 **Dependencies:** 0.3
 

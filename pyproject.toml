@@ -5,6 +5,7 @@ description = "Personal Financial Management — aggregate assets, statements, P
 requires-python = ">=3.13"
 dependencies = [
     "aiosqlite>=0.22.1",
+    "alembic>=1.18.4",
     "anthropic>=0.84.0",
     "click>=8.3.1",
     "httpx>=0.28.1",
@@ -145,6 +146,10 @@ disallow_untyped_defs = false
 
 [[tool.mypy.overrides]]
 module = ["anthropic", "anthropic.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["alembic", "alembic.*", "sqlalchemy", "sqlalchemy.*"]
 ignore_missing_imports = true
 
 # ── Pytest ────────────────────────────────────────────────────────────
