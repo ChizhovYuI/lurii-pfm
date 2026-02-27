@@ -84,6 +84,18 @@ class RawResponse:
     created_at: datetime | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class Source:
+    """A configured data source with credentials."""
+
+    name: str
+    type: str
+    credentials: str  # JSON blob
+    enabled: bool = True
+    id: int | None = None
+    created_at: datetime | None = None
+
+
 @dataclass(slots=True)
 class CollectorResult:
     """Result summary from a collector run."""
@@ -158,6 +170,15 @@ CREATE TABLE IF NOT EXISTS analytics_cache (
 );
 
 CREATE INDEX IF NOT EXISTS idx_analytics_cache_date ON analytics_cache(date);
+
+CREATE TABLE IF NOT EXISTS sources (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    type TEXT NOT NULL,
+    credentials TEXT NOT NULL DEFAULT '{}',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 

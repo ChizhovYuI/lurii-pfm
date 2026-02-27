@@ -9,7 +9,7 @@ Personal Financial Management system that aggregates assets and statements from 
 - Base currency: **USD**
 - Reporting: **Weekly push via Telegram bot**
 - Storage: **Local SQLite**
-- Secrets: **`.env` file**
+- Secrets: **`.env` for global settings**, **SQLite for source credentials**
 - AI provider: **Claude API** (Anthropic)
 
 ---
@@ -49,9 +49,20 @@ Personal Financial Management system that aggregates assets and statements from 
 
 ## Functional Requirements
 
+### F0 — Source Management
+
+- F0.1: Dynamic source configuration via CLI (`pfm source add/list/show/delete`)
+- F0.2: Sources stored in SQLite `sources` table (name, type, credentials JSON, enabled flag)
+- F0.3: Interactive wizard for adding sources (pick type → name → fill credentials)
+- F0.4: Named instances — multiple accounts per source type (e.g. `okx-main`, `okx-trading`)
+- F0.5: 9 hardcoded source types: okx, binance, binance_th, bybit, lobstr, blend, wise, kbank, ibkr
+- F0.6: `pfm source show` masks secrets in output
+- F0.7: `pfm source enable/disable` toggles source activity
+- F0.8: `pfm collect` auto-discovers enabled sources from DB
+
 ### F1 — Data Collection
 
-- F1.1: Fetch current balances from all 9 sources
+- F1.1: Fetch current balances from all configured sources
 - F1.2: Fetch transaction history (deposits, withdrawals, trades, yields)
 - F1.3: Convert all balances to USD using live exchange rates
 - F1.4: Handle KBank PDF import (manual trigger or email-based)
@@ -66,6 +77,7 @@ Personal Financial Management system that aggregates assets and statements from 
 - F2.3: Transaction log (normalized across all sources)
 - F2.4: Price history cache (for PnL calculations)
 - F2.5: Schema migrations (alembic or similar)
+- F2.6: Source configurations in `sources` table (credentials as JSON, plain text)
 
 ### F3 — Portfolio Analytics
 
@@ -115,9 +127,10 @@ Personal Financial Management system that aggregates assets and statements from 
 
 ### NF2 — Security
 
-- All secrets in `.env` (never committed)
+- Global secrets (Telegram, Claude API, CoinGecko) in `.env` (never committed)
+- Source credentials in SQLite `sources` table (local file, gitignored `data/` directory)
 - API keys are read-only where possible
-- No plaintext secrets in logs
+- No plaintext secrets in logs; `pfm source show` masks credential values
 - PDF statements stored outside git (in `data/` — gitignored)
 - Private keys / seed phrases are NEVER stored
 
@@ -218,10 +231,11 @@ Personal Financial Management system that aggregates assets and statements from 
 ```
 src/pfm/
 ├── __init__.py
-├── config.py              # Settings, .env loading
+├── config.py              # Global settings (.env loading)
 ├── db/
 │   ├── __init__.py
 │   ├── models.py          # SQLite schema / ORM models
+│   ├── source_store.py    # Source CRUD (sources table)
 │   ├── migrations/        # Alembic migrations
 │   └── repository.py      # Data access layer
 ├── collectors/
@@ -234,7 +248,7 @@ src/pfm/
 │   ├── lobstr.py          # Stellar Horizon
 │   ├── blend.py           # Soroban RPC
 │   ├── wise.py
-│   ├── kbank.py           # PDF parser
+│   ├── kbank.py           # PDF parser + Gmail IMAP
 │   └── ibkr.py            # Flex Query
 ├── pricing/
 │   ├── __init__.py
@@ -251,7 +265,7 @@ src/pfm/
 ├── reporting/
 │   ├── __init__.py
 │   └── telegram.py        # Telegram bot (push only)
-└── cli.py                 # Entry point (collect, analyze, report)
+└── cli.py                 # Entry point (source, collect, analyze, report)
 ```
 
 ---
@@ -259,23 +273,25 @@ src/pfm/
 ## CLI Commands (planned)
 
 ```bash
-# Fetch all sources and store snapshot
-pfm collect
+# ── Source management ──────────────────────────────────────────────
+pfm source add              # Interactive wizard: pick type → name → credentials
+pfm source list             # Table of all sources (name, type, enabled, created_at)
+pfm source show <name>      # Details with masked secrets
+pfm source delete <name>    # Remove with confirmation
+pfm source enable <name>    # Enable a source
+pfm source disable <name>   # Disable a source
 
-# Fetch a single source
-pfm collect --source okx
+# ── Data collection ───────────────────────────────────────────────
+pfm collect                 # Fetch all enabled sources
+pfm collect --source <name> # Fetch a single named source
 
-# Run analytics on latest snapshot
-pfm analyze
+# ── Analytics & reporting ─────────────────────────────────────────
+pfm analyze                 # Run analytics on latest snapshot
+pfm report                  # Generate and send Telegram report
+pfm run                     # Full pipeline: collect → analyze → report
 
-# Generate and send Telegram report
-pfm report
-
-# Full pipeline: collect → analyze → report
-pfm run
-
-# Import KBank PDF manually
-pfm import-kbank /path/to/statement.pdf
+# ── Utilities ─────────────────────────────────────────────────────
+pfm import-kbank /path/to/statement.pdf   # Import KBank PDF manually
 ```
 
 ---

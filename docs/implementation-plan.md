@@ -1,6 +1,6 @@
 # Implementation Plan
 
-41 tasks across 8 phases. Each phase delivers something testable.
+47 tasks across 9 phases. Each phase delivers something testable.
 
 **Effort key:** S = half day, M = 1 day, L = 2 days
 
@@ -16,7 +16,7 @@ Everything wired and testable, but no real data yet.
 
 **Files:** create `src/pfm/config.py`, modify `pyproject.toml` (add `pydantic-settings`)
 
-`Settings` class using `pydantic-settings` reading from `.env`. Fields for every API key/secret/token (OKX, Binance, Binance TH, Bybit, Lobstr public address, Blend pool contract ID, Wise, IBKR flex token/query ID, Telegram bot token/chat ID, Claude API key, CoinGecko API key, DB path). All secrets are `SecretStr`. Cached `get_settings()` factory.
+`Settings` class using `pydantic-settings` reading from `.env`. Global fields only: DB path, Telegram bot token/chat ID, Claude API key, CoinGecko API key, log level. Source-specific credentials managed separately via `pfm source` CLI (stored in SQLite). All secrets are `SecretStr`. Cached `get_settings()` factory.
 
 **Acceptance:**
 - Loads from `.env.example` without errors
@@ -111,23 +111,25 @@ CoinGecko client:
 - Cache hit avoids HTTP call
 - Unknown asset raises typed error
 
-### Task 0.7 — CLI entry point `src/pfm/cli.py` [S]
+### Task 0.7 — CLI entry point `src/pfm/cli.py` [M]
 
 **Dependencies:** 0.1, 0.4, 0.5
 
 **Files:** create `src/pfm/cli.py`, modify `pyproject.toml` (add `click`, `[project.scripts]` entry)
 
 CLI using `click`:
-- `pfm collect [--source SOURCE]`
+- `pfm source add/list/show/delete/enable/disable` — source management (Phase 0.5)
+- `pfm collect [--source NAME]` — fetch from DB-configured sources
 - `pfm analyze`
 - `pfm report`
 - `pfm run` — full pipeline
 - `pfm import-kbank PATH`
 
-All stubs initially. Wire up settings, DB init, structured logging.
+Stubs for analytics/reporting initially. Wire up settings, DB init, structured logging.
 
 **Acceptance:**
-- `pfm --help` shows all commands
+- `pfm --help` shows all commands including `source` group
+- `pfm source --help` shows subcommands
 - Each command logs start/end
 - Exit code 0 for stubs
 
@@ -154,6 +156,155 @@ Shared fixtures: in-memory DB, test settings, mock httpx client. Tests for all P
 **Acceptance:**
 - `uv run pytest` passes
 - Coverage >= 80%
+- `mypy --strict` + `ruff` pass
+
+---
+
+## Phase 0.5 — Dynamic Source Management (CLI + DB)
+
+Migrate source credentials from `.env` to SQLite. Interactive CLI for adding/managing sources. Global settings (Telegram, Claude API, CoinGecko, logging) stay in `.env`.
+
+### Task 0.5.1 — Source model + DB schema [S]
+
+**Dependencies:** 0.3
+
+**Files:** modify `src/pfm/db/models.py`, modify schema SQL
+
+Add `sources` table:
+- `id` INTEGER PK auto
+- `name` TEXT UNIQUE — user-chosen instance name (e.g. `okx-main`)
+- `type` TEXT — one of 9 known types (okx, binance, binance_th, bybit, lobstr, blend, wise, kbank, ibkr)
+- `credentials` TEXT — JSON blob of credential key-value pairs
+- `enabled` BOOLEAN — default true
+- `created_at` TEXT — ISO timestamp
+
+`Source` dataclass in models.py.
+
+**Acceptance:**
+- `init_db` creates `sources` table
+- `Source` round-trip: insert, read back, fields match
+- UNIQUE constraint on `name`
+
+### Task 0.5.2 — Source store CRUD `src/pfm/db/source_store.py` [M]
+
+**Dependencies:** 0.5.1
+
+**Files:** create `src/pfm/db/source_store.py`
+
+Async CRUD operations:
+- `add_source(name, type, credentials) -> Source`
+- `get_source(name) -> Source | None`
+- `list_sources() -> list[Source]`
+- `list_enabled_sources() -> list[Source]`
+- `delete_source(name) -> bool`
+- `update_source(name, credentials=None, enabled=None) -> Source`
+
+Validate `type` against known source types. Raise typed errors for duplicates, not found.
+
+**Acceptance:**
+- All CRUD operations tested against in-memory SQLite
+- Duplicate name raises error
+- Unknown type raises error
+- Enable/disable toggle works
+
+### Task 0.5.3 — Credential schemas per source type [S]
+
+**Dependencies:** 0.5.2
+
+**Files:** modify `src/pfm/db/source_store.py` or new `src/pfm/source_types.py`
+
+Define required credential fields per source type:
+- `okx`: api_key, api_secret, passphrase
+- `binance`: api_key, api_secret
+- `binance_th`: api_key, api_secret
+- `bybit`: api_key, api_secret
+- `lobstr`: stellar_public_address
+- `blend`: stellar_public_address, blend_pool_contract_id, soroban_rpc_url (optional, has default)
+- `wise`: api_token
+- `kbank`: gmail_address, gmail_app_password, kbank_sender_email (optional), kbank_pdf_password
+- `ibkr`: flex_token, flex_query_id
+
+Used by wizard (prompt for each field) and validation.
+
+**Acceptance:**
+- Each type has defined required/optional fields
+- Validation rejects missing required fields
+- Optional fields have defaults where applicable
+
+### Task 0.5.4 — CLI `pfm source` commands [M]
+
+**Dependencies:** 0.5.2, 0.5.3, 0.7
+
+**Files:** modify `src/pfm/cli.py`
+
+**Additional dep:** `click` (already planned)
+
+CLI group `pfm source` with subcommands:
+- `pfm source add` — interactive wizard: pick type from list → enter name → prompt for each credential field
+- `pfm source list` — table output (name, type, enabled, created_at)
+- `pfm source show <name>` — details with masked secrets (show first/last 3 chars)
+- `pfm source delete <name>` — confirmation prompt before deletion
+- `pfm source enable <name>` / `pfm source disable <name>` — toggle
+
+**Acceptance:**
+- `pfm source add` walks through wizard and saves to DB
+- `pfm source list` shows table
+- `pfm source show` masks API keys/secrets
+- `pfm source delete` requires confirmation
+- All subcommands handle errors gracefully (not found, duplicate, etc.)
+
+### Task 0.5.5 — Refactor collectors to accept credentials dict [M]
+
+**Dependencies:** 0.5.2
+
+**Files:** modify `src/pfm/collectors/base.py`, modify all 9 collector files
+
+Change `BaseCollector.__init__` to accept `credentials: dict[str, str]` instead of reading from `Settings`. Each collector extracts its needed fields from the dict.
+
+Update `pfm collect` to:
+1. Load enabled sources from DB
+2. For each source: look up collector class by type, instantiate with credentials
+3. Run all concurrently via `asyncio.gather`
+
+**Acceptance:**
+- All existing collector tests pass (update fixtures to pass credentials dict)
+- Collectors no longer depend on `Settings` for source credentials
+- `pfm collect` discovers sources from DB
+
+### Task 0.5.6 — Clean up config.py and .env.example [S]
+
+**Dependencies:** 0.5.5
+
+**Files:** modify `src/pfm/config.py`, modify `.env.example`
+
+Remove all source-specific fields from `Settings` (OKX, Binance, Bybit, Stellar, Wise, KBank Gmail, IBKR). Keep only global settings:
+- `database_path`
+- `telegram_bot_token`, `telegram_chat_id`
+- `anthropic_api_key`
+- `coingecko_api_key`
+- `log_level`
+
+Update `.env.example` to match.
+
+**Acceptance:**
+- `Settings` has no source-specific fields
+- `.env.example` only has global vars
+- All tests pass
+
+### Task 0.5.7 — Source management tests [M]
+
+**Dependencies:** 0.5.1–0.5.6
+
+**Files:** create `tests/test_source_store.py`, modify `tests/test_cli.py`, modify `tests/test_collectors.py`
+
+- Source store CRUD tests
+- CLI wizard test (mocked input)
+- Collector instantiation from credentials dict
+- Enable/disable flow
+
+**Acceptance:**
+- All new tests pass
+- Coverage >= 80% on new modules
 - `mypy --strict` + `ruff` pass
 
 ---
@@ -190,7 +341,7 @@ Wise REST API with personal token (raw httpx, no SDK):
 
 **Files:** modify `src/pfm/cli.py`, `src/pfm/collectors/__init__.py`
 
-Register collectors. `pfm collect` runs both concurrently via `asyncio.gather`. `--source` filters.
+Register collectors. `pfm collect` discovers enabled sources from DB, runs concurrently via `asyncio.gather`. `--source NAME` filters by instance name.
 
 ### Task 1.4 — Integration tests [S]
 
@@ -301,7 +452,7 @@ Soroban RPC:
 
 **Dependencies:** 3.2–3.4
 
-Register all 9 collectors. Add `--category` filter to `pfm collect`.
+Register all 9 collector types. `pfm collect` auto-discovers from DB. Add `--category` filter option.
 
 ### Task 3.6 — Tests [M] ✅
 
@@ -470,40 +621,43 @@ Fill coverage gaps to 80%+. Edge cases: empty portfolio, all sources failing, la
 
 ## Parallelism
 
-Phases 1, 2, 3 are independent (all depend only on Phase 0). Phase 4 needs Phase 0 + fixture data. Phase 5 needs Phase 4. Phase 6 needs Phase 4 + 5. Phase 7 needs everything.
+Phases 1, 2, 3 are independent (all depend only on Phase 0). Phase 0.5 depends on Phase 0 (DB + CLI). Phases 1–3 collectors need Phase 0.5 (credentials from DB). Phase 4 needs Phase 0 + fixture data. Phase 5 needs Phase 4. Phase 6 needs Phase 4 + 5. Phase 7 needs everything.
 
 ```
-Phase 0
-  ├── Phase 1 (Lobstr + Wise) ──────────────┐
-  ├── Phase 2 (Crypto Exchanges) ────────────┤
-  ├── Phase 3 (IBKR, Blend, KBank) ──────────┤
-  └── Phase 4 (Analytics) ──────────────────>├── Phase 5 (AI) ── Phase 6 (Telegram) ── Phase 7 (Hardening)
+Phase 0 ── Phase 0.5 (Source Management)
+               ├── Phase 1 (Lobstr + Wise) ──────────────┐
+               ├── Phase 2 (Crypto Exchanges) ────────────┤
+               ├── Phase 3 (IBKR, Blend, KBank) ──────────┤
+               └── Phase 4 (Analytics) ──────────────────>├── Phase 5 (AI) ── Phase 6 (Telegram) ── Phase 7 (Hardening)
 ```
 
 ## Effort Summary
 
 | Phase | Tasks | Effort | Status |
 |-------|-------|--------|--------|
-| 0 — Foundation | 9 | 5S + 4M | ✅ (8/9 — CLI pending) |
-| 1 — Lobstr + Wise | 4 | 2S + 2M | ✅ |
-| 2 — Crypto Exchanges | 6 | 2S + 4M | ✅ |
-| 3 — Remaining Sources | 5 | 1S + 2M + 2L | ✅ |
+| 0 — Foundation | 9 | 4S + 5M | ✅ (8/9 — CLI pending) |
+| 0.5 — Source Management | 7 | 3S + 4M | Pending |
+| 1 — Lobstr + Wise | 4 | 2S + 2M | ✅ (collector code done, wiring pending) |
+| 2 — Crypto Exchanges | 6 | 2S + 4M | ✅ (collector code done, wiring pending) |
+| 3 — Remaining Sources | 5 | 1S + 2M + 2L | ✅ (collector code done, wiring pending) |
 | 4 — Analytics | 5 | 1S + 3M + 1L | Pending |
 | 5 — AI Commentary | 3 | 2S + 1M | Pending |
 | 6 — Telegram Reporting | 4 | 2S + 2M | Pending |
 | 7 — Hardening | 5 | 2S + 3M | Pending |
-| **Total** | **41** | | **~29/41 done** |
+| **Total** | **48** | | **~29/48 done** |
 
 ## File Manifest
 
 ```
 src/pfm/
-  config.py                        # 0.1
+  config.py                        # 0.1 (global settings only)
   logging.py                       # 0.8
-  cli.py                           # 0.7
+  cli.py                           # 0.7 + 0.5.4
+  source_types.py                  # 0.5.3 (credential schemas per type)
   db/
     __init__.py                    # 0.3
-    models.py                      # 0.3
+    models.py                      # 0.3 + 0.5.1
+    source_store.py                # 0.5.2 (source CRUD)
     repository.py                  # 0.4
     migrations/                    # 7.1
   collectors/
@@ -541,6 +695,7 @@ tests/
   conftest.py                      # 0.9
   test_config.py                   # 0.9
   test_db.py                       # 0.9
+  test_source_store.py             # 0.5.7
   test_collector_base.py           # 0.9
   test_pricing.py                  # 0.9
   test_cli.py                      # 0.9

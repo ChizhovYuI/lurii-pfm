@@ -12,6 +12,9 @@ dependencies = [
     "stellar-sdk>=13.2.1",
 ]
 
+[project.scripts]
+pfm = "pfm.cli:cli"
+
 [project.optional-dependencies]
 dev = [
     "ruff>=0.8",
