@@ -705,6 +705,39 @@ async def test_wise_fetch_transactions(pricing):
     assert len(txs) == 2  # zero amount excluded
 
 
+async def test_wise_fetch_transactions_statement_api_unavailable_stops_early(pricing, caplog):
+    collector = WiseCollector(pricing, api_token="token")
+    statement_calls = 0
+
+    async def mock_get(path, **kwargs):
+        nonlocal statement_calls
+        if "balance-statements" in path:
+            statement_calls += 1
+            response = MagicMock()
+            response.status_code = 403
+            raise httpx.HTTPStatusError("403", request=MagicMock(), response=response)
+        if "/v1/profiles" in path:
+            return _mock_response([{"id": 123, "type": "personal"}])
+        if "/v4/profiles" in path:
+            return _mock_response(
+                [
+                    {"amount": {"value": 500, "currency": "GBP"}, "id": 1},
+                    {"amount": {"value": 700, "currency": "USD"}, "id": 2},
+                ]
+            )
+        return _mock_response({})
+
+    collector._client.get = mock_get  # type: ignore[assignment]
+    caplog.set_level(logging.INFO)
+
+    txs = await collector.fetch_transactions()
+
+    assert txs == []
+    assert statement_calls == 1
+    assert "Wise: statement API unavailable (HTTP 403)." in caplog.text
+    assert "Failed to get statement for GBP balance" not in caplog.text
+
+
 async def test_wise_parse_transaction_types():
     # CREDIT -> DEPOSIT
     tx = WiseCollector._parse_transaction(

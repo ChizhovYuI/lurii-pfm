@@ -19,6 +19,10 @@ if TYPE_CHECKING:
     from pfm.pricing.coingecko import PricingService
 
 logger = logging.getLogger(__name__)
+_HTTP_UNAUTHORIZED = 401
+_HTTP_FORBIDDEN = 403
+_HTTP_NOT_FOUND = 404
+_STATEMENT_UNAVAILABLE_STATUSES = (_HTTP_UNAUTHORIZED, _HTTP_FORBIDDEN, _HTTP_NOT_FOUND)
 
 _BASE_URL = "https://api.transferwise.com"
 
@@ -114,6 +118,7 @@ class WiseCollector(BaseCollector):
         start_date = since or date(today.year, today.month, 1)
 
         all_transactions: list[Transaction] = []
+        statement_failures: list[str] = []
 
         for bal in balances:
             balance_id = bal.get("id")
@@ -126,14 +131,28 @@ class WiseCollector(BaseCollector):
 
             try:
                 statement = await self._get_statement(profile_id, balance_id, currency, start_iso, end_iso)
-            except httpx.HTTPStatusError:
-                logger.warning("Failed to get statement for %s balance", currency)
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                if status in _STATEMENT_UNAVAILABLE_STATUSES:
+                    logger.info(
+                        "Wise: statement API unavailable (HTTP %d). Skipping Wise transaction import for this run.",
+                        status,
+                    )
+                    return all_transactions
+                statement_failures.append(currency)
                 continue
 
             for tx_data in statement.get("transactions", []):
                 tx = self._parse_transaction(tx_data, currency)
                 if tx:
                     all_transactions.append(tx)
+
+        if statement_failures:
+            logger.warning(
+                "Wise: failed to get statements for %d balance(s): %s",
+                len(statement_failures),
+                ", ".join(statement_failures),
+            )
 
         logger.info("Wise: parsed %d transactions", len(all_transactions))
         return all_transactions
