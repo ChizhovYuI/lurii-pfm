@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 
     from pfm.ai import AnalyticsSummary
     from pfm.analytics import PnlResult
-    from pfm.db.models import Source
+    from pfm.db.models import Snapshot, Source
     from pfm.db.repository import Repository
 
 logger = logging.getLogger(__name__)
@@ -38,6 +38,25 @@ _COUNTRY_ACCESS_HINT_PATTERNS = (
     "service access appears restricted from your current network or region",
     "you don't have access from this country. use vpn or smth to handle this",
 )
+_FIAT_ASSETS: frozenset[str] = frozenset(
+    {
+        "USD",
+        "THB",
+        "GBP",
+        "EUR",
+        "JPY",
+        "CHF",
+        "CAD",
+        "AUD",
+        "NZD",
+        "SGD",
+        "HKD",
+    }
+)
+_CRYPTO_SOURCES: frozenset[str] = frozenset({"okx", "binance", "binance_th", "bybit", "lobstr"})
+_FIAT_SOURCES: frozenset[str] = frozenset({"wise", "kbank"})
+_STOCK_SOURCES: frozenset[str] = frozenset({"ibkr"})
+_DEFI_SOURCES: frozenset[str] = frozenset({"blend"})
 
 
 def _mask(value: str) -> str:
@@ -526,6 +545,8 @@ async def _analyze_async() -> None:
             return
 
         analysis_date = latest[0].date
+        analysis_snapshots = await repo.get_snapshots_by_date(analysis_date)
+        asset_type_map = _build_asset_type_map(analysis_snapshots)
         net_worth = await compute_net_worth(repo, analysis_date)
         alloc_asset = await compute_allocation_by_asset(repo, analysis_date)
         alloc_source = await compute_allocation_by_source(repo, analysis_date)
@@ -550,6 +571,7 @@ async def _analyze_async() -> None:
                         "amount": str(row.amount),
                         "usd_value": str(row.usd_value),
                         "percentage": str(row.percentage),
+                        "asset_type": asset_type_map.get(row.asset.upper(), "other"),
                     }
                     for row in alloc_asset
                 ]
@@ -717,6 +739,36 @@ def _pnl_result_to_dict(result: PnlResult) -> dict[str, object]:
         ],
         "notes": list(pnl.notes),
     }
+
+
+def _build_asset_type_map(snapshots: list[Snapshot]) -> dict[str, str]:
+    by_asset: dict[str, dict[str, Decimal]] = {}
+    for snap in snapshots:
+        asset = snap.asset.upper()
+        asset_types = by_asset.setdefault(asset, {})
+        asset_type = _asset_type_for_snapshot(snap.source, snap.asset)
+        asset_types[asset_type] = asset_types.get(asset_type, Decimal(0)) + snap.usd_value
+
+    resolved: dict[str, str] = {}
+    for asset, scored_types in by_asset.items():
+        resolved[asset] = max(scored_types.items(), key=lambda item: item[1])[0]
+    return resolved
+
+
+def _asset_type_for_snapshot(source: str, asset: str) -> str:
+    source_lower = source.lower()
+    asset_upper = asset.upper()
+    if source_lower in _DEFI_SOURCES:
+        return "defi"
+    if source_lower in _FIAT_SOURCES:
+        return "fiat"
+    if source_lower in _STOCK_SOURCES:
+        return "fiat" if asset_upper in _FIAT_ASSETS else "stocks"
+    if asset_upper in _FIAT_ASSETS:
+        return "fiat"
+    if source_lower in _CRYPTO_SOURCES:
+        return "crypto"
+    return "other"
 
 
 _REQUIRED_ANALYTICS_METRICS = (

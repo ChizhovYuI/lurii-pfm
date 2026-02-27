@@ -13,6 +13,42 @@ if TYPE_CHECKING:
     from pfm.ai.prompts import AnalyticsSummary
 
 HOLDING_MIN_DISPLAY_USD = Decimal("10")
+_HOLDING_TYPE_ICONS = {
+    "crypto": "🪙",
+    "fiat": "💵",
+    "stocks": "📈",
+    "defi": "🏦",
+    "other": "📦",
+}
+_FIAT_ASSETS = {
+    "USD",
+    "THB",
+    "GBP",
+    "EUR",
+    "JPY",
+    "CHF",
+    "CAD",
+    "AUD",
+    "NZD",
+    "SGD",
+    "HKD",
+}
+_KNOWN_CRYPTO_ASSETS = {
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "XRP",
+    "ADA",
+    "DOGE",
+    "LTC",
+    "TRX",
+    "AVAX",
+    "DOT",
+    "LINK",
+}
 
 
 def format_weekly_report(
@@ -55,12 +91,13 @@ def format_weekly_report(
             usd_value = _to_decimal(row.get("usd_value", "0"))
             if usd_value < HOLDING_MIN_DISPLAY_USD:
                 continue
+            icon = _holding_icon(row)
             percentage = _to_decimal(row.get("percentage", "0")).quantize(Decimal("0.01"))
             weekly_row = weekly_pnl_by_asset.get(str(row.get("asset", "")).upper(), {})
             weekly_abs_change = _to_decimal(weekly_row.get("absolute_change", "0"))
             weekly_pct_change = _to_decimal(weekly_row.get("percentage_change", "0")).quantize(Decimal("0.01"))
             lines.append(
-                f"• {asset}: ${_fmt_money(usd_value)} ({percentage}%) | "
+                f"{icon} {asset}: ${_fmt_money(usd_value)} ({percentage}%) | "
                 f"7d PnL: {_pnl_arrow(weekly_abs_change)} ${_fmt_money(weekly_abs_change)} ({weekly_pct_change}%)"
             )
             shown_holding = True
@@ -114,3 +151,16 @@ def _pnl_arrow(change: Decimal) -> str:
     if change < 0:
         return "↓"
     return "→"
+
+
+def _holding_icon(row: dict[str, object]) -> str:
+    asset_type = str(row.get("asset_type", "")).strip().lower()
+    if not asset_type:
+        asset_upper = str(row.get("asset", "")).upper()
+        if asset_upper in _FIAT_ASSETS:
+            asset_type = "fiat"
+        elif asset_upper in _KNOWN_CRYPTO_ASSETS:
+            asset_type = "crypto"
+        else:
+            asset_type = "other"
+    return _HOLDING_TYPE_ICONS.get(asset_type, _HOLDING_TYPE_ICONS["other"])

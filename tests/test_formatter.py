@@ -13,7 +13,7 @@ def test_format_weekly_report_contains_required_sections():
     analytics = AnalyticsSummary(
         as_of_date=date(2024, 1, 15),
         net_worth_usd=Decimal("12345.67"),
-        allocation_by_asset='[{"asset":"BTC","usd_value":"7000","percentage":"56.7"}]',
+        allocation_by_asset='[{"asset":"BTC","usd_value":"7000","percentage":"56.7","asset_type":"crypto"}]',
         allocation_by_source="[]",
         allocation_by_category="[]",
         currency_exposure="[]",
@@ -30,7 +30,7 @@ def test_format_weekly_report_contains_required_sections():
     assert "<b>PnL (Weekly)</b>: ↑ $123.45 (1.23%)" in report.text
     assert "<b>PnL (Monthly)</b>: ↑ $456.78 (4.56%)" in report.text
     assert "<b>All Holdings</b>" in report.text
-    assert "• BTC: $7,000.00 (56.70%) | 7d PnL: ↑ $80.00 (1.16%)" in report.text
+    assert "🪙 BTC: $7,000.00 (56.70%) | 7d PnL: ↑ $80.00 (1.16%)" in report.text
     assert "<b>AI Commentary</b>" in report.text
     assert "Watch &lt;volatility&gt;.<br>Rebalance slowly." in report.text
     assert "<b>Warnings</b>" in report.text
@@ -80,7 +80,9 @@ def test_format_weekly_report_tolerates_invalid_numeric_values():
 
 
 def test_format_weekly_report_includes_all_holdings_not_truncated():
-    holdings = ",".join(f'{{"asset":"A{i}","usd_value":"{i}","percentage":"1"}}' for i in range(1, 12))
+    holdings = ",".join(
+        f'{{"asset":"A{i}","usd_value":"{i}","percentage":"1","asset_type":"stocks"}}' for i in range(1, 12)
+    )
     analytics = AnalyticsSummary(
         as_of_date=date(2024, 1, 15),
         net_worth_usd=Decimal(100),
@@ -94,6 +96,6 @@ def test_format_weekly_report_includes_all_holdings_not_truncated():
     )
 
     report = format_weekly_report(analytics, "All holdings visible.")
-    assert "• A9: $9.00 (1.00%)" not in report.text
-    assert "• A10: $10.00 (1.00%) | 7d PnL: → $0.00 (0.00%)" in report.text
-    assert "• A11: $11.00 (1.00%) | 7d PnL: → $0.00 (0.00%)" in report.text
+    assert "📈 A9: $9.00 (1.00%)" not in report.text
+    assert "📈 A10: $10.00 (1.00%) | 7d PnL: → $0.00 (0.00%)" in report.text
+    assert "📈 A11: $11.00 (1.00%) | 7d PnL: → $0.00 (0.00%)" in report.text
