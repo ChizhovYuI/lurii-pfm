@@ -1,11 +1,22 @@
-"""KBank collector — parses PDF bank statements from Kasikorn Bank."""
+"""KBank collector — parses PDF bank statements from Kasikorn Bank.
+
+Supports two modes:
+1. Manual: `pfm import-kbank <path>` — parse a local PDF file.
+2. Auto (Gmail): when Gmail creds are configured, fetches the latest KBank
+   statement PDF from Gmail via IMAP before parsing.
+"""
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import email
+import imaplib
 import json
 import logging
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pfm.collectors import register_collector
@@ -13,29 +24,43 @@ from pfm.collectors.base import BaseCollector
 from pfm.db.models import Snapshot, Transaction, TransactionType
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from pfm.pricing.coingecko import PricingService
 
 logger = logging.getLogger(__name__)
+
+_KBANK_PDF_DIR = Path("data/kbank")
 
 
 @register_collector
 class KbankCollector(BaseCollector):
     """Collector for Kasikorn Bank (KBank) via PDF statement parsing.
 
-    This collector is triggered manually via `pfm import-kbank <path>`.
-    It parses PDF statements using pdfplumber to extract transactions
-    and the ending balance.
+    This collector is triggered manually via `pfm import-kbank <path>`,
+    or auto-fetches from Gmail when credentials are configured.
     """
 
     source_name = "kbank"
 
-    def __init__(self, pricing: PricingService, *, pdf_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        pricing: PricingService,
+        *,
+        pdf_path: Path | None = None,
+        gmail_address: str = "",
+        gmail_app_password: str = "",
+        kbank_sender_email: str = "K-ElectronicDocument@kasikornbank.com",
+    ) -> None:
         super().__init__(pricing)
         self._pdf_path = pdf_path
+        self._gmail_address = gmail_address
+        self._gmail_app_password = gmail_app_password
+        self._kbank_sender_email = kbank_sender_email
         self._cached_snapshots: list[Snapshot] = []
         self._cached_transactions: list[Transaction] = []
+
+    @property
+    def _gmail_configured(self) -> bool:
+        return bool(self._gmail_address and self._gmail_app_password)
 
     def set_pdf_path(self, path: Path) -> None:
         """Set the PDF file path for parsing."""
@@ -43,8 +68,13 @@ class KbankCollector(BaseCollector):
 
     async def fetch_balances(self) -> list[Snapshot]:
         """Return the ending balance from the most recently parsed statement."""
+        if not self._pdf_path and self._gmail_configured:
+            fetched = await asyncio.to_thread(self._fetch_pdf_from_gmail)
+            if fetched:
+                self._pdf_path = fetched
+
         if not self._pdf_path:
-            logger.info("KBank: no PDF path set, skipping")
+            logger.info("KBank: no PDF path set and Gmail not configured, skipping")
             return []
 
         snapshots, transactions = self._parse_pdf(self._pdf_path)
@@ -65,6 +95,63 @@ class KbankCollector(BaseCollector):
             txs = [tx for tx in txs if tx.date >= since]
 
         return txs
+
+    def _fetch_pdf_from_gmail(self) -> Path | None:
+        """Fetch the latest KBank PDF statement from Gmail via IMAP.
+
+        Connects to imap.gmail.com:993 (SSL), searches for emails from the
+        KBank sender, downloads the newest PDF attachment, and saves it to
+        data/kbank/ for audit trail.
+
+        Returns the path to the downloaded PDF, or None on failure.
+        """
+        try:
+            conn = imaplib.IMAP4_SSL("imap.gmail.com")
+            conn.login(self._gmail_address, self._gmail_app_password)
+        except imaplib.IMAP4.error:
+            logger.exception("KBank: Gmail IMAP login failed")
+            return None
+
+        try:
+            conn.select("INBOX")
+            _, msg_ids = conn.search(None, "FROM", f'"{self._kbank_sender_email}"')
+
+            id_list = msg_ids[0].split()
+            if not id_list:
+                logger.info("KBank: no emails found from %s", self._kbank_sender_email)
+                return None
+
+            # Fetch the latest email (last in the list)
+            latest_id = id_list[-1]
+            _, msg_data = conn.fetch(latest_id, "(RFC822)")
+
+            if not msg_data or not msg_data[0] or not isinstance(msg_data[0], tuple):
+                logger.warning("KBank: failed to fetch email body")
+                return None
+
+            msg = email.message_from_bytes(msg_data[0][1])
+
+            # Walk through MIME parts looking for PDF attachment
+            for part in msg.walk():
+                content_type = part.get_content_type()
+                filename = part.get_filename()
+                if content_type == "application/pdf" and filename:
+                    payload: bytes | None = part.get_payload(decode=True)  # type: ignore[assignment]
+                    if not payload:
+                        continue
+
+                    _KBANK_PDF_DIR.mkdir(parents=True, exist_ok=True)
+                    save_path = _KBANK_PDF_DIR / filename
+
+                    save_path.write_bytes(payload)
+                    logger.info("KBank: saved PDF %s (%d bytes)", save_path, len(payload))
+                    return save_path
+
+            logger.warning("KBank: no PDF attachment found in latest email")
+            return None
+        finally:
+            with contextlib.suppress(imaplib.IMAP4.error):
+                conn.logout()
 
     def _parse_pdf(self, pdf_path: Path) -> tuple[list[Snapshot], list[Transaction]]:
         """Parse a KBank PDF statement using pdfplumber."""

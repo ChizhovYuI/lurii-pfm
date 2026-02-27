@@ -49,6 +49,11 @@ class Settings(BaseSettings):
     # ── Wise ──────────────────────────────────────────────────────────
     wise_api_token: SecretStr = SecretStr("")
 
+    # ── KBank (Gmail) ──────────────────────────────────────────────────
+    gmail_address: str = ""
+    gmail_app_password: SecretStr = SecretStr("")
+    kbank_sender_email: str = "K-ElectronicDocument@kasikornbank.com"
+
     # ── IBKR ──────────────────────────────────────────────────────────
     ibkr_flex_token: SecretStr = SecretStr("")
     ibkr_flex_query_id: str = ""

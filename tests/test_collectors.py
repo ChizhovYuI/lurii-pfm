@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import imaplib
 import json
 from datetime import date
 from decimal import Decimal
@@ -1046,10 +1047,180 @@ async def test_kbank_no_pdf_path(pricing):
     assert txs == []
 
 
+async def test_kbank_no_pdf_no_gmail_skips(pricing):
+    """No pdf_path and no Gmail creds → skip without error."""
+    collector = KbankCollector(pricing, gmail_address="", gmail_app_password="")
+    snapshots = await collector.fetch_balances()
+    assert snapshots == []
+
+
 async def test_kbank_set_pdf_path(pricing):
     collector = KbankCollector(pricing)
     collector.set_pdf_path(Path("/tmp/test.pdf"))
     assert collector._pdf_path == Path("/tmp/test.pdf")
+
+
+async def test_kbank_gmail_configured_property(pricing):
+    collector = KbankCollector(pricing, gmail_address="a@b.com", gmail_app_password="pass")
+    assert collector._gmail_configured is True
+
+    collector2 = KbankCollector(pricing, gmail_address="", gmail_app_password="pass")
+    assert collector2._gmail_configured is False
+
+    collector3 = KbankCollector(pricing, gmail_address="a@b.com", gmail_app_password="")
+    assert collector3._gmail_configured is False
+
+
+async def test_kbank_fetch_pdf_from_gmail(pricing, tmp_path):
+    """Gmail IMAP fetch returns a saved PDF path."""
+    collector = KbankCollector(
+        pricing,
+        gmail_address="test@gmail.com",
+        gmail_app_password="apppass",
+        kbank_sender_email="kbank@test.com",
+    )
+
+    pdf_bytes = b"%PDF-1.4 fake content"
+
+    # Build a fake email with a PDF attachment
+    from email.mime.application import MIMEApplication
+    from email.mime.multipart import MIMEMultipart
+
+    msg = MIMEMultipart()
+    msg["From"] = "kbank@test.com"
+    msg["Subject"] = "Your Statement"
+    attachment = MIMEApplication(pdf_bytes, _subtype="pdf")
+    attachment.add_header("Content-Disposition", "attachment", filename="statement.pdf")
+    msg.attach(attachment)
+    raw_email = msg.as_bytes()
+
+    mock_conn = MagicMock()
+    mock_conn.login.return_value = ("OK", [b"Logged in"])
+    mock_conn.select.return_value = ("OK", [b"1"])
+    mock_conn.search.return_value = ("OK", [b"1 2 3"])
+    mock_conn.fetch.return_value = ("OK", [(b"1 (RFC822 {100})", raw_email)])
+    mock_conn.logout.return_value = ("BYE", [b"Logging out"])
+
+    with (
+        patch("pfm.collectors.kbank.imaplib.IMAP4_SSL", return_value=mock_conn),
+        patch("pfm.collectors.kbank._KBANK_PDF_DIR", tmp_path),
+    ):
+        result = collector._fetch_pdf_from_gmail()
+
+    assert result is not None
+    assert result.name == "statement.pdf"
+    assert result.read_bytes() == pdf_bytes
+    mock_conn.login.assert_called_once_with("test@gmail.com", "apppass")
+    mock_conn.search.assert_called_once_with(None, "FROM", '"kbank@test.com"')
+    # Fetches the latest email (id "3")
+    mock_conn.fetch.assert_called_once_with(b"3", "(RFC822)")
+
+
+async def test_kbank_fetch_pdf_from_gmail_login_failure(pricing):
+    """Gmail login failure returns None gracefully."""
+    collector = KbankCollector(
+        pricing,
+        gmail_address="test@gmail.com",
+        gmail_app_password="badpass",
+    )
+
+    mock_conn = MagicMock()
+    mock_conn.login.side_effect = imaplib.IMAP4.error("auth failed")
+
+    with patch("pfm.collectors.kbank.imaplib.IMAP4_SSL", return_value=mock_conn):
+        result = collector._fetch_pdf_from_gmail()
+
+    assert result is None
+
+
+async def test_kbank_fetch_pdf_from_gmail_no_emails(pricing):
+    """No matching emails returns None."""
+    collector = KbankCollector(
+        pricing,
+        gmail_address="test@gmail.com",
+        gmail_app_password="pass",
+    )
+
+    mock_conn = MagicMock()
+    mock_conn.login.return_value = ("OK", [b"Logged in"])
+    mock_conn.select.return_value = ("OK", [b"0"])
+    mock_conn.search.return_value = ("OK", [b""])
+    mock_conn.logout.return_value = ("BYE", [b"Logging out"])
+
+    with patch("pfm.collectors.kbank.imaplib.IMAP4_SSL", return_value=mock_conn):
+        result = collector._fetch_pdf_from_gmail()
+
+    assert result is None
+
+
+async def test_kbank_fetch_pdf_from_gmail_no_attachment(pricing):
+    """Email without PDF attachment returns None."""
+    collector = KbankCollector(
+        pricing,
+        gmail_address="test@gmail.com",
+        gmail_app_password="pass",
+    )
+
+    # Plain text email, no PDF
+    from email.mime.text import MIMEText
+
+    msg = MIMEText("Your statement is ready")
+    msg["From"] = "kbank@test.com"
+    raw_email = msg.as_bytes()
+
+    mock_conn = MagicMock()
+    mock_conn.login.return_value = ("OK", [b"Logged in"])
+    mock_conn.select.return_value = ("OK", [b"1"])
+    mock_conn.search.return_value = ("OK", [b"1"])
+    mock_conn.fetch.return_value = ("OK", [(b"1 (RFC822 {100})", raw_email)])
+    mock_conn.logout.return_value = ("BYE", [b"Logging out"])
+
+    with patch("pfm.collectors.kbank.imaplib.IMAP4_SSL", return_value=mock_conn):
+        result = collector._fetch_pdf_from_gmail()
+
+    assert result is None
+
+
+async def test_kbank_auto_fetch_from_gmail(pricing, tmp_path):
+    """fetch_balances() auto-fetches from Gmail when no pdf_path is set."""
+    collector = KbankCollector(
+        pricing,
+        gmail_address="test@gmail.com",
+        gmail_app_password="pass",
+    )
+
+    fake_pdf = tmp_path / "auto.pdf"
+    fake_pdf.write_bytes(b"not a real pdf")
+
+    with (
+        patch.object(collector, "_fetch_pdf_from_gmail", return_value=fake_pdf) as mock_fetch,
+        patch.object(collector, "_parse_pdf", return_value=([], [])) as mock_parse,
+    ):
+        await collector.fetch_balances()
+
+    mock_fetch.assert_called_once()
+    mock_parse.assert_called_once_with(fake_pdf)
+
+
+async def test_kbank_auto_fetch_skipped_when_pdf_path_set(pricing, tmp_path):
+    """fetch_balances() does NOT call Gmail when pdf_path is already set."""
+    fake_pdf = tmp_path / "manual.pdf"
+    fake_pdf.write_bytes(b"not a real pdf")
+
+    collector = KbankCollector(
+        pricing,
+        pdf_path=fake_pdf,
+        gmail_address="test@gmail.com",
+        gmail_app_password="pass",
+    )
+
+    with (
+        patch.object(collector, "_fetch_pdf_from_gmail") as mock_fetch,
+        patch.object(collector, "_parse_pdf", return_value=([], [])),
+    ):
+        await collector.fetch_balances()
+
+    mock_fetch.assert_not_called()
 
 
 def test_kbank_parse_date():
