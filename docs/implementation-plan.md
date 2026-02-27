@@ -344,7 +344,7 @@ Register collectors. `pfm collect` discovers enabled sources from DB, runs concu
 
 *Completed as part of Task 0.5.5 — all 9 collectors auto-registered via `@register_collector` decorator and `__init__.py` auto-import.*
 
-### Task 1.4 — Integration tests [S]
+### Task 1.4 — Integration tests [S] ✅
 
 **Dependencies:** 1.3
 
@@ -647,7 +647,7 @@ Phase 0 ── Phase 0.5 (Source Management)
 | 5 — AI Commentary | 3 | 2S + 1M | Pending |
 | 6 — Telegram Reporting | 4 | 2S + 2M | Pending |
 | 7 — Hardening | 5 | 2S + 3M | Pending |
-| **Total** | **48** | | **~37/48 done** |
+| **Total** | **48** | | **~38/48 done** |
 
 ## File Manifest
 
