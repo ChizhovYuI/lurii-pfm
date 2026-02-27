@@ -38,8 +38,7 @@ Thumbs.db
 *.key
 
 # Data (may contain sensitive financial info)
-data/raw/
-data/exports/
+data/
 *.csv
 *.xlsx
 !tests/fixtures/*.csv
