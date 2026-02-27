@@ -16,7 +16,7 @@ Everything wired and testable, but no real data yet.
 
 **Files:** create `src/pfm/config.py`, modify `pyproject.toml` (add `pydantic-settings`)
 
-`Settings` class using `pydantic-settings` reading from `.env`. Global fields only: DB path, Telegram bot token/chat ID, Claude API key, CoinGecko API key, log level. Source-specific credentials managed separately via `pfm source` CLI (stored in SQLite). All secrets are `SecretStr`. Cached `get_settings()` factory.
+`Settings` class using `pydantic-settings` reading from `.env`. Global fields only: DB path, Telegram bot token/chat ID, Gemini API key, CoinGecko API key, log level. Source-specific credentials managed separately via `pfm source` CLI (stored in SQLite). All secrets are `SecretStr`. Cached `get_settings()` factory.
 
 **Acceptance:**
 - Loads from `.env.example` without errors
@@ -161,7 +161,7 @@ Shared fixtures: in-memory DB, test settings, mock httpx client. Tests for all P
 
 ## Phase 0.5 — Dynamic Source Management (CLI + DB)
 
-Migrate source credentials from `.env` to SQLite. Interactive CLI for adding/managing sources. Global settings (Telegram, Claude API, CoinGecko, logging) stay in `.env`.
+Migrate source credentials from `.env` to SQLite. Interactive CLI for adding/managing sources. Global settings (Telegram, Gemini API, CoinGecko, logging) stay in `.env`.
 
 ### Task 0.5.1 — Source model + DB schema [S] ✅
 
@@ -278,7 +278,7 @@ Collectors already accept keyword arguments matching credential field names — 
 Remove all source-specific fields from `Settings` (OKX, Binance, Bybit, Stellar, Wise, KBank Gmail, IBKR). Keep only global settings:
 - `database_path`
 - `telegram_bot_token`, `telegram_chat_id`
-- `anthropic_api_key`
+- `gemini_api_key`
 - `coingecko_api_key`
 - `log_level`
 
@@ -510,7 +510,7 @@ Seed DB with fixture data across multiple dates, verify all computations.
 
 ---
 
-## Phase 5 — AI Commentary (Claude API)
+## Phase 5 — AI Commentary (Gemini API)
 
 ### Task 5.1 — Prompt templates `src/pfm/ai/prompts.py` [S] ✅
 
@@ -519,16 +519,14 @@ Seed DB with fixture data across multiple dates, verify all computations.
 Version-controlled prompt templates:
 - `WEEKLY_REPORT_SYSTEM_PROMPT` — role as personal financial advisor
 - `WEEKLY_REPORT_USER_PROMPT_TEMPLATE` — placeholders for all analytics data
-- Instructs Claude to produce: market context, health assessment, rebalancing, risk alerts, recommendations
+- Instructs Gemini to produce: market context, health assessment, rebalancing, risk alerts, recommendations
 
-### Task 5.2 — Claude API analyst `src/pfm/ai/analyst.py` [M] ✅
+### Task 5.2 — Gemini API analyst `src/pfm/ai/analyst.py` [M] ✅
 
 **Dependencies:** 5.1, Phase 4
 
-**Additional dep:** `anthropic`
-
 - `async def generate_commentary(analytics: AnalyticsSummary) -> str`
-- Model: `claude-sonnet-4-20250514`
+- Model: `gemini-2.0-flash`
 - Max tokens: 1024
 - Graceful fallback on API error
 - Log token usage
@@ -537,7 +535,7 @@ Version-controlled prompt templates:
 
 **Dependencies:** 5.1, 5.2
 
-Mocked Anthropic client. Test prompt rendering + fallback.
+Mocked Gemini client. Test prompt rendering + fallback.
 
 ---
 

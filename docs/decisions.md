@@ -35,10 +35,10 @@ Documenting dropped sources, rejected approaches, and other decisions that shape
 **Problem:**
 - No way to manage sources dynamically at runtime
 - No support for multiple instances of the same source type
-- Credentials mixed with global settings (Telegram, Claude API, CoinGecko) in one flat file
+- Credentials mixed with global settings (Telegram, Gemini API, CoinGecko) in one flat file
 - No enable/disable mechanism — all configured sources always run
 
-**Decision:** Move source credentials to a `sources` table in SQLite (same `pfm.db`). Manage via interactive CLI (`pfm source add/list/show/delete/enable/disable`). Keep global settings (Telegram, Claude API, CoinGecko, logging) in `.env`.
+**Decision:** Move source credentials to a `sources` table in SQLite (same `pfm.db`). Manage via interactive CLI (`pfm source add/list/show/delete/enable/disable`). Keep global settings (Telegram, Gemini API, CoinGecko, logging) in `.env`.
 
 **Design choices:**
 - **SQLite over YAML/TOML config file** — single storage backend, already have migrations, no file format parsing

@@ -10,7 +10,7 @@ Personal Financial Management system that aggregates assets and statements from 
 - Reporting: **Weekly push via Telegram bot**
 - Storage: **Local SQLite**
 - Secrets: **`.env` for global settings**, **SQLite for source credentials**
-- AI provider: **Claude API** (Anthropic)
+- AI provider: **Gemini API** (Google)
 
 ---
 
@@ -92,7 +92,7 @@ Personal Financial Management system that aggregates assets and statements from 
 
 ### F4 — AI Analysis
 
-- F4.1: Feed portfolio snapshot + recent changes to Claude API
+- F4.1: Feed portfolio snapshot + recent changes to Gemini API
 - F4.2: Generate weekly investment commentary:
   - Market context for held assets
   - Portfolio health assessment
@@ -128,7 +128,7 @@ Personal Financial Management system that aggregates assets and statements from 
 
 ### NF2 — Security
 
-- Global secrets (Telegram, Claude API, CoinGecko) in `.env` (never committed)
+- Global secrets (Telegram, Gemini API, CoinGecko) in `.env` (never committed)
 - Source credentials in SQLite `sources` table (local file, gitignored `data/` directory)
 - API keys are read-only where possible
 - No plaintext secrets in logs; `pfm source show` masks credential values
@@ -167,7 +167,7 @@ Personal Financial Management system that aggregates assets and statements from 
 | PDF parsing | [pdfplumber](https://github.com/jsvine/pdfplumber) |
 | KBank email | Python stdlib (`imaplib` + `email`) |
 | Pricing | [CoinGecko API](https://docs.coingecko.com/reference/introduction) + SQLite-backed persistent cache (`prices` table) |
-| AI | [anthropic](https://docs.anthropic.com/) (Claude API) |
+| AI | [Gemini API](https://ai.google.dev/) |
 | Telegram | Raw httpx (push-only bot) |
 | Scheduler | cron / systemd timer (external) |
 | Linting | [ruff](https://docs.astral.sh/ruff/) |
@@ -216,7 +216,7 @@ Personal Financial Management system that aggregates assets and statements from 
 └────────────┬────────────┘
              ▼
 ┌─────────────────────────┐
-│   Claude API (AI)       │
+│   Gemini API (AI)       │
 │  (commentary, recs)     │
 └────────────┬────────────┘
              ▼
@@ -267,7 +267,7 @@ src/pfm/
 │   └── yield_tracker.py   # Blend yield tracking
 ├── ai/
 │   ├── __init__.py
-│   ├── analyst.py         # Claude API integration
+│   ├── analyst.py         # Gemini API integration
 │   └── prompts.py         # Version-controlled prompt templates
 ├── reporting/
 │   ├── __init__.py
@@ -302,7 +302,7 @@ pfm run                     # Full pipeline: collect → analyze → report
 ## Decided
 
 - **Price feed**: [CoinGecko](https://www.coingecko.com/en/api) free tier (crypto prices + fiat rates, 30 req/min)
-- **AI commentary**: [Claude API](https://console.anthropic.com/) — get key at [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys)
+- **AI commentary**: [Gemini API](https://ai.google.dev/gemini-api/docs/api-key) — create `GEMINI_API_KEY`
 - **Telegram bot**: create via [@BotFather](https://t.me/BotFather), get chat ID via [@userinfobot](https://t.me/userinfobot)
 
 ## Open Questions

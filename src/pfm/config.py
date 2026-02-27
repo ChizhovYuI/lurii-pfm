@@ -25,8 +25,8 @@ class Settings(BaseSettings):
     telegram_bot_token: SecretStr = SecretStr("")
     telegram_chat_id: str = ""
 
-    # ── Claude API ────────────────────────────────────────────────────
-    anthropic_api_key: SecretStr = SecretStr("")
+    # ── Gemini API ────────────────────────────────────────────────────
+    gemini_api_key: SecretStr = SecretStr("")
 
     # ── CoinGecko ─────────────────────────────────────────────────────
     coingecko_api_key: str = ""  # optional, free tier works without

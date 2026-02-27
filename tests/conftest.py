@@ -21,7 +21,7 @@ def test_settings() -> Settings:
     return Settings(
         database_path=Path(":memory:"),
         telegram_bot_token="test-token",  # type: ignore[arg-type]
-        anthropic_api_key="test-key",  # type: ignore[arg-type]
+        gemini_api_key="test-key",  # type: ignore[arg-type]
     )
 
 

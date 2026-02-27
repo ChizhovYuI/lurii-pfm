@@ -45,7 +45,7 @@ async def test_report_async_loads_cache_formats_and_sends(tmp_path):
 
     settings = SimpleNamespace(
         database_path=db_path,
-        anthropic_api_key=SecretStr("anthropic-key"),
+        gemini_api_key=SecretStr("gemini-key"),
         telegram_chat_id="chat",
         telegram_bot_token=SecretStr("token"),
     )

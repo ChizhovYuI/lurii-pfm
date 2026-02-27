@@ -1,80 +1,111 @@
-"""Claude API client for portfolio commentary."""
+"""Gemini API client for portfolio commentary."""
 
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import Any
 
-from anthropic import APIError, AsyncAnthropic
-from anthropic.types import TextBlock
+import httpx
 
 from pfm.ai.prompts import WEEKLY_REPORT_SYSTEM_PROMPT, AnalyticsSummary, render_weekly_report_user_prompt
 from pfm.config import get_settings
 
-if TYPE_CHECKING:
-    from anthropic.types import Message
-
 logger = logging.getLogger(__name__)
 
-CLAUDE_MODEL = "claude-sonnet-4-20250514"
-CLAUDE_MAX_TOKENS = 1024
+GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
+GEMINI_MODEL = "gemini-2.0-flash"
+GEMINI_MAX_OUTPUT_TOKENS = 1024
 FALLBACK_COMMENTARY = (
     "AI commentary is currently unavailable. " "Review net worth trend, concentration risk, and PnL changes manually."
 )
 
 
-async def generate_commentary(
+async def generate_commentary(  # noqa: PLR0911
     analytics: AnalyticsSummary,
     *,
-    client: AsyncAnthropic | None = None,
+    client: httpx.AsyncClient | None = None,
 ) -> str:
-    """Generate weekly portfolio commentary using Claude."""
+    """Generate weekly portfolio commentary using Gemini."""
     settings = get_settings()
-    api_key = settings.anthropic_api_key.get_secret_value()
-
-    if client is None:
-        if not api_key:
-            logger.warning("Anthropic API key is not configured; returning fallback commentary.")
-            return FALLBACK_COMMENTARY
-        client = AsyncAnthropic(api_key=api_key)
+    api_key = settings.gemini_api_key.get_secret_value()
+    if not api_key:
+        logger.warning("Gemini API key is not configured; returning fallback commentary.")
+        return FALLBACK_COMMENTARY
 
     prompt = render_weekly_report_user_prompt(analytics)
+    payload = {
+        "system_instruction": {"parts": [{"text": WEEKLY_REPORT_SYSTEM_PROMPT}]},
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {"maxOutputTokens": GEMINI_MAX_OUTPUT_TOKENS},
+    }
+    endpoint = f"{GEMINI_API_BASE}/models/{GEMINI_MODEL}:generateContent"
+
+    owns_client = client is None
+    http_client = client if client is not None else httpx.AsyncClient(timeout=30.0)
     try:
-        response = await client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=CLAUDE_MAX_TOKENS,
-            system=WEEKLY_REPORT_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
-        )
-    except APIError as exc:
-        logger.warning("Claude API request failed: %s", exc)
+        response = await http_client.post(endpoint, params={"key": api_key}, json=payload)
+        response.raise_for_status()
+        body: dict[str, Any] = response.json()
+    except httpx.HTTPStatusError as exc:
+        logger.warning("Gemini API request failed with HTTP %d.", exc.response.status_code)
+        return FALLBACK_COMMENTARY
+    except httpx.HTTPError as exc:
+        logger.warning("Gemini API transport error (%s).", type(exc).__name__)
+        logger.debug("Gemini transport error details: %s", exc)
+        return FALLBACK_COMMENTARY
+    except ValueError as exc:
+        logger.warning("Gemini API returned invalid JSON: %s", exc)
         return FALLBACK_COMMENTARY
     except Exception:  # pragma: no cover - defensive guardrail
-        logger.exception("Unexpected Claude API error")
+        logger.exception("Unexpected Gemini API error")
         return FALLBACK_COMMENTARY
+    finally:
+        if owns_client:
+            await http_client.aclose()
 
-    _log_token_usage(response)
-    text = _extract_text(response)
+    _log_token_usage(body)
+    text = _extract_text(body)
     if text:
         return text
 
-    logger.warning("Claude returned empty text response; using fallback commentary.")
+    logger.warning("Gemini returned empty text response; using fallback commentary.")
     return FALLBACK_COMMENTARY
 
 
-def _extract_text(message: Message) -> str:
-    text_blocks = [block.text for block in message.content if isinstance(block, TextBlock)]
-    return "\n".join(part.strip() for part in text_blocks if part.strip()).strip()
+def _extract_text(body: dict[str, Any]) -> str:
+    candidates = body.get("candidates", [])
+    if not isinstance(candidates, list):
+        return ""
+
+    parts: list[str] = []
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        content = candidate.get("content", {})
+        if not isinstance(content, dict):
+            continue
+        content_parts = content.get("parts", [])
+        if not isinstance(content_parts, list):
+            continue
+        for part in content_parts:
+            if not isinstance(part, dict):
+                continue
+            text = part.get("text")
+            if isinstance(text, str) and text.strip():
+                parts.append(text.strip())
+
+    return "\n".join(parts).strip()
 
 
-def _log_token_usage(message: Message) -> None:
-    usage = message.usage
+def _log_token_usage(body: dict[str, Any]) -> None:
+    usage = body.get("usageMetadata", {})
+    if not isinstance(usage, dict):
+        return
+
     logger.info(
-        "claude_usage model=%s input_tokens=%s output_tokens=%s "
-        "cache_read_input_tokens=%s cache_creation_input_tokens=%s",
-        message.model,
-        usage.input_tokens,
-        usage.output_tokens,
-        usage.cache_read_input_tokens,
-        usage.cache_creation_input_tokens,
+        "gemini_usage model=%s prompt_tokens=%s candidates_tokens=%s total_tokens=%s",
+        GEMINI_MODEL,
+        usage.get("promptTokenCount"),
+        usage.get("candidatesTokenCount"),
+        usage.get("totalTokenCount"),
     )

@@ -6,7 +6,6 @@ requires-python = ">=3.13"
 dependencies = [
     "aiosqlite>=0.22.1",
     "alembic>=1.18.4",
-    "anthropic>=0.84.0",
     "click>=8.3.1",
     "httpx>=0.28.1",
     "pdfplumber>=0.11.9",
@@ -143,10 +142,6 @@ enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
 [[tool.mypy.overrides]]
 module = "tests.*"
 disallow_untyped_defs = false
-
-[[tool.mypy.overrides]]
-module = ["anthropic", "anthropic.*"]
-ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["alembic", "alembic.*", "sqlalchemy", "sqlalchemy.*"]
