@@ -41,9 +41,11 @@ Top weekly movers by asset:
 {weekly_pnl_by_asset}
 
 Write a compact report with these sections in plain text:
-Market context
-Portfolio health
-Actions for next 7 days
+1) Market context
+2) Portfolio health assessment
+3) Rebalancing opportunities
+4) Risk alerts
+5) Actionable recommendations for next 7 days
 
 Rules:
 - Ground every claim in provided data.

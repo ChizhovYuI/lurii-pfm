@@ -526,9 +526,10 @@ Version-controlled prompt templates:
 **Dependencies:** 5.1, Phase 4
 
 - `async def generate_commentary(analytics: AnalyticsSummary) -> str`
-- Model: `gemini-2.0-flash`
-- Max tokens: 1024
-- Graceful fallback on API error
+- SDK-based Gemini client with model failover: `gemini-2.5-pro -> gemini-2.5-flash -> gemini-2.5-flash-lite`
+- On `HTTP 429`, skip same-model retry and switch to next model immediately
+- Expose model-aware variant returning `{text, model}` for caching provenance
+- Max output tokens tuned for concise Telegram commentary
 - Log token usage
 
 ### Task 5.3 — AI tests [S] ✅
@@ -567,7 +568,10 @@ Format analytics + AI commentary into Telegram HTML:
 
 **Dependencies:** 6.1, 6.2
 
-`pfm report`: load analytics → generate AI commentary → format → send Telegram.
+`pfm report`: load analytics + cached AI commentary for analysis date → format → send Telegram.
+If cached AI commentary is missing, send fallback text and print hint to run `pfm comment`.
+
+`pfm comment`: generate and cache AI commentary + model metadata for latest analysis date.
 
 `pfm run`: collect → analyze → report (full pipeline). Aggregate errors, send alert if any source failed.
 

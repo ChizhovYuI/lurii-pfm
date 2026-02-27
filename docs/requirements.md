@@ -100,6 +100,14 @@ Personal Financial Management system that aggregates assets and statements from 
   - Risk alerts (over-concentration, correlated assets, yield changes)
   - Actionable recommendations
 - F4.3: Keep prompts version-controlled and tunable
+- F4.4: Persist generated AI commentary in `analytics_cache` (`metric_name = "ai_commentary"`) with:
+  - `text`
+  - `model` (Gemini model that produced the response, when available)
+- F4.5: Gemini model fallback order for commentary generation:
+  - `gemini-2.5-pro`
+  - `gemini-2.5-flash`
+  - `gemini-2.5-flash-lite`
+  - On `HTTP 429`, skip to next model immediately (no same-model retry)
 
 ### F5 — Telegram Reporting
 
@@ -107,12 +115,12 @@ Personal Financial Management system that aggregates assets and statements from 
 - F5.2: Weekly scheduled report containing:
   - Total net worth (USD)
   - Week-over-week PnL (absolute + %)
-  - Top gainers / losers
-  - Asset allocation pie chart or breakdown
-  - Yield summary (Blend)
-  - AI-generated commentary and recommendations
+  - All holdings over display threshold with weekly PnL
+  - Monthly PnL summary
+  - AI commentary summary (second Telegram message)
 - F5.3: Configurable schedule (day of week, time)
 - F5.4: Error alerts (if a data source fails to fetch)
+- F5.5: `pfm report` uses cached AI commentary for the analysis date (does not call Gemini directly)
 
 ---
 
@@ -142,6 +150,7 @@ Personal Financial Management system that aggregates assets and statements from 
 - Idempotent snapshot persistence (safe to re-run collect multiple times per day)
 - Logging with structured output
 - CoinGecko calls serialized and retried on `429` with backoff
+- Gemini commentary generation fails over across models on `429` (pro → flash → flash-lite)
 
 ### NF4 — Performance
 
@@ -293,6 +302,7 @@ pfm collect --source <name> # Fetch a single named source
 
 # ── Analytics & reporting ─────────────────────────────────────────
 pfm analyze                 # Run analytics on latest snapshot
+pfm comment                 # Generate + cache AI commentary for latest analysis date
 pfm report                  # Generate and send Telegram report
 pfm run                     # Full pipeline: collect → analyze → report
 
@@ -300,6 +310,11 @@ pfm run                     # Full pipeline: collect → analyze → report
 pfm gemini set              # Save Gemini API key
 pfm gemini show             # Show Gemini config (key masked)
 pfm gemini clear            # Remove Gemini API key
+
+# ── Telegram config ──────────────────────────────────────────────
+pfm telegram set            # Save bot token + chat id
+pfm telegram show           # Show Telegram config (masked)
+pfm telegram clear          # Remove Telegram config
 ```
 
 ---
@@ -307,7 +322,7 @@ pfm gemini clear            # Remove Gemini API key
 ## Decided
 
 - **Price feed**: [CoinGecko](https://www.coingecko.com/en/api) free tier (crypto prices + fiat rates, 30 req/min)
-- **AI commentary**: [Gemini API](https://ai.google.dev/gemini-api/docs/api-key) — create `GEMINI_API_KEY`
+- **AI commentary**: [Gemini API](https://ai.google.dev/gemini-api/docs/api-key) via `google-genai` SDK with model failover (`pro -> flash -> flash-lite`)
 - **Telegram bot**: create via [@BotFather](https://t.me/BotFather), get chat ID via [@userinfobot](https://t.me/userinfobot)
 
 ## Gemini API Key Setup (Google AI Studio)

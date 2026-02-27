@@ -110,3 +110,44 @@ Documenting dropped sources, rejected approaches, and other decisions that shape
 - Re-running `pfm collect` on the same day does not inflate portfolio totals
 - "Latest snapshot" semantics become deterministic and easier to reason about
 - Existing historical duplicates can still be cleaned once; new duplicates are prevented going forward
+
+---
+
+## ADR-005: Decouple AI generation from report send and cache model metadata
+
+**Date:** 2026-02-27
+
+**Status:** Accepted
+
+**Context:** Calling Gemini during `pfm report` made report delivery sensitive to Gemini quota/rate-limit errors and introduced latency at send time. It also made it harder to audit which model generated a given commentary block.
+
+**Decision:** `pfm report` only reads cached `ai_commentary` for the analysis date. `pfm comment` is the command responsible for generating commentary and storing:
+- `text`
+- `model` (when a Gemini model succeeded)
+
+**Consequences:**
+- Report delivery is decoupled from Gemini uptime/quota
+- Commentary provenance is visible (`AI model: ...`) and persisted for auditability
+- Scheduling can explicitly control when AI calls happen (`collect -> analyze -> comment -> report`)
+
+---
+
+## ADR-006: Gemini 429 handling uses immediate model failover
+
+**Date:** 2026-02-27
+
+**Status:** Accepted
+
+**Context:** Free-tier Gemini quotas frequently return `HTTP 429`, especially for `gemini-2.5-pro`. Retrying the same model introduced long delays and often still failed.
+
+**Decision:** On `429`, skip retries for the current model and immediately try the next model in order:
+1. `gemini-2.5-pro`
+2. `gemini-2.5-flash`
+3. `gemini-2.5-flash-lite`
+
+If all fail, use fallback commentary text.
+
+**Consequences:**
+- Faster response under quota pressure
+- Higher chance of receiving an AI response in a single run
+- Commentary style may vary by fallback model, but output remains available

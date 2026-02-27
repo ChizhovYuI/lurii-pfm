@@ -7,6 +7,7 @@ This project is designed to be run on a schedule from the host OS (cron or syste
 - `uv` installed and available in `PATH`
 - Project configured with a valid `.env`
 - Telegram and source credentials configured (if you expect reporting output)
+- Optional but recommended for AI text in reports: run `pfm comment` after `pfm analyze` to cache commentary for the same analysis date
 
 ## Weekly Runner Script
 
@@ -17,6 +18,15 @@ The script below is included and executable:
 It runs:
 
 - `uv run pfm run`
+
+Note: `pfm run` does not call Gemini directly. `pfm report` uses cached AI commentary when available; otherwise it sends fallback text.
+
+If you want fresh AI commentary every scheduled run, use this sequence instead:
+
+- `uv run pfm collect`
+- `uv run pfm analyze`
+- `uv run pfm comment`
+- `uv run pfm report`
 
 And appends logs to:
 
