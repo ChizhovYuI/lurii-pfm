@@ -37,6 +37,29 @@ async def test_unknown_ticker_raises(pricing):
         await pricing.get_price_usd("FAKECOIN123XYZ")
 
 
+async def test_unknown_ticker_resolves_via_search(pricing):
+    search_resp = MagicMock(spec=httpx.Response)
+    search_resp.status_code = 200
+    search_resp.headers = {}
+    search_resp.json.return_value = {
+        "coins": [
+            {"id": "ethereum-classic", "symbol": "etc", "market_cap_rank": 40},
+        ]
+    }
+    search_resp.raise_for_status = MagicMock()
+
+    price_resp = MagicMock(spec=httpx.Response)
+    price_resp.status_code = 200
+    price_resp.headers = {}
+    price_resp.json.return_value = {"ethereum-classic": {"usd": 30}}
+    price_resp.raise_for_status = MagicMock()
+
+    pricing._client.get = AsyncMock(side_effect=[search_resp, price_resp])
+
+    price = await pricing.get_price_usd("ETC")
+    assert price == Decimal(30)
+
+
 async def test_convert_to_usd_stablecoin(pricing):
     result = await pricing.convert_to_usd(Decimal(100), "USDC")
     assert result == Decimal(100)

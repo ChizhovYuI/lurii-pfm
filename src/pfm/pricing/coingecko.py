@@ -43,7 +43,7 @@ TICKER_TO_COINGECKO: dict[str, str] = {
 }
 
 # Stablecoins pegged to USD — skip API call
-STABLECOINS: frozenset[str] = frozenset({"USDC", "USDT", "DAI", "BUSD", "TUSD", "USDP"})
+STABLECOINS: frozenset[str] = frozenset({"USDC", "USDT", "DAI", "BUSD", "TUSD", "USDP", "FDUSD"})
 
 # Fiat currencies — use /exchange_rates or /simple/price with vs_currencies
 FIAT_TICKERS: frozenset[str] = frozenset({"USD", "GBP", "EUR", "THB", "JPY", "CHF", "CAD", "AUD"})
@@ -72,6 +72,7 @@ class PricingService:
         self._request_lock = asyncio.Lock()
         self._cache: dict[str, tuple[Decimal, datetime]] = {}
         self._cache_ttl_seconds: float = 3600.0  # 1 hour
+        self._resolved_symbol_ids: dict[str, str] = {}
 
     async def close(self) -> None:
         """Close the HTTP client."""
@@ -226,7 +227,7 @@ class PricingService:
 
     async def _fetch_crypto_price(self, ticker: str) -> Decimal:
         """Fetch a single crypto price from CoinGecko."""
-        coingecko_id = TICKER_TO_COINGECKO.get(ticker)
+        coingecko_id = TICKER_TO_COINGECKO.get(ticker) or await self._resolve_coingecko_id(ticker)
         if not coingecko_id:
             msg = f"Unknown crypto ticker: {ticker}. Add it to TICKER_TO_COINGECKO mapping."
             raise ValueError(msg)
@@ -251,7 +252,7 @@ class PricingService:
         """Fetch multiple crypto prices in a single API call."""
         id_to_ticker: dict[str, str] = {}
         for t in tickers:
-            cg_id = TICKER_TO_COINGECKO.get(t)
+            cg_id = TICKER_TO_COINGECKO.get(t) or await self._resolve_coingecko_id(t)
             if cg_id:
                 id_to_ticker[cg_id] = t
             else:
@@ -300,6 +301,45 @@ class PricingService:
         await self._save_persisted_cache(ticker, rate)
         logger.debug("Fetched fiat rate 1 %s = $%s", ticker, rate)
         return rate
+
+    async def _resolve_coingecko_id(self, ticker: str) -> str | None:  # noqa: C901
+        """Best-effort resolve a CoinGecko coin id from a ticker symbol."""
+        if ticker in self._resolved_symbol_ids:
+            return self._resolved_symbol_ids[ticker]
+
+        data = await self._request_json("/search", {"query": ticker})
+        coins = data.get("coins", [])
+        if not isinstance(coins, list):
+            return None
+
+        symbol_matches: list[dict[str, Any]] = []
+        for coin in coins:
+            if not isinstance(coin, dict):
+                continue
+            symbol = str(coin.get("symbol", "")).upper()
+            if symbol == ticker:
+                symbol_matches.append(coin)
+
+        if not symbol_matches:
+            return None
+
+        def _rank_key(coin: dict[str, Any]) -> tuple[int, int]:
+            rank_raw = coin.get("market_cap_rank")
+            if isinstance(rank_raw, int):
+                rank = rank_raw
+            elif isinstance(rank_raw, str) and rank_raw.isdigit():
+                rank = int(rank_raw)
+            else:
+                rank = 10**9
+            return (rank, 0 if coin.get("id") else 1)
+
+        best = sorted(symbol_matches, key=_rank_key)[0]
+        coin_id = str(best.get("id", ""))
+        if not coin_id:
+            return None
+
+        self._resolved_symbol_ids[ticker] = coin_id
+        return coin_id
 
     def today(self) -> date:
         """Return today's date in UTC."""
