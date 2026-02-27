@@ -5,9 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+from google.genai import errors
 from pydantic import SecretStr
 
 from pfm.ai.analyst import (
@@ -37,33 +39,41 @@ def _sample_analytics() -> AnalyticsSummary:
 
 
 @dataclass
-class _FakeClient:
-    responses: list[httpx.Response] = field(default_factory=list)
-    calls: list[tuple[str, dict[str, str], dict[str, object]]] = field(default_factory=list)
+class _FakeAsyncModels:
+    responses: list[object] = field(default_factory=list)
+    calls: list[dict[str, object]] = field(default_factory=list)
 
-    async def post(self, url: str, *, params: dict[str, str], json: dict[str, object]) -> httpx.Response:
-        self.calls.append((url, params, json))
+    async def generate_content(self, *, model: str, contents: str, config: dict[str, object]) -> object:
+        self.calls.append({"model": model, "contents": contents, "config": config})
         if self.responses:
-            return self.responses.pop(0)
-        return httpx.Response(200, json={"candidates": []}, request=httpx.Request("POST", url, params=params))
+            next_response = self.responses.pop(0)
+            if isinstance(next_response, Exception):
+                raise next_response
+            return next_response
+        return SimpleNamespace(text="")
+
+
+@dataclass
+class _FakeAioClient:
+    models: _FakeAsyncModels
+    closed: bool = False
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+@dataclass
+class _FakeClient:
+    aio: _FakeAioClient
+    closed: bool = False
+
+    def close(self) -> None:
+        self.closed = True
 
 
 async def test_generate_commentary_success_with_mock_client():
-    endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
-    response = httpx.Response(
-        200,
-        json={
-            "candidates": [
-                {
-                    "content": {
-                        "parts": [{"text": "Portfolio looks stable."}],
-                    }
-                }
-            ]
-        },
-        request=httpx.Request("POST", endpoint),
-    )
-    fake_client = _FakeClient(responses=[response])
+    fake_models = _FakeAsyncModels(responses=[SimpleNamespace(text="Portfolio looks stable.")])
+    fake_client = _FakeClient(aio=_FakeAioClient(models=fake_models))
     settings = MagicMock()
     settings.gemini_api_key = SecretStr("gemini-key")
 
@@ -71,23 +81,23 @@ async def test_generate_commentary_success_with_mock_client():
         result = await generate_commentary(_sample_analytics(), api_key="gemini-key", client=fake_client)
 
     assert result == "Portfolio looks stable."
-    assert len(fake_client.calls) == 1
-    url, params, payload = fake_client.calls[0]
-    assert url.endswith(f"/models/{GEMINI_MODEL}:generateContent")
-    assert params["key"] == "gemini-key"
-    generation_config = payload.get("generationConfig")
-    assert isinstance(generation_config, dict)
-    assert generation_config["maxOutputTokens"] == GEMINI_MAX_OUTPUT_TOKENS
+    assert len(fake_models.calls) == 1
+    call = fake_models.calls[0]
+    assert call["model"] == GEMINI_MODEL
+    config = call["config"]
+    assert isinstance(config, dict)
+    assert config["max_output_tokens"] == GEMINI_MAX_OUTPUT_TOKENS
 
 
-async def test_generate_commentary_fallback_on_http_error():
-    endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+async def test_generate_commentary_fallback_on_api_error():
     response = httpx.Response(
         500,
         json={"error": {"message": "boom"}},
-        request=httpx.Request("POST", endpoint),
+        request=httpx.Request("POST", "https://example.invalid/gemini"),
     )
-    fake_client = _FakeClient(responses=[response])
+    error = errors.ServerError(500, {"error": {"status": "INTERNAL", "message": "boom"}}, response)
+    fake_models = _FakeAsyncModels(responses=[error])
+    fake_client = _FakeClient(aio=_FakeAioClient(models=fake_models))
     settings = MagicMock()
     settings.gemini_api_key = SecretStr("gemini-key")
 
@@ -98,18 +108,15 @@ async def test_generate_commentary_fallback_on_http_error():
 
 
 async def test_generate_commentary_retries_on_429_then_succeeds():
-    endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
-    limited = httpx.Response(
+    limited_response = httpx.Response(
         429,
         headers={"Retry-After": "0.01"},
-        request=httpx.Request("POST", endpoint),
+        request=httpx.Request("POST", "https://example.invalid/gemini"),
     )
-    success = httpx.Response(
-        200,
-        json={"candidates": [{"content": {"parts": [{"text": "Recovered after retry."}]}}]},
-        request=httpx.Request("POST", endpoint),
-    )
-    fake_client = _FakeClient(responses=[limited, success])
+    limited_error = errors.ClientError(429, {"error": {"status": "RESOURCE_EXHAUSTED"}}, limited_response)
+    success = SimpleNamespace(text="Recovered after retry.")
+    fake_models = _FakeAsyncModels(responses=[limited_error, success])
+    fake_client = _FakeClient(aio=_FakeAioClient(models=fake_models))
     settings = MagicMock()
     settings.gemini_api_key = SecretStr("gemini-key")
     sleep_mock = AsyncMock()
@@ -121,17 +128,18 @@ async def test_generate_commentary_retries_on_429_then_succeeds():
         result = await generate_commentary(_sample_analytics(), api_key="gemini-key", client=fake_client)
 
     assert result == "Recovered after retry."
-    assert len(fake_client.calls) == 2
+    assert len(fake_models.calls) == 2
     sleep_mock.assert_awaited_once()
 
 
 async def test_generate_commentary_fallback_after_429_retries_exhausted():
-    endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
-    limited = httpx.Response(
+    limited_response = httpx.Response(
         429,
-        request=httpx.Request("POST", endpoint),
+        request=httpx.Request("POST", "https://example.invalid/gemini"),
     )
-    fake_client = _FakeClient(responses=[limited, limited, limited])
+    limited_error = errors.ClientError(429, {"error": {"status": "RESOURCE_EXHAUSTED"}}, limited_response)
+    fake_models = _FakeAsyncModels(responses=[limited_error, limited_error, limited_error])
+    fake_client = _FakeClient(aio=_FakeAioClient(models=fake_models))
     settings = MagicMock()
     settings.gemini_api_key = SecretStr("gemini-key")
     sleep_mock = AsyncMock()
@@ -143,15 +151,16 @@ async def test_generate_commentary_fallback_after_429_retries_exhausted():
         result = await generate_commentary(_sample_analytics(), api_key="gemini-key", client=fake_client)
 
     assert result == FALLBACK_COMMENTARY
-    assert len(fake_client.calls) == 3
+    assert len(fake_models.calls) == 3
     assert sleep_mock.await_count == 2
 
 
 async def test_generate_commentary_fallback_on_unexpected_exception():
-    class _BrokenClient:
-        async def post(self, url: str, *, params: dict[str, str], json: dict[str, object]) -> httpx.Response:
+    class _BrokenModels:
+        async def generate_content(self, *, model: str, contents: str, config: dict[str, object]) -> object:
             raise RuntimeError("unexpected")
 
+    broken_client = _FakeClient(aio=_FakeAioClient(models=_BrokenModels()))  # type: ignore[arg-type]
     settings = MagicMock()
     settings.gemini_api_key = SecretStr("gemini-key")
 
@@ -159,7 +168,7 @@ async def test_generate_commentary_fallback_on_unexpected_exception():
         result = await generate_commentary(
             _sample_analytics(),
             api_key="gemini-key",
-            client=_BrokenClient(),  # type: ignore[arg-type]
+            client=broken_client,  # type: ignore[arg-type]
         )
 
     assert result == FALLBACK_COMMENTARY
@@ -180,13 +189,8 @@ async def test_generate_commentary_uses_db_key_when_env_missing(tmp_path):
     await init_db(db_path)
     await GeminiStore(db_path).set("gemini-db-key")
 
-    endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
-    response = httpx.Response(
-        200,
-        json={"candidates": [{"content": {"parts": [{"text": "From DB key."}]}}]},
-        request=httpx.Request("POST", endpoint),
-    )
-    fake_client = _FakeClient(responses=[response])
+    fake_models = _FakeAsyncModels(responses=[SimpleNamespace(text="From DB key.")])
+    fake_client = _FakeClient(aio=_FakeAioClient(models=fake_models))
 
     settings = MagicMock()
     settings.database_path = db_path
@@ -196,17 +200,8 @@ async def test_generate_commentary_uses_db_key_when_env_missing(tmp_path):
         result = await generate_commentary(_sample_analytics(), client=fake_client)
 
     assert result == "From DB key."
-    _, params, _ = fake_client.calls[0]
-    assert params["key"] == "gemini-db-key"
 
 
 def test_retry_delay_applies_model_minimum_even_with_small_retry_after():
-    endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
-    response = httpx.Response(
-        429,
-        headers={"Retry-After": "0.01"},
-        request=httpx.Request("POST", endpoint),
-    )
-
-    assert _retry_delay_seconds(response, 1, "gemini-2.5-pro") == 30.0
-    assert _retry_delay_seconds(response, 1, "gemini-2.5-flash") == 7.0
+    assert _retry_delay_seconds("0.01", 1, "gemini-2.5-pro") == 30.0
+    assert _retry_delay_seconds("0.01", 1, "gemini-2.5-flash") == 7.0

@@ -187,7 +187,7 @@ class KbankCollector(BaseCollector):
         - Table 2: transactions with all entries newline-delimited in one row
         """
         try:
-            import pdfplumber  # type: ignore[import-not-found]
+            import pdfplumber
         except ImportError:
             logger.exception("pdfplumber not installed. Run: uv add pdfplumber")
             return [], []
