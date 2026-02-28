@@ -98,13 +98,15 @@ async def generate_commentary(request: web.Request) -> web.Response:
         json.dumps(metric_payload),
     )
 
-    return web.json_response(
-        {
-            "date": report_date.isoformat(),
-            "text": result.text,
-            "model": result.model,
-        }
-    )
+    response_data: dict[str, Any] = {
+        "date": report_date.isoformat(),
+        "text": result.text,
+        "model": result.model,
+    }
+    if result.error:
+        response_data["error"] = result.error
+
+    return web.json_response(response_data)
 
 
 # ── Legacy single-provider endpoints (backward compat) ──────────────

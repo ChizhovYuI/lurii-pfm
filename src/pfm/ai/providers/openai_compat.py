@@ -82,11 +82,13 @@ class OpenAICompatibleProvider(LLMProvider):
             response.raise_for_status()
             body = response.json()
         except httpx.HTTPStatusError as exc:
-            logger.warning("%s API error %d: %s", self.name, exc.response.status_code, exc)
-            return CommentaryResult(text=FALLBACK_COMMENTARY, model=None)
+            error_msg = f"{self.name} API error {exc.response.status_code}"
+            logger.warning("%s: %s", error_msg, exc)
+            return CommentaryResult(text=FALLBACK_COMMENTARY, model=None, error=error_msg)
         except (httpx.HTTPError, OSError) as exc:
-            logger.warning("%s API request failed: %s", self.name, exc)
-            return CommentaryResult(text=FALLBACK_COMMENTARY, model=None)
+            error_msg = f"{self.name} API request failed: {exc}"
+            logger.warning("%s", error_msg)
+            return CommentaryResult(text=FALLBACK_COMMENTARY, model=None, error=error_msg)
 
         text = self._parse_response(body)
         return CommentaryResult(text=text, model=self._model)

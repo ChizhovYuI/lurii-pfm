@@ -17,7 +17,7 @@ class ProviderName(StrEnum):
 
 
 FALLBACK_COMMENTARY = (
-    "AI commentary is currently unavailable. " "Review net worth trend, concentration risk, and PnL changes manually."
+    "AI commentary is currently unavailable. Review net worth trend, concentration risk, and PnL changes manually."
 )
 
 
@@ -27,6 +27,7 @@ class CommentaryResult:
 
     text: str
     model: str | None
+    error: str | None = None
 
 
 class LLMProvider(ABC):

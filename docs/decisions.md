@@ -204,6 +204,7 @@ If all fail, use fallback commentary text.
 - **Backward-compat aliases** — `AIConfig = AIProvider`, `AIStore = AIProviderStore` preserve imports in existing code
 - **Ollama native API** — direct `/api/chat` HTTP calls instead of OpenAI-compatible endpoint, for full model management (list, pull)
 - **OpenAI-compatible clients** — OpenRouter and Grok share a common base using `openai` SDK pattern
+- **Error propagation** — `CommentaryResult` includes an optional `error` field. Providers set it on failure (e.g. `"openrouter API error 401"`). The error is surfaced in `POST /api/v1/ai/commentary` response alongside the fallback text, so the UI can display the failure reason
 
 **DB schema:**
 ```sql

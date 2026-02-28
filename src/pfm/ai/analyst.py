@@ -54,11 +54,12 @@ async def generate_commentary_with_model(
     finally:
         await provider.close()
 
-    if result.text:
-        return CommentaryResult(text=_finalize_commentary_text(result.text), model=result.model)
+    if result.text and result.text != FALLBACK_COMMENTARY:
+        return CommentaryResult(text=_finalize_commentary_text(result.text), model=result.model, error=result.error)
 
     logger.warning("Provider returned empty text; using fallback commentary.")
-    return CommentaryResult(text=FALLBACK_COMMENTARY, model=None)
+    error = result.error or "Provider returned empty response"
+    return CommentaryResult(text=FALLBACK_COMMENTARY, model=None, error=error)
 
 
 async def _resolve_provider(db_path: str | Path | None) -> LLMProvider | None:

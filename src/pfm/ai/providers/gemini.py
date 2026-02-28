@@ -92,7 +92,7 @@ class GeminiProvider(LLMProvider):
                 return CommentaryResult(text=text, model=model)
             logger.warning("Gemini model %s returned empty text. Trying next fallback model.", model)
 
-        return CommentaryResult(text="", model=None)
+        return CommentaryResult(text="", model=None, error="All Gemini models failed (rate limited or error)")
 
     async def close(self) -> None:
         """Close the SDK client if owned."""
