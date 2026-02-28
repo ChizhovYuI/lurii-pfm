@@ -116,3 +116,10 @@ def test_format_ai_commentary_normalizes_markdown():
     assert "• Use cash buffer" in message
     assert "<b>1) Market Context</b>" in message
     assert "Plain line" in message
+
+
+def test_format_ai_commentary_does_not_truncate_long_text():
+    long_line = "A" * 2500
+    message = format_ai_commentary(f"Line 1.\n{long_line}\nLine 3.")
+    assert message.endswith("Line 3.")
+    assert "…" not in message

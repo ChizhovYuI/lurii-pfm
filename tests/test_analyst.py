@@ -18,7 +18,6 @@ from pfm.ai.analyst import (
     GEMINI_MODEL,
     GEMINI_MODELS,
     _finalize_commentary_text,
-    _is_trailing_section_header,
     _retry_delay_seconds,
     generate_commentary,
 )
@@ -234,42 +233,17 @@ def test_retry_delay_applies_model_minimum_even_with_small_retry_after():
     assert _retry_delay_seconds("0.01", 1, "gemini-2.5-flash") == 7.0
 
 
-def test_finalize_commentary_text_drops_incomplete_tail_line():
-    text = (
-        "Market context.\n"
-        "Portfolio health is stable.\n"
-        "Actions: rebalance small FX exposure.\n"
-        "Review your target"
-    )
-    assert _finalize_commentary_text(text).endswith("Actions: rebalance small FX exposure.")
+def test_finalize_commentary_text_preserves_incomplete_tail_line():
+    text = "Market context.\nPortfolio health is stable.\nReview your target"
+    assert _finalize_commentary_text(text).endswith("Review your target")
 
 
-def test_finalize_commentary_text_keeps_complete_tail_line():
-    text = "Market context.\nPortfolio health is stable.\nReview your target allocation."
-    assert _finalize_commentary_text(text).endswith("Review your target allocation.")
+def test_finalize_commentary_text_normalizes_line_endings_and_whitespace():
+    text = "Market context.\r\nPortfolio health is stable.\r\n"
+    assert _finalize_commentary_text(text) == "Market context.\nPortfolio health is stable."
 
 
-def test_finalize_commentary_text_drops_trailing_section_header_lines():
-    text = (
-        "Market context:\n"
-        "Performance data is unavailable.\n\n"
-        "Portfolio health assessment:\n"
-        "Net worth is 60922.81 USD.\n\n"
-        "Rebalancing opportunities:\n"
-    )
-    finalized = _finalize_commentary_text(text)
-    assert finalized.endswith("Net worth is 60922.81 USD.")
-    assert "Rebalancing opportunities:" not in finalized
-
-
-def test_finalize_commentary_text_drops_trailing_markdown_header_lines():
+def test_finalize_commentary_text_preserves_section_header_tail():
     text = "Health looks stable.\n### 5) Actionable recommendations for next 7 days"
     finalized = _finalize_commentary_text(text)
-    assert finalized == "Health looks stable."
-
-
-def test_is_trailing_section_header_detects_common_patterns():
-    assert _is_trailing_section_header("Rebalancing opportunities:")
-    assert _is_trailing_section_header("### 5) Actionable recommendations for next 7 days:")
-    assert _is_trailing_section_header("2) Portfolio health assessment:")
-    assert not _is_trailing_section_header("Net worth is 60922.81 USD.")
+    assert finalized.endswith("### 5) Actionable recommendations for next 7 days")

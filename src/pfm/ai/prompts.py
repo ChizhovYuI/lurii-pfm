@@ -16,9 +16,9 @@ Prioritize risk-aware recommendations and explicitly call out data limitations w
 Keep advice specific to the provided portfolio data and avoid generic education content.
 Output plain text only for Telegram:
 - no markdown syntax (`#`, `*`, `**`, backticks)
-- max 8 short lines
-- each line should be directly actionable or data-backed
-- keep total output under 900 characters
+- keep all five requested sections complete
+- include concrete numbers from the provided data
+- give enough detail to explain reasoning and actions
 """.strip()
 
 WEEKLY_REPORT_USER_PROMPT_TEMPLATE = """
@@ -50,7 +50,7 @@ Write a compact report with these sections in plain text:
 Rules:
 - Ground every claim in provided data.
 - If data is missing or noisy, state that clearly.
-- Use concise short lines and include concrete numbers.
+- Use concise but complete lines and include concrete numbers.
 - Do not use markdown symbols.
 - End every line with proper punctuation.
 """.strip()

@@ -53,7 +53,6 @@ _KNOWN_CRYPTO_ASSETS = {
 _AI_COMMENTARY_HEADING_RE = re.compile(r"^\s*#{1,6}\s*(.+?)\s*$")
 _AI_COMMENTARY_BULLET_RE = re.compile(r"^\s*[*-]\s+(.+?)\s*$")
 _AI_COMMENTARY_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
-_AI_COMMENTARY_MAX_CHARS = 1800
 
 
 def format_weekly_report(
@@ -153,15 +152,7 @@ def _normalize_ai_commentary(text: str) -> str:
 
         rendered_lines.append(_render_inline(line))
 
-    result = "\n".join(rendered_lines).strip()
-    if len(result) <= _AI_COMMENTARY_MAX_CHARS:
-        return result
-
-    clipped = result[:_AI_COMMENTARY_MAX_CHARS].rstrip()
-    last_newline = clipped.rfind("\n")
-    if last_newline > 0:
-        clipped = clipped[:last_newline].rstrip()
-    return f"{clipped}\n…"
+    return "\n".join(rendered_lines).strip()
 
 
 def _render_inline(text: str) -> str:
