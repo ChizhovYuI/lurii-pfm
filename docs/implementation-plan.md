@@ -789,3 +789,22 @@ scripts/
 
 alembic.ini                        # 7.1
 ```
+
+
+## SwiftUI macOS App — Status
+
+**Done**
+- Scaffolded SwiftUI macOS app structure (App/Core/Features/SharedUI) per spec.
+- Implemented API client, endpoints, and DTOs; added typed allocation row parsing with `sources` array support.
+- Implemented main navigation shell, login gate, dashboard, sources, reports, settings, activity placeholder.
+- Added WebSocket event stream and auto-refresh after collection/snapshot updates.
+- Fixed WebSocket URL scheme (`ws://`) and preview crash by gating event stream in previews.
+- Added app Info.plist with required bundle keys + ATS override for localhost.
+- Added entitlements for network client; adjusted sandbox settings for local dev.
+- Improved dashboard formatting (currency/percent) and table-style allocation/holdings columns.
+
+**In progress / Next**
+- Decide final sandbox posture (re-enable app sandbox in release; verify entitlements/signing).
+- Add settings-driven base currency selection and format all money using that code.
+- Add source/asset icons in allocation/holdings tables (if desired).
+- Add tests (unit + UI) for API decoding and dashboard refresh behavior.
