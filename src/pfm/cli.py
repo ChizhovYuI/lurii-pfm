@@ -342,7 +342,7 @@ _BYTES_MB = 1_000_000
 
 _OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("qwen/qwen3-235b-a22b-thinking-2507", "free, 235B MoE, reasoning"),
-    ("arcee-ai/trinity-large-preview", "free, 400B MoE, creative"),
+    ("arcee-ai/trinity-large-preview:free", "free, 400B MoE, creative"),
     ("google/gemini-2.5-flash-preview", "free, fast, 1M context"),
     ("anthropic/claude-sonnet-4", "paid, best quality"),
     ("openai/gpt-4.1-mini", "paid, fast, cheap"),
@@ -445,6 +445,13 @@ def ai_set(provider_name: str, api_key: str | None, model: str, base_url: str) -
     """Set the active AI provider."""
     _ensure_db()
 
+    store = _get_ai_store()
+    existing = _run(store.get())
+
+    # Preserve existing API key when re-configuring the same provider
+    if not api_key and existing and existing.provider == provider_name:
+        api_key = existing.api_key
+
     if provider_name in _PROVIDERS_REQUIRING_API_KEY and not api_key:
         api_key = click.prompt("API key", hide_input=True)
 
@@ -454,14 +461,13 @@ def ai_set(provider_name: str, api_key: str | None, model: str, base_url: str) -
     if provider_name == "openrouter" and not model:
         model = _pick_openrouter_model()
 
-    store = _get_ai_store()
     try:
         config = _run(
             store.set(
                 provider=provider_name,
                 api_key=api_key or "",
                 model=model,
-                base_url=base_url,
+                base_url=base_url or (existing.base_url if existing and existing.provider == provider_name else ""),
             )
         )
     except ValueError as exc:
