@@ -192,20 +192,56 @@ If all fail, use fallback commentary text.
 
 **Context:** AI commentary was hard-coupled to Gemini API via `google-genai` SDK. Users wanting local/private LLM inference (Ollama) or access to other models (Claude, GPT via OpenRouter) had no option.
 
-**Decision:** Replace the Gemini-only `ai/analyst.py` with a pluggable `LLMProvider` protocol. Four providers implemented: Gemini, Ollama, OpenRouter, Grok. User selects one active provider via `pfm ai set`.
+**Decision:** Replace the Gemini-only `ai/analyst.py` with a pluggable `LLMProvider` protocol. Four providers implemented: Gemini, Ollama, OpenRouter, Grok. Multiple providers can be configured simultaneously with zero or one active at a time.
 
 **Design choices:**
 - **Protocol-based abstraction** — `LLMProvider` protocol with `generate_commentary()` and `close()` methods
 - **Provider registry** — `PROVIDER_REGISTRY` dict mapping names to classes
-- **Per-provider config in SQLite** — `ai_settings` table (provider, api_key, model, base_url), not `.env`
+- **Dedicated `ai_providers` table** — one row per provider type (`type` as PK), with `api_key`, `model`, `base_url`, `active` columns. Replaces the earlier single-row `ai_settings` approach. Multiple providers coexist; only one can be `active = 1` at a time
+- **`AIProviderStore` CRUD** — `add()` (upsert), `get()`, `get_active()`, `list_all()`, `activate()`, `deactivate()`, `remove()`, modeled after `SourceStore`
+- **`_ensure_table()`** — auto-creates `ai_providers` table for databases created before this migration, avoiding a formal schema migration step
+- **Auto-migration from legacy keys** — `migrate_from_legacy()` reads old `ai_provider*` and `gemini_api_key` from `app_settings`, inserts into `ai_providers`, activates the migrated provider. Idempotent (no-op if providers already exist)
+- **Backward-compat aliases** — `AIConfig = AIProvider`, `AIStore = AIProviderStore` preserve imports in existing code
 - **Ollama native API** — direct `/api/chat` HTTP calls instead of OpenAI-compatible endpoint, for full model management (list, pull)
 - **OpenAI-compatible clients** — OpenRouter and Grok share a common base using `openai` SDK pattern
+
+**DB schema:**
+```sql
+CREATE TABLE IF NOT EXISTS ai_providers (
+    type TEXT PRIMARY KEY,
+    api_key TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    base_url TEXT NOT NULL DEFAULT '',
+    active INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+```
+
+**REST API:**
+- `GET /api/v1/ai/config` — active provider (legacy compat)
+- `PUT /api/v1/ai/config` — set active provider (legacy compat)
+- `GET /api/v1/ai/providers` — list all configured providers (secrets masked via `has_api_key`)
+- `PUT /api/v1/ai/providers/{type}` — add/update provider
+- `DELETE /api/v1/ai/providers/{type}` — remove provider
+- `POST /api/v1/ai/providers/{type}/activate` — set active
+- `POST /api/v1/ai/providers/deactivate` — clear active
+
+**CLI commands:**
+- `pfm ai set` — configure and activate a provider
+- `pfm ai show` — display active provider
+- `pfm ai list` — show all configured providers with active marker
+- `pfm ai activate <type>` — switch active provider
+- `pfm ai deactivate` — clear active
+- `pfm ai remove <type>` — delete a provider config
+- `pfm ai clear` — alias for deactivate
 
 **Consequences:**
 - Gemini remains the default provider with existing model failover chain
 - Ollama enables fully local/private AI commentary (no API key needed)
 - OpenRouter provides access to Claude, GPT, Mistral, etc. via single API key
 - Legacy `pfm gemini set/show/clear` commands still work as aliases
+- Switching providers no longer requires re-entering credentials — just `pfm ai activate <type>`
 
 ---
 
@@ -241,3 +277,62 @@ If all fail, use fallback commentary text.
 - Three new HTTP endpoints: `POST /unlock`, `GET /encryption/status`, updated `GET /health` with `locked` field
 - Phase 4 proper (Swift Keychain, `pfm db encrypt/decrypt` CLI) can build on this foundation
 - No breaking changes — plain DB continues to work identically when no key is configured
+
+---
+
+## ADR-010: Settings endpoint includes AI provider metadata for UI rendering
+
+**Date:** 2026-03-01
+
+**Status:** Accepted
+
+**Context:** The SwiftUI app settings screen needs to render a combo box of available AI providers and dynamically show input fields (api_key, model, base_url) based on which provider is selected. Each provider has different required/optional fields and class-level defaults (e.g. Ollama has a `default_base_url`, Gemini has a `default_model`).
+
+**Decision:** Enrich `GET /api/v1/settings` response with two AI-related arrays: `ai_providers` (configured instances) and `ai_providers_available` (all registered provider types with field schemas). Provider field metadata is derived at startup by introspecting `PROVIDER_REGISTRY` class `__init__` signatures.
+
+**Design choices:**
+- **Registry introspection via `inspect.signature()`** — provider fields are derived from `__init__` parameter names and defaults, not a separate schema definition. This keeps the field list in sync with actual provider classes automatically
+- **`_PROVIDER_FIELDS` ordering** — `("api_key", "model", "base_url")` defines UI rendering order; only fields present in a provider's `__init__` are included
+- **Class-level defaults** — `default_model`, `default_base_url` class attributes are exposed as `"default"` hints so the UI can pre-fill inputs
+- **Cached metadata** — `_AI_PROVIDERS_META` is computed once since the provider registry is static after import
+- **`has_api_key` boolean** — configured providers expose whether an API key is set without revealing the actual secret
+
+**Response shape:**
+```json
+{
+  "ai_providers": [
+    {
+      "type": "gemini",
+      "model": "gemini-2.5-pro",
+      "base_url": "",
+      "has_api_key": true,
+      "active": true,
+      "fields": [
+        {"name": "api_key", "required": true},
+        {"name": "model", "required": false, "default": "gemini-2.5-pro"}
+      ]
+    }
+  ],
+  "ai_providers_available": [
+    {
+      "type": "gemini",
+      "fields": [
+        {"name": "api_key", "required": true},
+        {"name": "model", "required": false, "default": "gemini-2.5-pro"}
+      ]
+    },
+    {
+      "type": "ollama",
+      "fields": [
+        {"name": "model", "required": true},
+        {"name": "base_url", "required": false, "default": "http://localhost:11434"}
+      ]
+    }
+  ]
+}
+```
+
+**Consequences:**
+- SwiftUI settings screen can dynamically render provider-specific forms
+- Adding a new provider class automatically makes it available in the UI (no endpoint changes)
+- Configured and available providers are separate arrays — UI can distinguish "add new" vs "edit existing"
