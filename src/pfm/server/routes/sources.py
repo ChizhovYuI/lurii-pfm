@@ -18,6 +18,19 @@ from pfm.server.serializers import source_to_dict
 routes = web.RouteTableDef()
 
 
+@routes.get("/api/v1/source-types")
+async def list_source_types(_request: web.Request) -> web.Response:
+    """Return credential field schemas for all known source types."""
+    from pfm.source_types import SOURCE_TYPES
+
+    return web.json_response(
+        {
+            name: [{"name": f.name, "prompt": f.prompt, "required": f.required, "secret": f.secret} for f in fields]
+            for name, fields in SOURCE_TYPES.items()
+        }
+    )
+
+
 @routes.get("/api/v1/sources")
 async def list_sources(request: web.Request) -> web.Response:
     """List all configured sources."""

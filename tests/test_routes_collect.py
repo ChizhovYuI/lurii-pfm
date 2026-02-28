@@ -39,6 +39,24 @@ async def empty_client(aiohttp_client, db_path):
     return await aiohttp_client(app)
 
 
+async def test_collect_status_idle(client):
+    """Test that collect status returns collecting=false when idle."""
+    resp = await client.get("/api/v1/collect/status")
+    assert resp.status == 200
+    data = await resp.json()
+    assert data == {"collecting": False}
+
+
+async def test_collect_status_during_collection(client):
+    """Test that collect status returns collecting=true during collection."""
+    client.app["collecting"] = True
+    resp = await client.get("/api/v1/collect/status")
+    assert resp.status == 200
+    data = await resp.json()
+    assert data == {"collecting": True}
+    client.app["collecting"] = False
+
+
 async def test_collect_returns_202(client):
     """Test that collection trigger returns 202 immediately."""
     mock_cls = MagicMock()

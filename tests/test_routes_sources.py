@@ -36,6 +36,47 @@ async def client_with_source(aiohttp_client, db_with_source):
     return await aiohttp_client(app)
 
 
+async def test_list_source_types(client):
+    resp = await client.get("/api/v1/source-types")
+    assert resp.status == 200
+    data = await resp.json()
+    # Should return all 9 source types
+    assert len(data) == 9
+    expected_types = {
+        "okx",
+        "binance",
+        "binance_th",
+        "bybit",
+        "lobstr",
+        "blend",
+        "wise",
+        "kbank",
+        "ibkr",
+    }
+    assert set(data.keys()) == expected_types
+    # Each type has a list of field dicts with correct shape
+    for fields in data.values():
+        assert isinstance(fields, list)
+        assert len(fields) > 0
+        for field in fields:
+            assert "name" in field
+            assert "prompt" in field
+            assert "required" in field
+            assert "secret" in field
+            assert isinstance(field["required"], bool)
+            assert isinstance(field["secret"], bool)
+
+
+async def test_list_source_types_wise_fields(client):
+    resp = await client.get("/api/v1/source-types")
+    data = await resp.json()
+    wise_fields = data["wise"]
+    assert len(wise_fields) == 1
+    assert wise_fields[0]["name"] == "api_token"
+    assert wise_fields[0]["required"] is True
+    assert wise_fields[0]["secret"] is True
+
+
 async def test_list_sources_empty(client):
     resp = await client.get("/api/v1/sources")
     assert resp.status == 200

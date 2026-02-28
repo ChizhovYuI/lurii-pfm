@@ -28,7 +28,9 @@ async def test_health_returns_200(client):
     resp = await client.get("/api/v1/health")
     assert resp.status == 200
     data = await resp.json()
-    assert data == {"status": "ok"}
+    assert data["status"] == "ok"
+    assert data["version"] == "0.3.0"
+    assert data["collecting"] is False
 
 
 async def test_startup_and_cleanup(db_path):

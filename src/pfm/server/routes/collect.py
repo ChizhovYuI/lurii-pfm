@@ -19,6 +19,12 @@ logger = logging.getLogger(__name__)
 routes = web.RouteTableDef()
 
 
+@routes.get("/api/v1/collect/status")
+async def collect_status(request: web.Request) -> web.Response:
+    """Return current collection state."""
+    return web.json_response({"collecting": request.app["collecting"]})
+
+
 @routes.post("/api/v1/collect")
 async def start_collection(request: web.Request) -> web.Response:
     """Spawn a background collection task. Returns 202 immediately."""

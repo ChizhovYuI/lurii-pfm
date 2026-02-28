@@ -1,6 +1,6 @@
 [project]
 name = "lurii-pfm"
-version = "0.1.0"
+version = "0.3.0"
 description = "Personal Financial Management — aggregate assets, statements, PnL from crypto/finance apps"
 requires-python = ">=3.13"
 dependencies = [
