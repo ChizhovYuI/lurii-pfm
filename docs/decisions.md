@@ -221,7 +221,7 @@ CREATE TABLE IF NOT EXISTS ai_providers (
 **REST API:**
 - `GET /api/v1/ai/config` — active provider (legacy compat)
 - `PUT /api/v1/ai/config` — set active provider (legacy compat)
-- `GET /api/v1/ai/providers` — list all configured providers (secrets masked via `has_api_key`)
+- `GET /api/v1/ai/providers` — list all configured providers (api_key masked)
 - `PUT /api/v1/ai/providers/{type}` — add/update provider
 - `DELETE /api/v1/ai/providers/{type}` — remove provider
 - `POST /api/v1/ai/providers/{type}/activate` — set active
@@ -293,9 +293,11 @@ CREATE TABLE IF NOT EXISTS ai_providers (
 **Design choices:**
 - **Registry introspection via `inspect.signature()`** — provider fields are derived from `__init__` parameter names and defaults, not a separate schema definition. This keeps the field list in sync with actual provider classes automatically
 - **`_PROVIDER_FIELDS` ordering** — `("api_key", "model", "base_url")` defines UI rendering order; only fields present in a provider's `__init__` are included
+- **`secret` flag on fields** — `_SECRET_FIELDS` set marks fields like `api_key` as `"secret": true` in the metadata. The UI uses this generically to: mask the value, show a placeholder, and make the input optional when a value already exists. No field names are hardcoded in the UI
+- **Masked secret values** — secret fields return a masked string (e.g. `"sk-...269"`) or empty string. The UI can check for a non-empty masked value to know a secret exists. When saving, the UI omits the field if unchanged, so the backend preserves the existing value
+- **Dynamic field inclusion** — configured `ai_providers` only include fields that the provider type actually supports (derived from `ai_providers_available` metadata), so Gemini won't have `base_url` and Ollama won't have `api_key`
 - **Class-level defaults** — `default_model`, `default_base_url` class attributes are exposed as `"default"` hints so the UI can pre-fill inputs
 - **Cached metadata** — `_AI_PROVIDERS_META` is computed once since the provider registry is static after import
-- **`has_api_key` boolean** — configured providers expose whether an API key is set without revealing the actual secret
 
 **Response shape:**
 ```json
@@ -303,29 +305,30 @@ CREATE TABLE IF NOT EXISTS ai_providers (
   "ai_providers": [
     {
       "type": "gemini",
-      "model": "gemini-2.5-pro",
-      "base_url": "",
-      "has_api_key": true,
       "active": true,
-      "fields": [
-        {"name": "api_key", "required": true},
-        {"name": "model", "required": false, "default": "gemini-2.5-pro"}
-      ]
+      "api_key": "AIz...coA",
+      "model": "gemini-2.5-pro"
+    },
+    {
+      "type": "ollama",
+      "active": false,
+      "model": "llama3.1:8b",
+      "base_url": "http://localhost:11434"
     }
   ],
   "ai_providers_available": [
     {
       "type": "gemini",
       "fields": [
-        {"name": "api_key", "required": true},
-        {"name": "model", "required": false, "default": "gemini-2.5-pro"}
+        {"name": "api_key", "required": true, "secret": true},
+        {"name": "model", "required": false, "secret": false, "default": "gemini-2.5-pro"}
       ]
     },
     {
       "type": "ollama",
       "fields": [
-        {"name": "model", "required": true},
-        {"name": "base_url", "required": false, "default": "http://localhost:11434"}
+        {"name": "model", "required": true, "secret": false},
+        {"name": "base_url", "required": false, "secret": false, "default": "http://localhost:11434"}
       ]
     }
   ]
@@ -333,6 +336,7 @@ CREATE TABLE IF NOT EXISTS ai_providers (
 ```
 
 **Consequences:**
-- SwiftUI settings screen can dynamically render provider-specific forms
+- SwiftUI settings screen can dynamically render provider-specific forms without hardcoding field names
 - Adding a new provider class automatically makes it available in the UI (no endpoint changes)
 - Configured and available providers are separate arrays — UI can distinguish "add new" vs "edit existing"
+- Secret handling is driven by metadata (`secret` flag), not UI-side field name checks

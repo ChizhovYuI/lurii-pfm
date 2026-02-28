@@ -25,6 +25,9 @@ _SECRET_KEYS: frozenset[str] = frozenset(
 # Fields that every provider *could* have; order matters for UI rendering.
 _PROVIDER_FIELDS = ("api_key", "model", "base_url")
 
+# Fields whose values must be masked in API responses.
+_SECRET_FIELDS: frozenset[str] = frozenset({"api_key"})
+
 
 def _build_ai_providers_meta() -> list[dict[str, Any]]:
     """Build provider descriptors from the registry for UI rendering."""
@@ -42,6 +45,7 @@ def _build_ai_providers_meta() -> list[dict[str, Any]]:
             field_info: dict[str, Any] = {
                 "name": field_name,
                 "required": required,
+                "secret": field_name in _SECRET_FIELDS,
             }
             # Expose class-level defaults (e.g. default_model, default_base_url)
             default_attr = f"default_{field_name}"
@@ -80,20 +84,24 @@ async def get_settings(request: web.Request) -> web.Response:
     store = AIProviderStore(db_path)
     configured = await store.list_all()
 
-    settings_dict["ai_providers"] = [
-        {
-            "type": p.type,
-            "model": p.model,
-            "base_url": p.base_url,
-            "has_api_key": bool(p.api_key),
-            "active": p.active,
-            "fields": next(
-                (meta["fields"] for meta in _get_ai_providers_meta() if meta["type"] == p.type),
-                [],
-            ),
-        }
-        for p in configured
-    ]
+    # Build a {type: fields_meta} lookup from provider metadata
+    meta = _get_ai_providers_meta()
+    fields_by_type: dict[str, list[dict[str, Any]]] = {m["type"]: m["fields"] for m in meta}
+
+    providers_list: list[dict[str, Any]] = []
+    for p in configured:
+        entry: dict[str, Any] = {"type": p.type, "active": p.active}
+        for field_meta in fields_by_type.get(p.type, []):
+            name = field_meta["name"]
+            value = getattr(p, name, "")
+            is_secret = field_meta.get("secret", False)
+            if is_secret:
+                entry[name] = mask_secret(value) if value else ""
+            else:
+                entry[name] = value
+        providers_list.append(entry)
+
+    settings_dict["ai_providers"] = providers_list
 
     # All available provider types (for the "add provider" combo box)
     settings_dict["ai_providers_available"] = _get_ai_providers_meta()

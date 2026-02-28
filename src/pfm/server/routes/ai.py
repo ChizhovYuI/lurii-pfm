@@ -9,6 +9,7 @@ from typing import Any
 from aiohttp import web
 
 from pfm.db.ai_store import AIProviderStore
+from pfm.server.serializers import mask_secret
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +124,7 @@ async def get_ai_config(request: web.Request) -> web.Response:
             "provider": config.type,
             "model": config.model,
             "base_url": config.base_url,
-            "has_api_key": bool(config.api_key),
+            "api_key": mask_secret(config.api_key) if config.api_key else "",
         }
     )
 
@@ -151,7 +152,7 @@ async def update_ai_config(request: web.Request) -> web.Response:
             "provider": config.type,
             "model": config.model,
             "base_url": config.base_url,
-            "has_api_key": bool(config.api_key),
+            "api_key": mask_secret(config.api_key) if config.api_key else "",
         }
     )
 
@@ -171,7 +172,7 @@ async def list_providers(request: web.Request) -> web.Response:
                     "type": p.type,
                     "model": p.model,
                     "base_url": p.base_url,
-                    "has_api_key": bool(p.api_key),
+                    "api_key": mask_secret(p.api_key) if p.api_key else "",
                     "active": p.active,
                 }
                 for p in providers
@@ -208,7 +209,7 @@ async def upsert_provider(request: web.Request) -> web.Response:
             "type": config.type,
             "model": config.model,
             "base_url": config.base_url,
-            "has_api_key": bool(config.api_key),
+            "api_key": mask_secret(config.api_key) if config.api_key else "",
             "active": config.active,
         }
     )
@@ -240,7 +241,7 @@ async def activate_provider(request: web.Request) -> web.Response:
             "type": config.type,
             "model": config.model,
             "base_url": config.base_url,
-            "has_api_key": bool(config.api_key),
+            "api_key": mask_secret(config.api_key) if config.api_key else "",
             "active": config.active,
         }
     )
