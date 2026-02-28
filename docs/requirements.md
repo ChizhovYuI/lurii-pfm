@@ -85,7 +85,7 @@ Personal Financial Management system that aggregates assets and statements from 
 
 - F3.1: **Total net worth** (sum of all assets in USD)
 - F3.2: **PnL** — daily, weekly, monthly, all-time
-- F3.3: **Asset allocation** — by asset, by source, by category (crypto/fiat/stocks/DeFi)
+- F3.3: **Asset allocation** — by (source, asset) with unit price, by source, by category (crypto/fiat/stocks/DeFi)
 - F3.4: **Yield tracking** — Blend fixed pool returns
 - F3.5: **Cost basis** — per asset (for tax/gain tracking)
 - F3.6: **Currency exposure** — breakdown by currency (USD, GBP, THB, BTC, ETH, XLM, USDC, etc.)

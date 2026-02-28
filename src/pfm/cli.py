@@ -831,10 +831,10 @@ async def _analyze_async() -> None:
                 [
                     {
                         "asset": row.asset,
-                        "source": row.source,
+                        "sources": list(row.sources),
                         "amount": _fmt_amount(row.amount),
                         "usd_value": _fmt_usd(row.usd_value),
-                        "price": _fmt_price(row.usd_value / row.amount) if row.amount else "0",
+                        "price": _fmt_price(row.price),
                         "percentage": _fmt_pct(row.percentage),
                         "asset_type": asset_type_map.get(row.asset.upper(), "other"),
                     }
@@ -894,9 +894,9 @@ async def _analyze_async() -> None:
                     "top_5_assets": [
                         {
                             "asset": row.asset,
-                            "source": row.source,
+                            "sources": list(row.sources),
                             "usd_value": _fmt_usd(row.usd_value),
-                            "price": _fmt_price(row.usd_value / row.amount) if row.amount else "0",
+                            "price": _fmt_price(row.price),
                             "percentage": _fmt_pct(row.percentage),
                         }
                         for row in risk.top_5_assets

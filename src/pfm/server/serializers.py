@@ -52,14 +52,14 @@ def fmt_pct(value: Decimal) -> str:
 
 def fmt_amount(value: Decimal) -> str:
     """Format an asset amount — up to 8 decimal places, trailing zeros stripped."""
-    return str(value.quantize(_EIGHT_PLACES).normalize())
+    return format(value.quantize(_EIGHT_PLACES).normalize(), "f")
 
 
 def fmt_price(value: Decimal) -> str:
     """Format a unit price — 2dp for values ≥1, up to 8dp for small values."""
     if value >= 1:
         return str(value.quantize(_TWO_PLACES))
-    return str(value.quantize(_EIGHT_PLACES).normalize())
+    return format(value.quantize(_EIGHT_PLACES).normalize(), "f")
 
 
 # ── Masking ─────────────────────────────────────────────────────────────

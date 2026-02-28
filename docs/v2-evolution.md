@@ -159,7 +159,7 @@ All endpoints prefixed with `/api/v1/`. JSON request/response.
 | GET | `/portfolio/snapshots` | Historical snapshots (date range) |
 | GET | `/portfolio/holdings` | Current holdings with PnL |
 | GET | `/analytics/pnl` | PnL data (daily/weekly/monthly) |
-| GET | `/analytics/allocation` | Asset allocation breakdown |
+| GET | `/analytics/allocation` | Asset allocation by (source, asset) with price |
 | GET | `/analytics/exposure` | Currency exposure |
 | GET | `/analytics/yield` | Blend yield tracking |
 | GET | `/ai/commentary` | Latest AI commentary |

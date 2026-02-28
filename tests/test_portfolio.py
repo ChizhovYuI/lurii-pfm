@@ -13,7 +13,7 @@ from pfm.analytics.portfolio import (
     compute_net_worth,
     compute_risk_metrics,
 )
-from pfm.db.models import Snapshot
+from pfm.db.models import Price, Snapshot
 
 
 async def test_compute_net_worth(repo):
@@ -41,19 +41,39 @@ async def test_compute_allocation_by_asset(repo):
     )
 
     rows = await compute_allocation_by_asset(repo, target_date)
-    # Now per-(source, asset): wise/GBP, lobstr/USDC, okx/USDC
-    assert [(row.source, row.asset) for row in rows] == [
-        ("wise", "GBP"),
-        ("lobstr", "USDC"),
-        ("okx", "USDC"),
-    ]
+    # Grouped by asset; USDC aggregated across lobstr+okx
+    assert [row.asset for row in rows] == ["GBP", "USDC"]
     assert rows[0].usd_value == Decimal(250)
-    assert rows[0].source == "wise"
-    assert rows[1].amount == Decimal(100)
-    assert rows[2].amount == Decimal(50)
+    assert rows[0].sources == ("wise",)
+    assert rows[1].amount == Decimal(150)
+    assert rows[1].sources == ("lobstr", "okx")
     assert rows[0].percentage == Decimal("62.5")
-    assert rows[1].percentage == Decimal(25)
-    assert rows[2].percentage == Decimal("12.5")
+    assert rows[1].percentage == Decimal("37.5")
+    # No prices seeded — falls back to usd_value / amount
+    assert rows[0].price == Decimal("1.25")  # 250 / 200
+    assert rows[1].price == Decimal(1)  # 150 / 150
+
+
+async def test_compute_allocation_by_asset_with_prices(repo):
+    target_date = date(2024, 1, 15)
+    await repo.save_snapshots(
+        [
+            Snapshot(target_date, "okx", "BTC", Decimal("0.5"), Decimal(32500)),
+            Snapshot(target_date, "wise", "GBP", Decimal(1000), Decimal(1260)),
+        ]
+    )
+    await repo.save_prices(
+        [
+            Price(target_date, "BTC", "USD", Decimal(65000)),
+            Price(target_date, "GBP", "USD", Decimal("1.26")),
+        ]
+    )
+
+    rows = await compute_allocation_by_asset(repo, target_date)
+    assert rows[0].asset == "BTC"
+    assert rows[0].price == Decimal(65000)
+    assert rows[1].asset == "GBP"
+    assert rows[1].price == Decimal("1.26")
 
 
 async def test_compute_allocation_by_source(repo):
@@ -123,17 +143,12 @@ async def test_compute_risk_metrics(repo):
     )
 
     metrics = await compute_risk_metrics(repo, target_date)
-    # Now 6 per-(source, asset) rows; concentration is still BTC
+    # 5 unique assets: BTC, USDC (lobstr+blend), AAPL, GBP, XLM
     assert metrics.concentration_percentage == Decimal("82.91873963515754560530679934")
     assert len(metrics.top_5_assets) == 5
     assert metrics.top_5_assets[0].asset == "BTC"
-    assert metrics.top_5_assets[0].source == "okx"
-    # HHI changes because USDC is now split across lobstr and blend
-    total = Decimal(6030)
-    hhi = sum(
-        (v / total) ** 2 for v in [Decimal(5000), Decimal(400), Decimal(300), Decimal(200), Decimal(125), Decimal(5)]
-    )
-    assert metrics.hhi_index == hhi
+    assert metrics.top_5_assets[0].sources == ("okx",)
+    assert metrics.hhi_index == Decimal("0.7025582425077487080902837939")
 
 
 async def test_empty_portfolio(repo):

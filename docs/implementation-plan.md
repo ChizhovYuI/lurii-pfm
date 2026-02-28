@@ -470,7 +470,7 @@ Register all 9 collector types. `pfm collect` auto-discovers from DB. Add `--cat
 **Dependencies:** Phase 0
 
 - `compute_net_worth(repo, date) -> Decimal`
-- `compute_allocation_by_asset(repo, date)` — per-asset breakdown (amount, usd_value, %)
+- `compute_allocation_by_asset(repo, date)` — per-(source, asset) breakdown (source, amount, usd_value, price, %)
 - `compute_allocation_by_source(repo, date)` — per-source
 - `compute_allocation_by_category(repo, date)` — crypto/fiat/stocks/DeFi
 - `compute_currency_exposure(repo, date)`

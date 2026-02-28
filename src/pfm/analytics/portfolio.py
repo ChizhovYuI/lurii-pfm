@@ -37,12 +37,13 @@ _DEFI_SOURCES: frozenset[str] = frozenset({"blend"})
 
 @dataclass(frozen=True, slots=True)
 class AssetAllocation:
-    """Allocation row for a single asset at a single source."""
+    """Allocation row for a single asset aggregated across sources."""
 
     asset: str
-    source: str
+    sources: tuple[str, ...]
     amount: Decimal
     usd_value: Decimal
+    price: Decimal
     percentage: Decimal
 
 
@@ -80,25 +81,33 @@ async def compute_net_worth(repo: Repository, snapshot_date: date) -> Decimal:
 
 
 async def compute_allocation_by_asset(repo: Repository, snapshot_date: date) -> list[AssetAllocation]:
-    """Compute per-(source, asset) allocation (amount, USD value, percent)."""
+    """Compute per-asset allocation with sources list and cached price."""
     snapshots = await repo.get_snapshots_by_date(snapshot_date)
     total_usd = _sum_usd(snapshots)
-    by_key: dict[tuple[str, str], tuple[Decimal, Decimal]] = {}
+    by_asset: dict[str, tuple[Decimal, Decimal, set[str]]] = {}
 
     for snap in snapshots:
-        key = (snap.source, snap.asset)
-        amount, usd_value = by_key.get(key, (Decimal(0), Decimal(0)))
-        by_key[key] = (amount + snap.amount, usd_value + snap.usd_value)
+        amount, usd_value, sources = by_asset.get(snap.asset, (Decimal(0), Decimal(0), set()))
+        sources.add(snap.source)
+        by_asset[snap.asset] = (amount + snap.amount, usd_value + snap.usd_value, sources)
+
+    # Build price lookup from prices table
+    prices = await repo.get_prices_by_date(snapshot_date)
+    price_map: dict[str, Decimal] = {}
+    for p in prices:
+        if p.currency == "USD":
+            price_map[p.asset.upper()] = p.price
 
     rows = [
         AssetAllocation(
             asset=asset,
-            source=source,
+            sources=tuple(sorted(sources)),
             amount=amount,
             usd_value=usd_value,
+            price=price_map.get(asset.upper(), usd_value / amount if amount else Decimal(0)),
             percentage=_percentage(usd_value, total_usd),
         )
-        for (source, asset), (amount, usd_value) in by_key.items()
+        for asset, (amount, usd_value, sources) in by_asset.items()
     ]
     rows.sort(key=lambda r: r.usd_value, reverse=True)
     return rows
