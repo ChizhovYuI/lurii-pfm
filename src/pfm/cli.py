@@ -12,7 +12,9 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 import click
+import httpx
 
+from pfm.ai.providers.ollama import OllamaProvider
 from pfm.ai.providers.registry import get_provider_names
 from pfm.collectors import COLLECTOR_REGISTRY
 from pfm.config import get_settings
@@ -335,6 +337,73 @@ def gemini_clear() -> None:
 _PROVIDERS_REQUIRING_API_KEY: frozenset[str] = frozenset({"gemini", "openrouter", "grok"})
 
 
+_BYTES_GB = 1_000_000_000
+_BYTES_MB = 1_000_000
+
+_OLLAMA_MODEL_HINTS: dict[str, str] = {
+    "llama3.1:8b": "best for 8 GB RAM",
+    "qwen3:14b": "best for 16+ GB RAM",
+}
+
+
+def _format_bytes(size: int) -> str:
+    """Format byte count as human-readable size (e.g. 4.6 GB)."""
+    if size >= _BYTES_GB:
+        return f"{size / 1_073_741_824:.1f} GB"
+    if size >= _BYTES_MB:
+        return f"{size / 1_048_576:.0f} MB"
+    return f"{size} B"
+
+
+def _pick_ollama_model(base_url: str) -> str:
+    """Fetch available Ollama models and let the user pick one."""
+    url = f"{base_url.rstrip('/')}/api/tags"
+    try:
+        response = httpx.get(url, timeout=5.0)
+        response.raise_for_status()
+        body = response.json()
+    except httpx.ConnectError:
+        click.echo("Could not connect to Ollama.", err=True)
+        click.echo("  Install: brew install ollama", err=True)
+        click.echo("  Run:     ollama serve", err=True)
+        sys.exit(1)
+    except (httpx.HTTPError, OSError, ValueError):
+        click.echo("Could not reach Ollama to list models. Enter model name manually.")
+        return str(click.prompt("Model"))
+
+    models_list = body.get("models", [])
+    if not models_list:
+        click.echo("No models found in Ollama. Pull one first: ollama pull <model>")
+        return str(click.prompt("Model"))
+
+    names: list[str] = [m["name"] for m in models_list if isinstance(m, dict) and "name" in m]
+    if not names:
+        return str(click.prompt("Model"))
+
+    default = OllamaProvider.default_model
+    has_default = default in names
+
+    click.echo("\nAvailable Ollama models:")
+    for i, m in enumerate(models_list, 1):
+        name = m.get("name", "?")
+        size_bytes = m.get("size", 0) if isinstance(m, dict) else 0
+        size_str = f"{_format_bytes(size_bytes)} RAM" if size_bytes else ""
+        hint = _OLLAMA_MODEL_HINTS.get(name, "")
+        suffix = f"  <- {hint}" if hint else ""
+        click.echo(f"  {i}. {name:<30s} {size_str}{suffix}")
+
+    if not has_default:
+        hint = _OLLAMA_MODEL_HINTS.get(default, "")
+        hint_str = f" ({hint})" if hint else ""
+        click.echo(f"\nRecommended: {default}{hint_str} — install with: ollama pull {default}")
+
+    choice: int = click.prompt(
+        "\nSelect model",
+        type=click.IntRange(1, len(names)),
+    )
+    return names[choice - 1]
+
+
 @cli.group("ai")
 def ai_group() -> None:
     """Manage AI provider configuration."""
@@ -357,6 +426,9 @@ def ai_set(provider_name: str, api_key: str | None, model: str, base_url: str) -
 
     if provider_name in _PROVIDERS_REQUIRING_API_KEY and not api_key:
         api_key = click.prompt("API key", hide_input=True)
+
+    if provider_name == "ollama" and not model:
+        model = _pick_ollama_model(base_url or "http://localhost:11434")
 
     store = _get_ai_store()
     try:

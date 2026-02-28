@@ -1005,9 +1005,47 @@ def test_ai_clear_when_empty(runner):
 
 @pytest.mark.usefixtures("_patched_settings")
 def test_ai_set_ollama_no_api_key(runner):
-    result = runner.invoke(cli, ["ai", "set", "--provider", "ollama"])
+    result = runner.invoke(cli, ["ai", "set", "--provider", "ollama", "--model", "llama3.1:8b"])
     assert result.exit_code == 0
     assert "AI provider set to: ollama" in result.output
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_ai_set_ollama_picks_model_interactively(runner):
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "models": [
+            {
+                "name": "llama3.1:8b",
+                "size": 4_920_753_328,
+                "details": {"parameter_size": "8.0B", "quantization_level": "Q4_K_M"},
+            },
+            {
+                "name": "mistral:7b",
+                "size": 3_800_000_000,
+                "details": {"parameter_size": "7.2B", "quantization_level": "Q4_0"},
+            },
+        ]
+    }
+    mock_response.raise_for_status = MagicMock()
+    with patch("pfm.cli.httpx.get", return_value=mock_response):
+        result = runner.invoke(cli, ["ai", "set", "--provider", "ollama"], input="1\n")
+
+    assert result.exit_code == 0
+    assert "Available Ollama models:" in result.output
+    assert "llama3.1:8b" in result.output
+    assert "4.6 GB RAM" in result.output
+    assert "AI provider set to: ollama" in result.output
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_ai_set_ollama_connect_error_exits(runner):
+    with patch("pfm.cli.httpx.get", side_effect=__import__("httpx").ConnectError("refused")):
+        result = runner.invoke(cli, ["ai", "set", "--provider", "ollama"])
+
+    assert result.exit_code == 1
+    assert "brew install ollama" in result.output
+    assert "ollama serve" in result.output
 
 
 @pytest.mark.usefixtures("_patched_settings")
