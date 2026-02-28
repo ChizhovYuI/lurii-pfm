@@ -45,3 +45,4 @@ data/
 
 # Ruff
 .ruff_cache/
+/docs/rotki-reference/
