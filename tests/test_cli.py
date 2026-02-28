@@ -14,6 +14,7 @@ from click.testing import CliRunner
 
 from pfm.ai import CommentaryResult
 from pfm.cli import cli
+from pfm.db.ai_store import AIStore
 from pfm.db.gemini_store import GeminiStore
 from pfm.db.models import CollectorResult, Snapshot, init_db
 from pfm.db.repository import Repository
@@ -951,3 +952,109 @@ def test_telegram_show_empty(runner):
     result = runner.invoke(cli, ["telegram", "show"])
     assert result.exit_code == 0
     assert "Telegram is not configured. Run 'pfm telegram set'." in result.output
+
+
+# ── AI provider commands ─────────────────────────────────────────────
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_ai_set_show_clear(runner, db_path):
+    set_result = runner.invoke(
+        cli,
+        ["ai", "set", "--provider", "gemini", "--api-key", "gemini-secret-123"],
+    )
+    assert set_result.exit_code == 0
+    assert "AI provider set to: gemini" in set_result.output
+
+    show_result = runner.invoke(cli, ["ai", "show"])
+    assert show_result.exit_code == 0
+    assert "AI configuration:" in show_result.output
+    assert "Provider: gemini" in show_result.output
+    assert "gem...123" in show_result.output
+
+    clear_result = runner.invoke(cli, ["ai", "clear"], input="y\n")
+    assert clear_result.exit_code == 0
+    assert "AI provider configuration removed." in clear_result.output
+
+    async def _load():
+        return await AIStore(db_path).get()
+
+    assert asyncio.run(_load()) is None
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_ai_show_empty(runner):
+    result = runner.invoke(cli, ["ai", "show"])
+    assert result.exit_code == 0
+    assert "AI provider is not configured. Run 'pfm ai set'." in result.output
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_ai_clear_cancelled(runner):
+    result = runner.invoke(cli, ["ai", "clear"], input="n\n")
+    assert result.exit_code == 0
+    assert "Cancelled." in result.output
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_ai_clear_when_empty(runner):
+    result = runner.invoke(cli, ["ai", "clear"], input="y\n")
+    assert result.exit_code == 0
+    assert "No AI provider was configured." in result.output
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_ai_set_ollama_no_api_key(runner):
+    result = runner.invoke(cli, ["ai", "set", "--provider", "ollama"])
+    assert result.exit_code == 0
+    assert "AI provider set to: ollama" in result.output
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_ai_set_with_model_and_base_url(runner):
+    result = runner.invoke(
+        cli,
+        [
+            "ai",
+            "set",
+            "--provider",
+            "ollama",
+            "--model",
+            "llama3.1:70b",
+            "--base-url",
+            "http://gpu-server:11434",
+        ],
+    )
+    assert result.exit_code == 0
+    assert "AI provider set to: ollama" in result.output
+    assert "Model: llama3.1:70b" in result.output
+    assert "Base URL: http://gpu-server:11434" in result.output
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_ai_providers_lists_all(runner):
+    result = runner.invoke(cli, ["ai", "providers"])
+    assert result.exit_code == 0
+    assert "gemini" in result.output
+    assert "ollama" in result.output
+    assert "openrouter" in result.output
+    assert "grok" in result.output
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_ai_set_prompts_for_key_when_required(runner, db_path):
+    """Providers like gemini should prompt for API key if not given."""
+    result = runner.invoke(
+        cli,
+        ["ai", "set", "--provider", "gemini"],
+        input="my-api-key-for-gemini\n",
+    )
+    assert result.exit_code == 0
+    assert "AI provider set to: gemini" in result.output
+
+    async def _load():
+        return await AIStore(db_path).get()
+
+    config = asyncio.run(_load())
+    assert config is not None
+    assert config.api_key == "my-api-key-for-gemini"

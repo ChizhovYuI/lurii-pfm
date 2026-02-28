@@ -1,27 +1,21 @@
-"""Tests for Gemini analyst client."""
+"""Tests for the AI analyst orchestrator."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
-from google.genai import errors
 from pydantic import SecretStr
 
 from pfm.ai.analyst import (
-    FALLBACK_COMMENTARY,
     GEMINI_MAX_OUTPUT_TOKENS,
-    GEMINI_MODEL,
-    GEMINI_MODELS,
     _finalize_commentary_text,
-    _retry_delay_seconds,
     generate_commentary,
 )
+from pfm.ai.base import FALLBACK_COMMENTARY, CommentaryResult
 from pfm.ai.prompts import AnalyticsSummary
+from pfm.db.ai_store import AIStore
 from pfm.db.gemini_store import GeminiStore
 from pfm.db.models import init_db
 
@@ -40,164 +34,34 @@ def _sample_analytics() -> AnalyticsSummary:
     )
 
 
-@dataclass
-class _FakeAsyncModels:
-    responses: list[object] = field(default_factory=list)
-    calls: list[dict[str, object]] = field(default_factory=list)
+async def test_generate_commentary_uses_provider(tmp_path):
+    db_path = tmp_path / "test.db"
+    await init_db(db_path)
+    store = AIStore(db_path)
+    await store.set(provider="gemini", api_key="test-key")
 
-    async def generate_content(self, *, model: str, contents: str, config: dict[str, object]) -> object:
-        self.calls.append({"model": model, "contents": contents, "config": config})
-        if self.responses:
-            next_response = self.responses.pop(0)
-            if isinstance(next_response, Exception):
-                raise next_response
-            return next_response
-        return SimpleNamespace(text="")
-
-
-@dataclass
-class _FakeAioClient:
-    models: _FakeAsyncModels
-    closed: bool = False
-
-    async def aclose(self) -> None:
-        self.closed = True
-
-
-@dataclass
-class _FakeClient:
-    aio: _FakeAioClient
-    closed: bool = False
-
-    def close(self) -> None:
-        self.closed = True
-
-
-async def test_generate_commentary_success_with_mock_client():
-    fake_models = _FakeAsyncModels(responses=[SimpleNamespace(text="Portfolio looks stable.")])
-    fake_client = _FakeClient(aio=_FakeAioClient(models=fake_models))
-    settings = MagicMock()
-    settings.gemini_api_key = SecretStr("gemini-key")
-
-    with patch("pfm.ai.analyst.get_settings", return_value=settings):
-        result = await generate_commentary(_sample_analytics(), api_key="gemini-key", client=fake_client)
-
-    assert result == "Portfolio looks stable."
-    assert len(fake_models.calls) == 1
-    call = fake_models.calls[0]
-    assert call["model"] == GEMINI_MODEL
-    config = call["config"]
-    assert isinstance(config, dict)
-    assert config["max_output_tokens"] == GEMINI_MAX_OUTPUT_TOKENS
-
-
-async def test_generate_commentary_fallback_to_next_model():
-    response = httpx.Response(
-        500,
-        json={"error": {"message": "boom"}},
-        request=httpx.Request("POST", "https://example.invalid/gemini"),
+    mock_provider = MagicMock()
+    mock_provider.generate_commentary = AsyncMock(
+        return_value=CommentaryResult(text="Provider response.", model="test-model")
     )
-    error = errors.ServerError(500, {"error": {"status": "INTERNAL", "message": "boom"}}, response)
-    fake_models = _FakeAsyncModels(responses=[error, SimpleNamespace(text="Recovered on fallback model.")])
-    fake_client = _FakeClient(aio=_FakeAioClient(models=fake_models))
+    mock_provider.close = AsyncMock()
+
     settings = MagicMock()
-    settings.gemini_api_key = SecretStr("gemini-key")
-
-    with patch("pfm.ai.analyst.get_settings", return_value=settings):
-        result = await generate_commentary(_sample_analytics(), api_key="gemini-key", client=fake_client)
-
-    assert result == "Recovered on fallback model."
-    assert len(fake_models.calls) == 2
-    assert fake_models.calls[0]["model"] == GEMINI_MODELS[0]
-    assert fake_models.calls[1]["model"] == GEMINI_MODELS[1]
-
-
-async def test_generate_commentary_fallback_on_api_error():
-    response = httpx.Response(
-        500,
-        json={"error": {"message": "boom"}},
-        request=httpx.Request("POST", "https://example.invalid/gemini"),
-    )
-    error = errors.ServerError(500, {"error": {"status": "INTERNAL", "message": "boom"}}, response)
-    fake_models = _FakeAsyncModels(responses=[error])
-    fake_client = _FakeClient(aio=_FakeAioClient(models=fake_models))
-    settings = MagicMock()
-    settings.gemini_api_key = SecretStr("gemini-key")
-
-    with patch("pfm.ai.analyst.get_settings", return_value=settings):
-        result = await generate_commentary(_sample_analytics(), api_key="gemini-key", client=fake_client)
-
-    assert result == FALLBACK_COMMENTARY
-
-
-async def test_generate_commentary_retries_on_429_then_succeeds():
-    limited_response = httpx.Response(
-        429,
-        headers={"Retry-After": "0.01"},
-        request=httpx.Request("POST", "https://example.invalid/gemini"),
-    )
-    limited_error = errors.ClientError(429, {"error": {"status": "RESOURCE_EXHAUSTED"}}, limited_response)
-    success = SimpleNamespace(text="Recovered after retry.")
-    fake_models = _FakeAsyncModels(responses=[limited_error, success])
-    fake_client = _FakeClient(aio=_FakeAioClient(models=fake_models))
-    settings = MagicMock()
-    settings.gemini_api_key = SecretStr("gemini-key")
-    sleep_mock = AsyncMock()
+    settings.database_path = db_path
+    settings.gemini_api_key = SecretStr("")
 
     with (
         patch("pfm.ai.analyst.get_settings", return_value=settings),
-        patch("pfm.ai.analyst.asyncio.sleep", sleep_mock),
+        patch("pfm.ai.analyst._build_provider", return_value=mock_provider),
     ):
-        result = await generate_commentary(_sample_analytics(), api_key="gemini-key", client=fake_client)
+        result = await generate_commentary(_sample_analytics(), db_path=db_path)
 
-    assert result == "Recovered after retry."
-    assert len(fake_models.calls) == 2
-    assert sleep_mock.await_count == 0
-
-
-async def test_generate_commentary_fallback_after_429_retries_exhausted():
-    limited_response = httpx.Response(
-        429,
-        request=httpx.Request("POST", "https://example.invalid/gemini"),
-    )
-    limited_error = errors.ClientError(429, {"error": {"status": "RESOURCE_EXHAUSTED"}}, limited_response)
-    fake_models = _FakeAsyncModels(responses=[limited_error] * len(GEMINI_MODELS))
-    fake_client = _FakeClient(aio=_FakeAioClient(models=fake_models))
-    settings = MagicMock()
-    settings.gemini_api_key = SecretStr("gemini-key")
-    sleep_mock = AsyncMock()
-
-    with (
-        patch("pfm.ai.analyst.get_settings", return_value=settings),
-        patch("pfm.ai.analyst.asyncio.sleep", sleep_mock),
-    ):
-        result = await generate_commentary(_sample_analytics(), api_key="gemini-key", client=fake_client)
-
-    assert result == FALLBACK_COMMENTARY
-    assert len(fake_models.calls) == len(GEMINI_MODELS)
-    assert sleep_mock.await_count == 0
+    assert result == "Provider response."
+    mock_provider.generate_commentary.assert_awaited_once()
+    mock_provider.close.assert_awaited_once()
 
 
-async def test_generate_commentary_fallback_on_unexpected_exception():
-    class _BrokenModels:
-        async def generate_content(self, *, model: str, contents: str, config: dict[str, object]) -> object:
-            raise RuntimeError("unexpected")
-
-    broken_client = _FakeClient(aio=_FakeAioClient(models=_BrokenModels()))  # type: ignore[arg-type]
-    settings = MagicMock()
-    settings.gemini_api_key = SecretStr("gemini-key")
-
-    with patch("pfm.ai.analyst.get_settings", return_value=settings):
-        result = await generate_commentary(
-            _sample_analytics(),
-            api_key="gemini-key",
-            client=broken_client,  # type: ignore[arg-type]
-        )
-
-    assert result == FALLBACK_COMMENTARY
-
-
-async def test_generate_commentary_fallback_when_key_missing(tmp_path):
+async def test_generate_commentary_fallback_when_no_config(tmp_path):
     db_path = tmp_path / "empty.db"
     await init_db(db_path)
     settings = MagicMock()
@@ -210,27 +74,74 @@ async def test_generate_commentary_fallback_when_key_missing(tmp_path):
     assert result == FALLBACK_COMMENTARY
 
 
-async def test_generate_commentary_uses_db_key_when_env_missing(tmp_path):
-    db_path = tmp_path / "ai.db"
+async def test_generate_commentary_env_fallback(tmp_path):
+    db_path = tmp_path / "env.db"
+    await init_db(db_path)
+
+    mock_provider = MagicMock()
+    mock_provider.generate_commentary = AsyncMock(
+        return_value=CommentaryResult(text="Env key response.", model="gemini-2.5-pro")
+    )
+    mock_provider.close = AsyncMock()
+
+    settings = MagicMock()
+    settings.database_path = db_path
+    settings.gemini_api_key = SecretStr("env-gemini-key")
+
+    with (
+        patch("pfm.ai.analyst.get_settings", return_value=settings),
+        patch("pfm.ai.analyst._build_provider", return_value=mock_provider),
+    ):
+        result = await generate_commentary(_sample_analytics(), db_path=db_path)
+
+    assert result == "Env key response."
+
+
+async def test_generate_commentary_uses_db_key_via_migration(tmp_path):
+    db_path = tmp_path / "migrate.db"
     await init_db(db_path)
     await GeminiStore(db_path).set("gemini-db-key")
 
-    fake_models = _FakeAsyncModels(responses=[SimpleNamespace(text="From DB key.")])
-    fake_client = _FakeClient(aio=_FakeAioClient(models=fake_models))
+    mock_provider = MagicMock()
+    mock_provider.generate_commentary = AsyncMock(
+        return_value=CommentaryResult(text="From DB key.", model="gemini-2.5-pro")
+    )
+    mock_provider.close = AsyncMock()
 
     settings = MagicMock()
     settings.database_path = db_path
     settings.gemini_api_key = SecretStr("")
 
-    with patch("pfm.ai.analyst.get_settings", return_value=settings):
-        result = await generate_commentary(_sample_analytics(), client=fake_client)
+    with (
+        patch("pfm.ai.analyst.get_settings", return_value=settings),
+        patch("pfm.ai.analyst._build_provider", return_value=mock_provider),
+    ):
+        result = await generate_commentary(_sample_analytics(), db_path=db_path)
 
     assert result == "From DB key."
 
 
-def test_retry_delay_applies_model_minimum_even_with_small_retry_after():
-    assert _retry_delay_seconds("0.01", 1, "gemini-2.5-pro") == 30.0
-    assert _retry_delay_seconds("0.01", 1, "gemini-2.5-flash") == 7.0
+async def test_generate_commentary_fallback_on_empty_provider_text(tmp_path):
+    db_path = tmp_path / "empty_text.db"
+    await init_db(db_path)
+    store = AIStore(db_path)
+    await store.set(provider="gemini", api_key="key")
+
+    mock_provider = MagicMock()
+    mock_provider.generate_commentary = AsyncMock(return_value=CommentaryResult(text="", model=None))
+    mock_provider.close = AsyncMock()
+
+    settings = MagicMock()
+    settings.database_path = db_path
+    settings.gemini_api_key = SecretStr("")
+
+    with (
+        patch("pfm.ai.analyst.get_settings", return_value=settings),
+        patch("pfm.ai.analyst._build_provider", return_value=mock_provider),
+    ):
+        result = await generate_commentary(_sample_analytics(), db_path=db_path)
+
+    assert result == FALLBACK_COMMENTARY
 
 
 def test_finalize_commentary_text_preserves_incomplete_tail_line():
@@ -247,3 +158,7 @@ def test_finalize_commentary_text_preserves_section_header_tail():
     text = "Health looks stable.\n### 5) Actionable recommendations for next 7 days"
     finalized = _finalize_commentary_text(text)
     assert finalized.endswith("### 5) Actionable recommendations for next 7 days")
+
+
+def test_gemini_max_output_tokens_constant():
+    assert GEMINI_MAX_OUTPUT_TOKENS == 4096
