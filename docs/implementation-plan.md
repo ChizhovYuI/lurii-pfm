@@ -643,11 +643,22 @@ Phase 0 ── Phase 0.5 (Source Management)
 | 1 — Lobstr + Wise | 4 | 2S + 2M | ✅ |
 | 2 — Crypto Exchanges | 6 | 2S + 4M | ✅ |
 | 3 — Remaining Sources | 5 | 1S + 2M + 2L | ✅ |
-| 4 — Analytics | 5 | 1S + 3M + 1L | Pending |
-| 5 — AI Commentary | 3 | 2S + 1M | Pending |
-| 6 — Telegram Reporting | 4 | 2S + 2M | Pending |
-| 7 — Hardening | 5 | 2S + 3M | Pending |
-| **Total** | **48** | | **~41/48 done** |
+| 4 — Analytics | 5 | 1S + 3M + 1L | ✅ |
+| 5 — AI Commentary | 3 | 2S + 1M | ✅ |
+| 6 — Telegram Reporting | 4 | 2S + 2M | ✅ |
+| 7 — Hardening | 5 | 2S + 3M | ✅ |
+| **Total** | **48** | | **48/48 done** |
+
+### v2 Evolution Phases
+
+| Phase | Scope | Status |
+|-------|-------|--------|
+| v2.1 — LLM Provider Abstraction | Multi-provider AI (Gemini/Ollama/OpenRouter/Grok) | ✅ |
+| v2.2 — HTTP Backend | aiohttp server, REST API, WebSocket, daemon, CLI thin-client | ✅ |
+| v2.3 — SwiftUI App | macOS native frontend | Planned |
+| v2.4 — Encrypted SQLite | SQLCipher + Keychain | Planned |
+| v2.5 — Semantic Search + Chat | Embeddings + RAG | Planned |
+| v2.6 — DefiLlama Yield | DeFi yield optimization | Planned |
 
 ## File Manifest
 
@@ -687,8 +698,35 @@ src/pfm/
     yield_tracker.py               # 4.3
   ai/
     __init__.py                    # 5.1
+    base.py                        # v2.1 (LLM provider protocol)
     prompts.py                     # 5.1
     analyst.py                     # 5.2
+    providers/
+      __init__.py                  # v2.1 (PROVIDER_REGISTRY)
+      gemini.py                    # v2.1
+      ollama.py                    # v2.1
+      openrouter.py                # v2.1
+      grok.py                      # v2.1
+  server/
+    __init__.py                    # v2.2
+    app.py                         # v2.2 (aiohttp application factory)
+    middleware.py                   # v2.2 (local-only + error handling)
+    serializers.py                 # v2.2 (dataclass → dict converters)
+    ws.py                          # v2.2 (WebSocket EventBroadcaster)
+    daemon.py                      # v2.2 (launchd, PID lifecycle)
+    run.py                         # v2.2 (server entry point)
+    client.py                      # v2.2 (CLI thin-client)
+    migrate_db.py                  # v2.2 (DB path migration)
+    routes/
+      __init__.py                  # v2.2 (route registration hub)
+      health.py                    # v2.2
+      sources.py                   # v2.2
+      portfolio.py                 # v2.2
+      analytics.py                 # v2.2
+      ai.py                        # v2.2
+      collect.py                   # v2.2
+      report.py                    # v2.2
+      settings.py                  # v2.2
   reporting/
     __init__.py                    # 6.1
     telegram.py                    # 6.1
@@ -721,6 +759,16 @@ tests/
   test_formatter.py                # 6.4
   test_report_integration.py       # 6.4
   test_collect_integration.py      # 1.4
+  test_server_app.py               # v2.2 (health, middleware, lifecycle)
+  test_serializers.py              # v2.2 (all serializer functions)
+  test_routes_sources.py           # v2.2 (sources CRUD endpoints)
+  test_routes_portfolio.py         # v2.2 (portfolio endpoints)
+  test_routes_analytics.py         # v2.2 (analytics endpoints)
+  test_routes_collect.py           # v2.2 (collection trigger)
+  test_ws.py                       # v2.2 (EventBroadcaster + WebSocket)
+  test_daemon.py                   # v2.2 (PID file, plist, daemon running)
+  test_client.py                   # v2.2 (is_daemon_reachable, get_base_url)
+  test_migrate_db.py               # v2.2 (DB migration scenarios)
   fixtures/                        # 2.6
     okx_balance.json
     binance_account.json

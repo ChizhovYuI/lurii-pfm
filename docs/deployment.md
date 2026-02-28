@@ -1,6 +1,9 @@
 # Deployment and Scheduling
 
-This project is designed to be run on a schedule from the host OS (cron or systemd timer).
+Lurii Finance can run in two modes:
+
+1. **Daemon mode (recommended)** — persistent aiohttp server managed by launchd, ideal for the SwiftUI app and interactive use
+2. **Batch mode** — scheduled CLI pipeline via cron or systemd timer
 
 ## Prerequisites
 
@@ -8,6 +11,51 @@ This project is designed to be run on a schedule from the host OS (cron or syste
 - Project configured with a valid `.env`
 - Telegram and source credentials configured (if you expect reporting output)
 - Optional but recommended for AI text in reports: run `pfm comment` after `pfm analyze` to cache commentary for the same analysis date
+
+## Daemon Mode (macOS)
+
+The preferred deployment for interactive use. The daemon runs on `127.0.0.1:19274` and provides REST API + WebSocket for the SwiftUI app and CLI thin-client.
+
+### Start
+
+```bash
+pfm daemon start          # Installs launchd plist + loads daemon
+```
+
+This creates `~/Library/LaunchAgents/finance.lurii.pfm.plist` and starts the daemon via `launchctl`. The daemon auto-restarts on crash (`KeepAlive`) and starts at login (`RunAtLoad`).
+
+### Stop
+
+```bash
+pfm daemon stop           # Unloads daemon + removes plist
+```
+
+### Status and Logs
+
+```bash
+pfm daemon status         # Check if running + show PID
+pfm daemon logs           # Tail daemon log
+pfm daemon logs -f        # Follow log output
+```
+
+### Data Directory
+
+```
+~/Library/Application Support/Lurii Finance/
+├── lurii.db              # SQLite database
+├── daemon.pid            # PID file
+└── daemon.log            # Log file
+```
+
+On first daemon start, if `data/pfm.db` exists (legacy path), it is automatically copied to the App Support location.
+
+### CLI Thin-Client
+
+When the daemon is running, CLI commands like `pfm collect` and `pfm source list` automatically proxy to the daemon via HTTP instead of running inline. If the daemon is not running, they fall back to inline execution (original behavior).
+
+---
+
+## Batch Mode
 
 ## Weekly Runner Script
 

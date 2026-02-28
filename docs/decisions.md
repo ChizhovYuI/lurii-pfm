@@ -151,3 +151,58 @@ If all fail, use fallback commentary text.
 - Faster response under quota pressure
 - Higher chance of receiving an AI response in a single run
 - Commentary style may vary by fallback model, but output remains available
+
+---
+
+## ADR-007: HTTP backend with aiohttp and launchd daemon
+
+**Date:** 2026-02-28
+
+**Status:** Accepted
+
+**Context:** The SwiftUI macOS app (Phase 3) needs a local API to consume all Lurii Finance functionality. The Python process must be persistent (not spawned per-request), support real-time progress events during collection, and be manageable without manual process supervision.
+
+**Decision:** Add an aiohttp HTTP server exposing REST + WebSocket endpoints on `127.0.0.1:19274`, managed as a macOS launchd daemon.
+
+**Design choices:**
+- **aiohttp over FastAPI/Flask** — already async, native WebSocket support, lightweight, no ASGI server needed
+- **Local-only binding** (`127.0.0.1`) — middleware rejects non-loopback requests; no auth needed for single-user local daemon
+- **launchd over systemd/supervisord** — macOS-native, `KeepAlive` + `RunAtLoad` for reliability, standard `~/Library/LaunchAgents/` path
+- **Application factory pattern** — `create_app(db_path)` with startup/cleanup hooks for shared resources (Repository, PricingService, EventBroadcaster)
+- **Background collection task** — `POST /api/v1/collect` returns 202 immediately, spawns `asyncio.ensure_future` task, rejects concurrent requests with 409
+- **WebSocket EventBroadcaster** — broadcasts collection progress events to all connected clients
+- **Serializers extracted from CLI** — shared `serializers.py` module avoids duplicating JSON conversion logic between CLI and API
+- **CLI thin-client pattern** — existing commands check `is_daemon_reachable()` first, proxy via HTTP if daemon is up, fall back to inline execution if not
+- **DB path migration** — auto-copy from `data/pfm.db` to `~/Library/Application Support/Lurii Finance/lurii.db` at daemon startup
+
+**Consequences:**
+- 18 new source files in `src/pfm/server/`, 10 new test files (83 tests)
+- CLI commands work identically whether daemon is running or not
+- SwiftUI app can consume all endpoints without touching Python internals
+- Port 19274 is configurable but fixed by default (unlikely to conflict)
+- No breaking changes to existing CLI behavior
+
+---
+
+## ADR-008: Multi-provider LLM abstraction
+
+**Date:** 2026-02-28
+
+**Status:** Accepted
+
+**Context:** AI commentary was hard-coupled to Gemini API via `google-genai` SDK. Users wanting local/private LLM inference (Ollama) or access to other models (Claude, GPT via OpenRouter) had no option.
+
+**Decision:** Replace the Gemini-only `ai/analyst.py` with a pluggable `LLMProvider` protocol. Four providers implemented: Gemini, Ollama, OpenRouter, Grok. User selects one active provider via `pfm ai set`.
+
+**Design choices:**
+- **Protocol-based abstraction** — `LLMProvider` protocol with `generate_commentary()` and `close()` methods
+- **Provider registry** — `PROVIDER_REGISTRY` dict mapping names to classes
+- **Per-provider config in SQLite** — `ai_settings` table (provider, api_key, model, base_url), not `.env`
+- **Ollama native API** — direct `/api/chat` HTTP calls instead of OpenAI-compatible endpoint, for full model management (list, pull)
+- **OpenAI-compatible clients** — OpenRouter and Grok share a common base using `openai` SDK pattern
+
+**Consequences:**
+- Gemini remains the default provider with existing model failover chain
+- Ollama enables fully local/private AI commentary (no API key needed)
+- OpenRouter provides access to Claude, GPT, Mistral, etc. via single API key
+- Legacy `pfm gemini set/show/clear` commands still work as aliases

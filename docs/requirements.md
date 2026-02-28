@@ -8,9 +8,10 @@ Personal Financial Management system that aggregates assets and statements from 
 
 - Base currency: **USD**
 - Reporting: **Weekly push via Telegram bot**
-- Storage: **Local SQLite**
+- Storage: **Local SQLite** (`~/Library/Application Support/Lurii Finance/lurii.db`)
 - Secrets: **`.env` for global settings**, **SQLite for source credentials**
-- AI provider: **Gemini API** (Google)
+- AI providers: **Gemini**, **Ollama**, **OpenRouter**, **Grok** (pluggable, one active at a time)
+- Backend: **aiohttp persistent daemon** (local HTTP API + WebSocket, managed by launchd)
 
 ---
 
@@ -92,7 +93,7 @@ Personal Financial Management system that aggregates assets and statements from 
 
 ### F4 — AI Analysis
 
-- F4.1: Feed portfolio snapshot + recent changes to Gemini API
+- F4.1: Feed portfolio snapshot + recent changes to active AI provider
 - F4.2: Generate weekly investment commentary:
   - Market context for held assets
   - Portfolio health assessment
@@ -102,12 +103,9 @@ Personal Financial Management system that aggregates assets and statements from 
 - F4.3: Keep prompts version-controlled and tunable
 - F4.4: Persist generated AI commentary in `analytics_cache` (`metric_name = "ai_commentary"`) with:
   - `text`
-  - `model` (Gemini model that produced the response, when available)
-- F4.5: Gemini model fallback order for commentary generation:
-  - `gemini-2.5-pro`
-  - `gemini-2.5-flash`
-  - `gemini-2.5-flash-lite`
-  - On `HTTP 429`, skip to next model immediately (no same-model retry)
+  - `model` (model that produced the response, when available)
+- F4.5: Pluggable AI providers (Gemini, Ollama, OpenRouter, Grok) with per-provider model failover
+- F4.6: Gemini model fallback order: `gemini-2.5-pro` → `flash` → `flash-lite` (skip on 429)
 
 ### F5 — Telegram Reporting
 
@@ -154,9 +152,10 @@ Personal Financial Management system that aggregates assets and statements from 
 
 ### NF4 — Performance
 
-- Weekly batch job — no real-time requirements
+- Weekly batch job via CLI, or on-demand via HTTP API / SwiftUI app
 - Target: full portfolio fetch < 5 minutes
 - SQLite is sufficient for single-user
+- Persistent daemon avoids cold-start overhead for interactive use
 
 ---
 
@@ -168,6 +167,7 @@ Personal Financial Management system that aggregates assets and statements from 
 | Package manager | [uv](https://docs.astral.sh/uv/) |
 | Database | SQLite (via [aiosqlite](https://pypi.org/project/aiosqlite/)) |
 | Migrations | alembic |
+| HTTP server | [aiohttp](https://docs.aiohttp.org/) (REST + WebSocket) |
 | HTTP client | [httpx](https://www.python-httpx.org/) (async) |
 | Crypto exchanges | Raw httpx + HMAC signing (OKX, Binance, Bybit) |
 | Stellar | [stellar-sdk](https://stellar-sdk.readthedocs.io/) (Horizon + Soroban) |
@@ -176,12 +176,13 @@ Personal Financial Management system that aggregates assets and statements from 
 | PDF parsing | [pdfplumber](https://github.com/jsvine/pdfplumber) |
 | KBank email | Python stdlib (`imaplib` + `email`) |
 | Pricing | [CoinGecko API](https://docs.coingecko.com/reference/introduction) + SQLite-backed persistent cache (`prices` table) |
-| AI | [Gemini API](https://ai.google.dev/) |
+| AI | Multi-provider: Gemini, Ollama, OpenRouter, Grok (pluggable) |
 | Telegram | Raw httpx (push-only bot) |
-| Scheduler | cron / systemd timer (external) |
+| Daemon | launchd (macOS), PID file lifecycle |
+| Scheduler | cron / systemd timer (external) or daemon-based |
 | Linting | [ruff](https://docs.astral.sh/ruff/) |
 | Type checking | [mypy](https://mypy.readthedocs.io/) (strict) |
-| Testing | pytest + pytest-cov + pytest-asyncio |
+| Testing | pytest + pytest-cov + pytest-asyncio + pytest-aiohttp |
 | Pre-commit | [pre-commit](https://pre-commit.com/) |
 
 ---
@@ -189,49 +190,36 @@ Personal Financial Management system that aggregates assets and statements from 
 ## Architecture (High Level)
 
 ```
-┌─────────────┐
-│   Scheduler  │  (cron: weekly)
-│   (trigger)  │
-└──────┬───────┘
-       │
-       ▼
-┌─────────────────────────────────────────┐
-│            Collector Layer              │
-│                                         │
-│  ┌─────┐ ┌───────┐ ┌─────┐ ┌───────┐  │
-│  │ OKX │ │Binance│ │Bybit│ │Lobstr │  │
-│  └──┬──┘ └───┬───┘ └──┬──┘ └───┬───┘  │
-│  ┌──┴──┐ ┌───┴───┐ ┌──┴──┐ ┌───┴───┐  │
-│  │Blend│ │ Wise  │ │IBKR │ │ KBank │  │
-│  └──┬──┘ └───┬───┘ └──┬──┘ └───┬───┘  │
-│     └────┬───┴────┬───┘────────┘       │
-│          ▼        ▼                    │
-│   ┌────────────────────┐               │
-│   │  Normalizer Layer  │               │
-│   │  (USD conversion)  │               │
-│   └─────────┬──────────┘               │
-└─────────────┼───────────────────────────┘
-              ▼
+┌──────────────────┐     ┌──────────────────┐
+│  SwiftUI App     │     │  pfm CLI         │
+│  (Phase 3)       │     │  (thin client)   │
+└────────┬─────────┘     └────────┬─────────┘
+         │ REST/WS                │ HTTP or inline
+         └────────┬───────────────┘
+                  ▼
+┌─────────────────────────────────────────────┐
+│          aiohttp Server (daemon)            │
+│  127.0.0.1:19274 — managed by launchd      │
+│                                             │
+│  REST: /api/v1/sources, /portfolio,         │
+│        /analytics, /ai, /collect, ...       │
+│  WS:   /api/v1/ws (real-time events)        │
+└──────────────────┬──────────────────────────┘
+                   │
+    ┌──────────────┼──────────────┐
+    ▼              ▼              ▼
+┌────────┐  ┌───────────┐  ┌──────────┐
+│Collect │  │ Analytics │  │ AI       │
+│Layer   │  │ Engine    │  │ (multi-  │
+│(9 src) │  │           │  │ provider)│
+└───┬────┘  └─────┬─────┘  └────┬─────┘
+    │             │              │
+    └──────┬──────┘──────────────┘
+           ▼
 ┌─────────────────────────┐
 │     SQLite Database     │
-│  (snapshots, tx log,    │
-│   prices, raw data)     │
-└────────────┬────────────┘
-             ▼
-┌─────────────────────────┐
-│    Analytics Engine     │
-│  (PnL, allocation,     │
-│   yield, cost basis)    │
-└────────────┬────────────┘
-             ▼
-┌─────────────────────────┐
-│   Gemini API (AI)       │
-│  (commentary, recs)     │
-└────────────┬────────────┘
-             ▼
-┌─────────────────────────┐
-│   Telegram Bot (push)   │
-│  (weekly report)        │
+│  ~/Library/App Support/ │
+│  Lurii Finance/lurii.db │
 └─────────────────────────┘
 ```
 
@@ -244,12 +232,13 @@ src/pfm/
 ├── __init__.py
 ├── config.py              # Global settings (.env loading)
 ├── source_types.py        # Credential schemas per source type
-├── cli.py                 # Entry point (source, collect, analyze, report)
+├── cli.py                 # Entry point (source, collect, analyze, report, daemon)
 ├── logging.py             # Structured logging with secret redaction
 ├── db/
 │   ├── __init__.py
 │   ├── models.py          # SQLite schema / dataclass models
 │   ├── source_store.py    # Source CRUD (sources table)
+│   ├── ai_store.py        # AI provider config CRUD
 │   ├── repository.py      # Data access layer
 │   └── migrations/        # Alembic migrations
 ├── collectors/
@@ -276,8 +265,35 @@ src/pfm/
 │   └── yield_tracker.py   # Blend yield tracking
 ├── ai/
 │   ├── __init__.py
-│   ├── analyst.py         # Gemini API integration
-│   └── prompts.py         # Version-controlled prompt templates
+│   ├── base.py            # Abstract LLMProvider protocol
+│   ├── analyst.py         # Orchestrator: resolve provider → generate
+│   ├── prompts.py         # Version-controlled prompt templates
+│   └── providers/
+│       ├── __init__.py    # PROVIDER_REGISTRY
+│       ├── gemini.py      # Gemini API (model failover chain)
+│       ├── ollama.py      # Local Ollama REST client
+│       ├── openrouter.py  # OpenAI-compatible client
+│       └── grok.py        # OpenAI-compatible client (xAI)
+├── server/
+│   ├── __init__.py        # Exports create_app
+│   ├── app.py             # aiohttp Application factory
+│   ├── middleware.py       # Local-only guard + error handling
+│   ├── serializers.py     # Dataclass → dict converters (shared by CLI + API)
+│   ├── ws.py              # WebSocket EventBroadcaster
+│   ├── daemon.py          # launchd plist, PID file, lifecycle
+│   ├── run.py             # Server entry point (blocking)
+│   ├── client.py          # CLI thin-client (httpx → daemon)
+│   ├── migrate_db.py      # One-time DB path migration
+│   └── routes/
+│       ├── __init__.py    # Route registration hub
+│       ├── health.py      # GET /api/v1/health
+│       ├── sources.py     # Sources CRUD
+│       ├── portfolio.py   # Portfolio summary/snapshots/holdings
+│       ├── analytics.py   # PnL/allocation/exposure/yield
+│       ├── ai.py          # AI commentary + provider config
+│       ├── collect.py     # Collection trigger (background task)
+│       ├── report.py      # Report trigger (Telegram notify)
+│       └── settings.py    # App settings CRUD
 ├── reporting/
 │   ├── __init__.py
 │   └── telegram.py        # Telegram bot (push only)
@@ -306,7 +322,13 @@ pfm comment                 # Generate + cache AI commentary for latest analysis
 pfm report                  # Generate and send Telegram report
 pfm run                     # Full pipeline: collect → analyze → report
 
-# ── Gemini config ────────────────────────────────────────────────
+# ── AI config ────────────────────────────────────────────────────
+pfm ai set                  # Interactive: pick provider → configure
+pfm ai show                 # Show current provider config (key masked)
+pfm ai clear                # Remove AI provider config
+pfm ai providers            # List available providers
+
+# ── Gemini config (legacy aliases) ───────────────────────────────
 pfm gemini set              # Save Gemini API key
 pfm gemini show             # Show Gemini config (key masked)
 pfm gemini clear            # Remove Gemini API key
@@ -315,6 +337,13 @@ pfm gemini clear            # Remove Gemini API key
 pfm telegram set            # Save bot token + chat id
 pfm telegram show           # Show Telegram config (masked)
 pfm telegram clear          # Remove Telegram config
+
+# ── Daemon management ────────────────────────────────────────────
+pfm daemon start            # Install launchd plist + load daemon
+pfm daemon stop             # Unload daemon
+pfm daemon status           # Check if daemon is running + PID
+pfm daemon logs [-f]        # Tail daemon log file
+pfm server --port N         # (hidden) Direct server run, used by launchd
 ```
 
 ---
@@ -322,8 +351,10 @@ pfm telegram clear          # Remove Telegram config
 ## Decided
 
 - **Price feed**: [CoinGecko](https://www.coingecko.com/en/api) free tier (crypto prices + fiat rates, 30 req/min)
-- **AI commentary**: [Gemini API](https://ai.google.dev/gemini-api/docs/api-key) via `google-genai` SDK with model failover (`pro -> flash -> flash-lite`)
+- **AI commentary**: Pluggable multi-provider system (Gemini/Ollama/OpenRouter/Grok). Gemini default with model failover (`pro -> flash -> flash-lite`)
 - **Telegram bot**: create via [@BotFather](https://t.me/BotFather), get chat ID via [@userinfobot](https://t.me/userinfobot)
+- **HTTP backend**: aiohttp persistent daemon on `127.0.0.1:19274`, managed by launchd
+- **DB location**: `~/Library/Application Support/Lurii Finance/lurii.db` (auto-migrated from `data/pfm.db`)
 
 ## Gemini API Key Setup (Google AI Studio)
 

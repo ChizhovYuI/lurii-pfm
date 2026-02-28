@@ -11,18 +11,18 @@ Transform Lurii Finance from a Python CLI batch tool into a native macOS applica
 
 ## Phases
 
-| Phase | Scope | Dependencies |
-|-------|-------|-------------|
-| 1 | LLM provider abstraction | None |
-| 2 | HTTP backend (aiohttp) | Phase 1 |
-| 3 | SwiftUI app (macOS native) | Phase 2 |
-| 4 | Encrypted SQLite (SQLCipher) | Phase 2 |
-| 5 | Semantic search + chat | Phase 1, Phase 2 |
-| 6 | DefiLlama yield optimization | Phase 2, Phase 3 |
+| Phase | Scope | Dependencies | Status |
+|-------|-------|-------------|--------|
+| 1 | LLM provider abstraction | None | **Done** |
+| 2 | HTTP backend (aiohttp) | Phase 1 | **Done** |
+| 3 | SwiftUI app (macOS native) | Phase 2 | Planned |
+| 4 | Encrypted SQLite (SQLCipher) | Phase 2 | Planned |
+| 5 | Semantic search + chat | Phase 1, Phase 2 | Planned |
+| 6 | DefiLlama yield optimization | Phase 2, Phase 3 | Planned |
 
 ---
 
-## Phase 1 — LLM Provider Abstraction
+## Phase 1 — LLM Provider Abstraction ✅
 
 ### Goal
 
@@ -110,32 +110,35 @@ pfm ai providers          # List available providers
 
 ---
 
-## Phase 2 — HTTP Backend (aiohttp)
+## Phase 2 — HTTP Backend (aiohttp) ✅
 
 ### Goal
 
 Expose all Lurii Finance functionality via a local HTTP API. The Python process runs as a persistent daemon managed by launchd.
 
-### Server Architecture
+### Server Architecture (implemented)
 
 ```
-src/pfm/
-├── server/
-│   ├── __init__.py
-│   ├── app.py           # aiohttp Application factory
-│   ├── routes/
-│   │   ├── __init__.py
-│   │   ├── sources.py   # /api/sources CRUD
-│   │   ├── collect.py   # /api/collect (trigger + progress via WS)
-│   │   ├── portfolio.py # /api/portfolio (snapshots, net worth, allocation)
-│   │   ├── analytics.py # /api/analytics (PnL, yield, exposure)
-│   │   ├── ai.py        # /api/ai (commentary, provider config)
-│   │   ├── report.py    # /api/report (trigger notification)
-│   │   ├── settings.py  # /api/settings (app config)
-│   │   └── unlock.py    # /api/unlock (Phase 4: DB decryption key)
-│   ├── ws.py            # WebSocket handler for real-time events
-│   ├── middleware.py     # Local-only guard, error handling
-│   └── daemon.py        # launchd integration, PID file, lifecycle
+src/pfm/server/
+├── __init__.py        # Exports create_app
+├── app.py             # aiohttp Application factory (startup/cleanup lifecycle)
+├── middleware.py       # local_only_middleware + error_handling_middleware
+├── serializers.py     # Dataclass → dict converters (shared by CLI + API)
+├── ws.py              # WebSocket EventBroadcaster (register/unregister/broadcast)
+├── daemon.py          # launchd plist generation, PID file, install/load/unload
+├── run.py             # Blocking server entry point (used by launchd)
+├── client.py          # CLI thin-client (httpx → daemon health check + proxy)
+├── migrate_db.py      # One-time DB migration (data/pfm.db → App Support)
+└── routes/
+    ├── __init__.py    # setup_routes() hub
+    ├── health.py      # GET /api/v1/health
+    ├── sources.py     # Sources CRUD (list/add/get/delete/update)
+    ├── portfolio.py   # Summary, snapshots, holdings
+    ├── analytics.py   # PnL, allocation, exposure, yield
+    ├── ai.py          # Commentary read/generate, config get/update
+    ├── collect.py     # Background collection task + concurrency guard
+    ├── report.py      # Telegram report trigger
+    └── settings.py    # App settings CRUD
 ```
 
 ### API Design
@@ -167,18 +170,17 @@ All endpoints prefixed with `/api/v1/`. JSON request/response.
 | GET | `/settings` | App settings |
 | PUT | `/settings` | Update settings |
 
-#### WebSocket
+#### WebSocket (implemented)
 
 `ws://localhost:{port}/api/v1/ws`
 
-Event types:
+Event types broadcast during collection:
 ```json
-{"event": "collection_started", "source": "okx-main"}
-{"event": "collection_progress", "source": "okx-main", "pct": 50}
-{"event": "collection_completed", "source": "okx-main", "assets": 12}
-{"event": "collection_failed", "source": "okx-main", "error": "..."}
-{"event": "snapshot_updated", "date": "2026-02-28"}
-{"event": "commentary_ready", "date": "2026-02-28", "model": "llama3.1:8b"}
+{"type": "collection_started"}
+{"type": "collection_progress", "source": "okx-main", "current": 1, "total": 5}
+{"type": "collection_completed", "results": [...]}
+{"type": "collection_failed", "error": "..."}
+{"type": "snapshot_updated"}
 ```
 
 ### Security
@@ -187,24 +189,29 @@ Event types:
 - **No auth** initially (local daemon, single-user) — reconsider if remote access is ever needed
 - Middleware rejects non-loopback requests
 
-### Daemon Management
+### Daemon Management (implemented)
 
 ```
-~/Library/LaunchAgents/com.lurii-finance.daemon.plist
+~/Library/LaunchAgents/finance.lurii.pfm.plist
 ```
 
 ```bash
-pfm daemon start          # Load launchd plist
-pfm daemon stop           # Unload
-pfm daemon status         # Check if running
-pfm daemon logs           # Tail daemon logs
+pfm daemon start          # Install plist + launchctl load
+pfm daemon stop           # launchctl unload + remove plist
+pfm daemon status         # Check PID file + process liveness
+pfm daemon logs [-f]      # Tail daemon log file
+pfm server --port N       # (hidden) Direct server run, used by launchd
 ```
 
-Port: configurable, default `19274` (arbitrary, unlikely to conflict).
+Port: configurable, default `19274`. Bundle ID: `finance.lurii.pfm`.
 
-### CLI Preservation
+Data directory: `~/Library/Application Support/Lurii Finance/` (daemon.pid, daemon.log, lurii.db).
 
-All existing CLI commands (`pfm collect`, `pfm report`, etc.) continue to work. They become thin HTTP clients calling the daemon API when the daemon is running, or run inline (current behavior) when the daemon is not running.
+### CLI Preservation (implemented)
+
+All existing CLI commands (`pfm collect`, `pfm source list`, etc.) continue to work. They check `is_daemon_reachable()` first:
+- If daemon is running → proxy via HTTP client
+- If daemon is down → run inline (current behavior, zero change)
 
 ---
 
@@ -708,12 +715,13 @@ Track APY trends for pools the user cares about:
 
 ### Dependencies (New)
 
-| Package | Phase | Purpose |
-|---------|-------|---------|
-| `aiohttp` | 2 | HTTP server + WebSocket |
-| `pysqlcipher3` | 4 | Encrypted SQLite |
-| `sqlite-vec` | 5 | Vector storage |
-| `httpx` | 1 | Already present; used for Ollama/OpenRouter/Grok/DefiLlama REST calls |
+| Package | Phase | Purpose | Status |
+|---------|-------|---------|--------|
+| `aiohttp>=3.11` | 2 | HTTP server + WebSocket | Installed |
+| `pytest-aiohttp>=1.0` | 2 | Test client for aiohttp | Installed (dev) |
+| `pysqlcipher3` | 4 | Encrypted SQLite | Planned |
+| `sqlite-vec` | 5 | Vector storage | Planned |
+| `httpx` | 1 | Already present; used for Ollama/OpenRouter/Grok/DefiLlama REST calls | Installed |
 
 ### macOS Requirements
 
@@ -724,27 +732,28 @@ Track APY trends for pools the user cares about:
 | `brew install sqlcipher` | 4 |
 | Ollama installed | 1 (optional), 5 (for local embeddings) |
 
-### Data Directory
+### Data Directory (implemented in Phase 2)
 
 ```
 ~/Library/Application Support/Lurii Finance/
-├── lurii.db            # Encrypted SQLite (Phase 4)
-├── lurii.db.bak        # Pre-encryption backup (one-time)
+├── lurii.db            # SQLite database (plain; encrypted in Phase 4)
+├── lurii.db.bak        # Pre-encryption backup (Phase 4, one-time)
 ├── daemon.pid          # Daemon PID file
-└── logs/
-    └── daemon.log      # Daemon logs
+└── daemon.log          # Daemon logs
 ```
 
-Migrate from current `data/pfm.db` to standard macOS Application Support path in Phase 2.
+Auto-migration from `data/pfm.db` to App Support path runs at daemon startup via `migrate_db_if_needed()`.
 
 ### Testing Strategy
 
-- Phase 1: Unit tests for each provider (mock HTTP), integration test with Ollama if available
-- Phase 2: aiohttp test client for API endpoints, WebSocket tests
+- Phase 1: Unit tests for each provider (mock HTTP), integration test with Ollama if available ✅
+- Phase 2: aiohttp test client (pytest-aiohttp) for all API endpoints, WebSocket tests — 83 server tests ✅
 - Phase 3: SwiftUI previews + XCTest for ViewModels
 - Phase 4: Test encrypted DB open/close, migration from plain → encrypted
 - Phase 5: Test embedding indexer, vector search accuracy, chat flow
 - Phase 6: Mock DefiLlama responses, test yield scanner matching, risk scorer edge cases
+
+Total test suite: 401 tests, 80.89% coverage.
 
 ---
 
