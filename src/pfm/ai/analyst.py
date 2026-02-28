@@ -11,12 +11,12 @@ from pfm.ai.base import FALLBACK_COMMENTARY, CommentaryResult, ProviderName
 from pfm.ai.prompts import WEEKLY_REPORT_SYSTEM_PROMPT, render_weekly_report_user_prompt
 from pfm.ai.providers.registry import PROVIDER_REGISTRY
 from pfm.config import get_settings
-from pfm.db.ai_store import AIStore
+from pfm.db.ai_store import AIProviderStore
 
 if TYPE_CHECKING:
     from pfm.ai.base import LLMProvider
     from pfm.ai.prompts import AnalyticsSummary
-    from pfm.db.ai_store import AIConfig
+    from pfm.db.models import AIProvider
 
 logger = logging.getLogger(__name__)
 
@@ -64,17 +64,17 @@ async def generate_commentary_with_model(
 async def _resolve_provider(db_path: str | Path | None) -> LLMProvider | None:
     """Build the active LLM provider from DB config or env fallback."""
     resolved_path = _resolve_db_path(db_path)
-    store = AIStore(resolved_path)
+    store = AIProviderStore(resolved_path)
 
-    # Migrate legacy gemini_api_key if needed
+    # Migrate legacy app_settings keys if needed
     try:
-        await store.migrate_from_gemini()
+        await store.migrate_from_legacy()
     except (OSError, ValueError):  # pragma: no cover - defensive guardrail
-        logger.debug("Legacy Gemini migration skipped.", exc_info=True)
+        logger.debug("Legacy AI config migration skipped.", exc_info=True)
 
-    config: AIConfig | None = None
+    config: AIProvider | None = None
     try:
-        config = await store.get()
+        config = await store.get_active()
     except Exception:  # pragma: no cover - defensive guardrail
         logger.exception("Failed to load AI config from DB.")
 
@@ -93,19 +93,19 @@ async def _resolve_provider(db_path: str | Path | None) -> LLMProvider | None:
 
 
 def _build_provider_from_config(
-    config: AIConfig,
+    config: AIProvider,
     registry: dict[ProviderName, type[LLMProvider]],
 ) -> LLMProvider | None:
     """Instantiate a provider from stored AI config."""
     try:
-        provider_name = ProviderName(config.provider)
+        provider_name = ProviderName(config.type)
     except ValueError:
-        logger.warning("Unknown AI provider '%s'.", config.provider)
+        logger.warning("Unknown AI provider '%s'.", config.type)
         return None
 
     cls = registry.get(provider_name)
     if cls is None:
-        logger.warning("Provider '%s' is not registered.", config.provider)
+        logger.warning("Provider '%s' is not registered.", config.type)
         return None
 
     return _build_provider(

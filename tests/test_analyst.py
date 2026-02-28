@@ -15,7 +15,7 @@ from pfm.ai.analyst import (
 )
 from pfm.ai.base import FALLBACK_COMMENTARY, CommentaryResult
 from pfm.ai.prompts import AnalyticsSummary
-from pfm.db.ai_store import AIStore
+from pfm.db.ai_store import AIProviderStore
 from pfm.db.gemini_store import GeminiStore
 from pfm.db.models import init_db
 
@@ -37,8 +37,8 @@ def _sample_analytics() -> AnalyticsSummary:
 async def test_generate_commentary_uses_provider(tmp_path):
     db_path = tmp_path / "test.db"
     await init_db(db_path)
-    store = AIStore(db_path)
-    await store.set(provider="gemini", api_key="test-key")
+    store = AIProviderStore(db_path)
+    await store.add("gemini", api_key="test-key", activate=True)
 
     mock_provider = MagicMock()
     mock_provider.generate_commentary = AsyncMock(
@@ -124,8 +124,8 @@ async def test_generate_commentary_uses_db_key_via_migration(tmp_path):
 async def test_generate_commentary_fallback_on_empty_provider_text(tmp_path):
     db_path = tmp_path / "empty_text.db"
     await init_db(db_path)
-    store = AIStore(db_path)
-    await store.set(provider="gemini", api_key="key")
+    store = AIProviderStore(db_path)
+    await store.add("gemini", api_key="key", activate=True)
 
     mock_provider = MagicMock()
     mock_provider.generate_commentary = AsyncMock(return_value=CommentaryResult(text="", model=None))

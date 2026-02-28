@@ -14,7 +14,7 @@ from click.testing import CliRunner
 
 from pfm.ai import CommentaryResult
 from pfm.cli import cli
-from pfm.db.ai_store import AIStore
+from pfm.db.ai_store import AIProviderStore
 from pfm.db.gemini_store import GeminiStore
 from pfm.db.models import CollectorResult, Snapshot, init_db
 from pfm.db.repository import Repository
@@ -974,10 +974,10 @@ def test_ai_set_show_clear(runner, db_path):
 
     clear_result = runner.invoke(cli, ["ai", "clear"], input="y\n")
     assert clear_result.exit_code == 0
-    assert "AI provider configuration removed." in clear_result.output
+    assert "AI provider deactivated." in clear_result.output
 
     async def _load():
-        return await AIStore(db_path).get()
+        return await AIProviderStore(db_path).get_active()
 
     assert asyncio.run(_load()) is None
 
@@ -1000,7 +1000,7 @@ def test_ai_clear_cancelled(runner):
 def test_ai_clear_when_empty(runner):
     result = runner.invoke(cli, ["ai", "clear"], input="y\n")
     assert result.exit_code == 0
-    assert "No AI provider was configured." in result.output
+    assert "No AI provider was active." in result.output
 
 
 @pytest.mark.usefixtures("_patched_settings")
@@ -1106,8 +1106,93 @@ def test_ai_set_prompts_for_key_when_required(runner, db_path):
     assert "AI provider set to: gemini" in result.output
 
     async def _load():
-        return await AIStore(db_path).get()
+        return await AIProviderStore(db_path).get_active()
 
     config = asyncio.run(_load())
     assert config is not None
     assert config.api_key == "my-api-key-for-gemini"
+
+
+# ── AI multi-provider commands ───────────────────────────────────────
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_ai_list_empty(runner):
+    result = runner.invoke(cli, ["ai", "list"])
+    assert result.exit_code == 0
+    assert "No AI providers configured" in result.output
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_ai_list_with_providers(runner):
+    runner.invoke(cli, ["ai", "set", "--provider", "gemini", "--api-key", "gk"])
+    runner.invoke(cli, ["ai", "set", "--provider", "ollama", "--model", "llama3.1:8b"])
+
+    result = runner.invoke(cli, ["ai", "list"])
+    assert result.exit_code == 0
+    assert "ollama (active)" in result.output
+    assert "gemini" in result.output
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_ai_activate(runner):
+    runner.invoke(cli, ["ai", "set", "--provider", "gemini", "--api-key", "gk"])
+    runner.invoke(cli, ["ai", "set", "--provider", "ollama", "--model", "llama3.1:8b"])
+
+    result = runner.invoke(cli, ["ai", "activate", "gemini"])
+    assert result.exit_code == 0
+    assert "Activated AI provider: gemini" in result.output
+
+    show = runner.invoke(cli, ["ai", "show"])
+    assert "Provider: gemini" in show.output
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_ai_activate_unconfigured(runner):
+    result = runner.invoke(cli, ["ai", "activate", "nonexistent"])
+    assert result.exit_code == 1
+    assert "not configured" in result.output
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_ai_deactivate(runner):
+    runner.invoke(cli, ["ai", "set", "--provider", "gemini", "--api-key", "gk"])
+
+    result = runner.invoke(cli, ["ai", "deactivate"])
+    assert result.exit_code == 0
+    assert "AI provider deactivated." in result.output
+
+    show = runner.invoke(cli, ["ai", "show"])
+    assert "AI provider is not configured" in show.output
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_ai_deactivate_when_none(runner):
+    result = runner.invoke(cli, ["ai", "deactivate"])
+    assert result.exit_code == 0
+    assert "No AI provider was active." in result.output
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_ai_remove(runner):
+    runner.invoke(cli, ["ai", "set", "--provider", "gemini", "--api-key", "gk"])
+
+    result = runner.invoke(cli, ["ai", "remove", "gemini"], input="y\n")
+    assert result.exit_code == 0
+    assert "removed" in result.output
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_ai_remove_cancelled(runner):
+    runner.invoke(cli, ["ai", "set", "--provider", "gemini", "--api-key", "gk"])
+
+    result = runner.invoke(cli, ["ai", "remove", "gemini"], input="n\n")
+    assert result.exit_code == 0
+    assert "Cancelled." in result.output
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_ai_remove_nonexistent(runner):
+    result = runner.invoke(cli, ["ai", "remove", "nonexistent"], input="y\n")
+    assert result.exit_code == 0
+    assert "not found" in result.output

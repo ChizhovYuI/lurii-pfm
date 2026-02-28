@@ -96,6 +96,17 @@ class Source:
     created_at: datetime | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class AIProvider:
+    """A configured AI provider with credentials."""
+
+    type: str
+    api_key: str = ""
+    model: str = ""
+    base_url: str = ""
+    active: bool = False
+
+
 @dataclass(slots=True)
 class CollectorResult:
     """Result summary from a collector run."""
@@ -184,6 +195,16 @@ CREATE TABLE IF NOT EXISTS sources (
 CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS ai_providers (
+    type TEXT PRIMARY KEY,
+    api_key TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    base_url TEXT NOT NULL DEFAULT '',
+    active INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 """

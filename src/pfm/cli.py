@@ -18,7 +18,7 @@ from pfm.ai.providers.ollama import OllamaProvider
 from pfm.ai.providers.registry import get_provider_names
 from pfm.collectors import COLLECTOR_REGISTRY
 from pfm.config import get_settings
-from pfm.db.ai_store import AIStore
+from pfm.db.ai_store import AIProviderStore
 from pfm.db.gemini_store import GeminiStore
 from pfm.db.models import CollectorResult, init_db
 from pfm.db.source_store import (
@@ -80,10 +80,10 @@ def _get_gemini_store() -> GeminiStore:
     return GeminiStore(settings.database_path)
 
 
-def _get_ai_store() -> AIStore:
-    """Get an AIStore using the configured database path."""
+def _get_ai_provider_store() -> AIProviderStore:
+    """Get an AIProviderStore using the configured database path."""
     settings = get_settings()
-    return AIStore(settings.database_path)
+    return AIProviderStore(settings.database_path)
 
 
 def _run[T](coro: Coroutine[object, object, T]) -> T:
@@ -455,11 +455,11 @@ def ai_set(provider_name: str, api_key: str | None, model: str, base_url: str) -
     """Set the active AI provider."""
     _ensure_db()
 
-    store = _get_ai_store()
-    existing = _run(store.get())
+    store = _get_ai_provider_store()
+    existing = _run(store.get(provider_name))
 
     # Preserve existing API key when re-configuring the same provider
-    if not api_key and existing and existing.provider == provider_name:
+    if not api_key and existing:
         api_key = existing.api_key
 
     if provider_name in _PROVIDERS_REQUIRING_API_KEY and not api_key:
@@ -473,18 +473,19 @@ def ai_set(provider_name: str, api_key: str | None, model: str, base_url: str) -
 
     try:
         config = _run(
-            store.set(
-                provider=provider_name,
+            store.add(
+                provider_name,
                 api_key=api_key or "",
                 model=model,
-                base_url=base_url or (existing.base_url if existing and existing.provider == provider_name else ""),
+                base_url=base_url or (existing.base_url if existing else ""),
+                activate=True,
             )
         )
     except ValueError as exc:
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
 
-    click.echo(f"AI provider set to: {config.provider}")
+    click.echo(f"AI provider set to: {config.type}")
     if config.api_key:
         click.echo(f"API key: {_mask(config.api_key)}")
     if config.model:
@@ -495,16 +496,16 @@ def ai_set(provider_name: str, api_key: str | None, model: str, base_url: str) -
 
 @ai_group.command("show")
 def ai_show() -> None:
-    """Show current AI provider configuration (key masked)."""
+    """Show current active AI provider configuration (key masked)."""
     _ensure_db()
-    store = _get_ai_store()
-    config = _run(store.get())
+    store = _get_ai_provider_store()
+    config = _run(store.get_active())
     if config is None:
         click.echo("AI provider is not configured. Run 'pfm ai set'.")
         return
 
     click.echo("AI configuration:")
-    click.echo(f"Provider: {config.provider}")
+    click.echo(f"Provider: {config.type}")
     if config.api_key:
         click.echo(f"API key:  {_mask(config.api_key)}")
     if config.model:
@@ -515,23 +516,23 @@ def ai_show() -> None:
 
 @ai_group.command("clear")
 def ai_clear() -> None:
-    """Delete AI provider configuration."""
+    """Deactivate the current AI provider (alias for 'ai deactivate')."""
     _ensure_db()
-    if not click.confirm("Delete AI provider configuration?"):
+    if not click.confirm("Deactivate the current AI provider?"):
         click.echo("Cancelled.")
         return
 
-    store = _get_ai_store()
-    deleted = _run(store.clear())
-    if deleted:
-        click.echo("AI provider configuration removed.")
+    store = _get_ai_provider_store()
+    changed = _run(store.deactivate())
+    if changed:
+        click.echo("AI provider deactivated.")
     else:
-        click.echo("No AI provider was configured.")
+        click.echo("No AI provider was active.")
 
 
 @ai_group.command("providers")
 def ai_providers() -> None:
-    """List registered AI providers."""
+    """List registered AI provider implementations."""
     names = get_provider_names()
     if not names:
         click.echo("No providers registered.")
@@ -540,6 +541,71 @@ def ai_providers() -> None:
     click.echo("Registered AI providers:")
     for name in names:
         click.echo(f"  {name}")
+
+
+@ai_group.command("list")
+def ai_list() -> None:
+    """List all configured AI providers with active marker."""
+    _ensure_db()
+    store = _get_ai_provider_store()
+    providers = _run(store.list_all())
+    if not providers:
+        click.echo("No AI providers configured. Run 'pfm ai set'.")
+        return
+
+    click.echo("Configured AI providers:")
+    for p in providers:
+        marker = " (active)" if p.active else ""
+        click.echo(f"  {p.type}{marker}")
+        if p.api_key:
+            click.echo(f"    API key:  {_mask(p.api_key)}")
+        if p.model:
+            click.echo(f"    Model:    {p.model}")
+        if p.base_url:
+            click.echo(f"    Base URL: {p.base_url}")
+
+
+@ai_group.command("activate")
+@click.argument("provider_type")
+def ai_activate(provider_type: str) -> None:
+    """Set a configured provider as the active one."""
+    _ensure_db()
+    store = _get_ai_provider_store()
+    try:
+        config = _run(store.activate(provider_type))
+    except ValueError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+    click.echo(f"Activated AI provider: {config.type}")
+
+
+@ai_group.command("deactivate")
+def ai_deactivate() -> None:
+    """Clear the active AI provider."""
+    _ensure_db()
+    store = _get_ai_provider_store()
+    changed = _run(store.deactivate())
+    if changed:
+        click.echo("AI provider deactivated.")
+    else:
+        click.echo("No AI provider was active.")
+
+
+@ai_group.command("remove")
+@click.argument("provider_type")
+def ai_remove(provider_type: str) -> None:
+    """Remove a configured AI provider."""
+    _ensure_db()
+    if not click.confirm(f"Remove AI provider '{provider_type}'?"):
+        click.echo("Cancelled.")
+        return
+
+    store = _get_ai_provider_store()
+    deleted = _run(store.remove(provider_type))
+    if deleted:
+        click.echo(f"AI provider '{provider_type}' removed.")
+    else:
+        click.echo(f"AI provider '{provider_type}' not found.")
 
 
 # ── Telegram config ───────────────────────────────────────────────────
@@ -1022,7 +1088,7 @@ async def _report_async() -> bool:
                 click.echo(f"AI commentary model: {commentary_model}")
         else:
             commentary = (
-                "AI commentary is not cached for this analysis date. " "Run 'pfm comment' to generate and store it."
+                "AI commentary is not cached for this analysis date. Run 'pfm comment' to generate and store it."
             )
             click.echo("No cached AI commentary for this analysis date. Using fallback text.")
 
