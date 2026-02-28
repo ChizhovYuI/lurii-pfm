@@ -23,6 +23,12 @@ def run_server(
     from pfm.server.app import create_app
     from pfm.server.migrate_db import migrate_db_if_needed
 
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
     if db_path is None:
         db_path = migrate_db_if_needed()
 
@@ -33,4 +39,5 @@ def run_server(
         logger.info("Starting server on 127.0.0.1:%d (db=%s)", port, db_path)
         web.run_app(app, host="127.0.0.1", port=port, print=None)
     finally:
+        logger.info("Server stopped")
         remove_pid_file()

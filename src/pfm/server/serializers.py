@@ -34,6 +34,34 @@ _STOCK_SOURCES: frozenset[str] = frozenset({"ibkr"})
 _DEFI_SOURCES: frozenset[str] = frozenset({"blend"})
 
 
+# ── Decimal formatting ─────────────────────────────────────────────────
+
+_TWO_PLACES = Decimal("0.01")
+_EIGHT_PLACES = Decimal("0.00000001")
+
+
+def fmt_usd(value: Decimal) -> str:
+    """Round a USD value to 2 decimal places."""
+    return str(value.quantize(_TWO_PLACES))
+
+
+def fmt_pct(value: Decimal) -> str:
+    """Round a percentage to 2 decimal places."""
+    return str(value.quantize(_TWO_PLACES))
+
+
+def fmt_amount(value: Decimal) -> str:
+    """Format an asset amount — up to 8 decimal places, trailing zeros stripped."""
+    return str(value.quantize(_EIGHT_PLACES).normalize())
+
+
+def fmt_price(value: Decimal) -> str:
+    """Format a unit price — 2dp for values ≥1, up to 8dp for small values."""
+    if value >= 1:
+        return str(value.quantize(_TWO_PLACES))
+    return str(value.quantize(_EIGHT_PLACES).normalize())
+
+
 # ── Masking ─────────────────────────────────────────────────────────────
 
 
@@ -66,8 +94,8 @@ def snapshot_to_dict(snapshot: Snapshot) -> dict[str, Any]:
         "date": snapshot.date.isoformat(),
         "source": snapshot.source,
         "asset": snapshot.asset,
-        "amount": str(snapshot.amount),
-        "usd_value": str(snapshot.usd_value),
+        "amount": fmt_amount(snapshot.amount),
+        "usd_value": fmt_usd(snapshot.usd_value),
     }
 
 
@@ -76,7 +104,7 @@ def collector_result_to_dict(result: CollectorResult) -> dict[str, Any]:
     return {
         "source": result.source,
         "snapshots_count": result.snapshots_count,
-        "snapshots_usd_total": str(result.snapshots_usd_total),
+        "snapshots_usd_total": fmt_usd(result.snapshots_usd_total),
         "transactions_count": result.transactions_count,
         "errors": result.errors,
         "duration_seconds": result.duration_seconds,
@@ -89,20 +117,20 @@ def pnl_result_to_dict(result: PnlResult) -> dict[str, object]:
     def _asset_pnl(row: AssetPnl) -> dict[str, object]:
         return {
             "asset": row.asset,
-            "start_value": str(row.start_value),
-            "end_value": str(row.end_value),
-            "absolute_change": str(row.absolute_change),
-            "percentage_change": str(row.percentage_change),
-            "cost_basis_value": str(row.cost_basis_value) if row.cost_basis_value is not None else None,
+            "start_value": fmt_usd(row.start_value),
+            "end_value": fmt_usd(row.end_value),
+            "absolute_change": fmt_usd(row.absolute_change),
+            "percentage_change": fmt_pct(row.percentage_change),
+            "cost_basis_value": fmt_usd(row.cost_basis_value) if row.cost_basis_value is not None else None,
         }
 
     return {
         "start_date": result.start_date.isoformat() if result.start_date else None,
         "end_date": result.end_date.isoformat() if result.end_date else None,
-        "start_value": str(result.start_value),
-        "end_value": str(result.end_value),
-        "absolute_change": str(result.absolute_change),
-        "percentage_change": str(result.percentage_change),
+        "start_value": fmt_usd(result.start_value),
+        "end_value": fmt_usd(result.end_value),
+        "absolute_change": fmt_usd(result.absolute_change),
+        "percentage_change": fmt_pct(result.percentage_change),
         "by_asset": [_asset_pnl(row) for row in result.by_asset],
         "top_gainers": [_asset_pnl(row) for row in result.top_gainers],
         "top_losers": [_asset_pnl(row) for row in result.top_losers],
@@ -217,7 +245,7 @@ def parse_cached_ai_commentary_model(raw_json: str | None) -> str | None:
 def decimal_default(obj: object) -> str:
     """JSON default handler for Decimal and date objects."""
     if isinstance(obj, Decimal):
-        return str(obj)
+        return fmt_usd(obj)
     if isinstance(obj, date):
         return obj.isoformat()
     msg = f"Object of type {type(obj).__name__} is not JSON serializable"

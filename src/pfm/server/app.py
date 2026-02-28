@@ -56,6 +56,7 @@ async def _on_startup(app: web.Application) -> None:
     app["pricing"] = pricing
     app["broadcaster"] = EventBroadcaster()
     app["collecting"] = False
+    logger.info("Startup complete — DB unlocked, services ready")
 
 
 async def _on_cleanup(app: web.Application) -> None:

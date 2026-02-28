@@ -37,9 +37,10 @@ _DEFI_SOURCES: frozenset[str] = frozenset({"blend"})
 
 @dataclass(frozen=True, slots=True)
 class AssetAllocation:
-    """Allocation row for a single asset."""
+    """Allocation row for a single asset at a single source."""
 
     asset: str
+    source: str
     amount: Decimal
     usd_value: Decimal
     percentage: Decimal
@@ -79,23 +80,25 @@ async def compute_net_worth(repo: Repository, snapshot_date: date) -> Decimal:
 
 
 async def compute_allocation_by_asset(repo: Repository, snapshot_date: date) -> list[AssetAllocation]:
-    """Compute per-asset allocation (amount, USD value, percent)."""
+    """Compute per-(source, asset) allocation (amount, USD value, percent)."""
     snapshots = await repo.get_snapshots_by_date(snapshot_date)
     total_usd = _sum_usd(snapshots)
-    by_asset: dict[str, tuple[Decimal, Decimal]] = {}
+    by_key: dict[tuple[str, str], tuple[Decimal, Decimal]] = {}
 
     for snap in snapshots:
-        amount, usd_value = by_asset.get(snap.asset, (Decimal(0), Decimal(0)))
-        by_asset[snap.asset] = (amount + snap.amount, usd_value + snap.usd_value)
+        key = (snap.source, snap.asset)
+        amount, usd_value = by_key.get(key, (Decimal(0), Decimal(0)))
+        by_key[key] = (amount + snap.amount, usd_value + snap.usd_value)
 
     rows = [
         AssetAllocation(
             asset=asset,
+            source=source,
             amount=amount,
             usd_value=usd_value,
             percentage=_percentage(usd_value, total_usd),
         )
-        for asset, (amount, usd_value) in by_asset.items()
+        for (source, asset), (amount, usd_value) in by_key.items()
     ]
     rows.sort(key=lambda r: r.usd_value, reverse=True)
     return rows

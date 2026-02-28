@@ -13,6 +13,7 @@ from pfm.server.serializers import (
     build_asset_type_map,
     collector_result_to_dict,
     decimal_default,
+    fmt_price,
     mask_secret,
     parse_cached_ai_commentary,
     parse_cached_ai_commentary_model,
@@ -62,7 +63,7 @@ class TestSnapshotToDict:
         assert result["source"] == "okx"
         assert result["asset"] == "BTC"
         assert result["amount"] == "1.5"
-        assert result["usd_value"] == "45000"
+        assert result["usd_value"] == "45000.00"
 
 
 class TestCollectorResultToDict:
@@ -78,7 +79,7 @@ class TestCollectorResultToDict:
         result = collector_result_to_dict(r)
         assert result["source"] == "okx"
         assert result["snapshots_count"] == 5
-        assert result["snapshots_usd_total"] == "1000"
+        assert result["snapshots_usd_total"] == "1000.00"
         assert result["errors"] == ["some error"]
 
 
@@ -108,7 +109,7 @@ class TestPnlResultToDict:
         )
         result = pnl_result_to_dict(pnl)
         assert result["start_date"] == "2024-01-01"
-        assert result["absolute_change"] == "500"
+        assert result["absolute_change"] == "500.00"
         assert len(result["by_asset"]) == 1
         assert result["notes"] == ["test note"]
 
@@ -197,6 +198,20 @@ class TestParseCachedAiCommentaryModel:
     def test_no_model(self):
         raw = json.dumps({"text": "x"})
         assert parse_cached_ai_commentary_model(raw) is None
+
+
+class TestFmtPrice:
+    def test_large_value(self):
+        assert fmt_price(Decimal("45000.123")) == "45000.12"
+
+    def test_exactly_one(self):
+        assert fmt_price(Decimal("1.005")) == "1.00"
+
+    def test_small_crypto_price(self):
+        assert fmt_price(Decimal("0.00001234")) == "0.00001234"
+
+    def test_small_value_trailing_zeros(self):
+        assert fmt_price(Decimal("0.50000000")) == "0.5"
 
 
 class TestDecimalDefault:

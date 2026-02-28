@@ -41,11 +41,19 @@ async def test_compute_allocation_by_asset(repo):
     )
 
     rows = await compute_allocation_by_asset(repo, target_date)
-    assert [row.asset for row in rows] == ["GBP", "USDC"]
+    # Now per-(source, asset): wise/GBP, lobstr/USDC, okx/USDC
+    assert [(row.source, row.asset) for row in rows] == [
+        ("wise", "GBP"),
+        ("lobstr", "USDC"),
+        ("okx", "USDC"),
+    ]
     assert rows[0].usd_value == Decimal(250)
-    assert rows[1].amount == Decimal(150)
+    assert rows[0].source == "wise"
+    assert rows[1].amount == Decimal(100)
+    assert rows[2].amount == Decimal(50)
     assert rows[0].percentage == Decimal("62.5")
-    assert rows[1].percentage == Decimal("37.5")
+    assert rows[1].percentage == Decimal(25)
+    assert rows[2].percentage == Decimal("12.5")
 
 
 async def test_compute_allocation_by_source(repo):
@@ -115,10 +123,17 @@ async def test_compute_risk_metrics(repo):
     )
 
     metrics = await compute_risk_metrics(repo, target_date)
+    # Now 6 per-(source, asset) rows; concentration is still BTC
     assert metrics.concentration_percentage == Decimal("82.91873963515754560530679934")
     assert len(metrics.top_5_assets) == 5
     assert metrics.top_5_assets[0].asset == "BTC"
-    assert metrics.hhi_index == Decimal("0.7025582425077487080902837939")
+    assert metrics.top_5_assets[0].source == "okx"
+    # HHI changes because USDC is now split across lobstr and blend
+    total = Decimal(6030)
+    hhi = sum(
+        (v / total) ** 2 for v in [Decimal(5000), Decimal(400), Decimal(300), Decimal(200), Decimal(125), Decimal(5)]
+    )
+    assert metrics.hhi_index == hhi
 
 
 async def test_empty_portfolio(repo):
