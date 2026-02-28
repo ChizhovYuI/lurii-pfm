@@ -1070,6 +1070,21 @@ def test_ai_set_with_model_and_base_url(runner):
 
 
 @pytest.mark.usefixtures("_patched_settings")
+def test_ai_set_openrouter_picks_model_interactively(runner):
+    # input: api key + model choice "1"
+    result = runner.invoke(
+        cli,
+        ["ai", "set", "--provider", "openrouter"],
+        input="sk-or-test-key\n1\n",
+    )
+    assert result.exit_code == 0
+    assert "Available OpenRouter models:" in result.output
+    assert "free" in result.output
+    assert "qwen/qwen3-235b-a22b-thinking-2507" in result.output
+    assert "AI provider set to: openrouter" in result.output
+
+
+@pytest.mark.usefixtures("_patched_settings")
 def test_ai_providers_lists_all(runner):
     result = runner.invoke(cli, ["ai", "providers"])
     assert result.exit_code == 0

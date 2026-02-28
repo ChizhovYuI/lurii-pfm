@@ -87,6 +87,30 @@ async def test_generate_commentary_custom_model_and_url():
     await provider.close()
 
 
+async def test_generate_commentary_http_error_returns_fallback():
+    transport = _FakeTransport(responses=[httpx.Response(402, text="Payment Required")])
+    client = httpx.AsyncClient(transport=transport)
+    provider = _TestProvider(client=client)
+
+    result = await provider.generate_commentary("sys", "usr")
+
+    assert "unavailable" in result.text
+    assert result.model is None
+    await provider.close()
+
+
+async def test_generate_commentary_network_error_returns_fallback():
+    transport = _FakeTransport(responses=[httpx.Response(500, text="Internal Server Error")])
+    client = httpx.AsyncClient(transport=transport)
+    provider = _TestProvider(client=client)
+
+    result = await provider.generate_commentary("sys", "usr")
+
+    assert "unavailable" in result.text
+    assert result.model is None
+    await provider.close()
+
+
 async def test_close_does_not_close_external_client():
     transport = _FakeTransport()
     client = httpx.AsyncClient(transport=transport)

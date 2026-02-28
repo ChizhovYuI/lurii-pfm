@@ -340,6 +340,14 @@ _PROVIDERS_REQUIRING_API_KEY: frozenset[str] = frozenset({"gemini", "openrouter"
 _BYTES_GB = 1_000_000_000
 _BYTES_MB = 1_000_000
 
+_OPENROUTER_MODELS: list[tuple[str, str]] = [
+    ("qwen/qwen3-235b-a22b-thinking-2507", "free, 235B MoE, reasoning"),
+    ("arcee-ai/trinity-large-preview", "free, 400B MoE, creative"),
+    ("google/gemini-2.5-flash-preview", "free, fast, 1M context"),
+    ("anthropic/claude-sonnet-4", "paid, best quality"),
+    ("openai/gpt-4.1-mini", "paid, fast, cheap"),
+]
+
 _OLLAMA_MODEL_HINTS: dict[str, str] = {
     "llama3.1:8b": "best for 8 GB RAM",
     "qwen3:14b": "best for 16+ GB RAM",
@@ -404,6 +412,19 @@ def _pick_ollama_model(base_url: str) -> str:
     return names[choice - 1]
 
 
+def _pick_openrouter_model() -> str:
+    """Show curated OpenRouter model list and let the user pick one."""
+    click.echo("\nAvailable OpenRouter models:")
+    for i, (model_id, label) in enumerate(_OPENROUTER_MODELS, 1):
+        click.echo(f"  {i}. {model_id:<50s} {label}")
+
+    choice: int = click.prompt(
+        "\nSelect model",
+        type=click.IntRange(1, len(_OPENROUTER_MODELS)),
+    )
+    return _OPENROUTER_MODELS[choice - 1][0]
+
+
 @cli.group("ai")
 def ai_group() -> None:
     """Manage AI provider configuration."""
@@ -429,6 +450,9 @@ def ai_set(provider_name: str, api_key: str | None, model: str, base_url: str) -
 
     if provider_name == "ollama" and not model:
         model = _pick_ollama_model(base_url or "http://localhost:11434")
+
+    if provider_name == "openrouter" and not model:
+        model = _pick_openrouter_model()
 
     store = _get_ai_store()
     try:

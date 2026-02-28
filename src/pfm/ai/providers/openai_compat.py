@@ -6,7 +6,7 @@ import logging
 
 import httpx
 
-from pfm.ai.base import CommentaryResult, LLMProvider
+from pfm.ai.base import FALLBACK_COMMENTARY, CommentaryResult, LLMProvider
 
 logger = logging.getLogger(__name__)
 
@@ -56,10 +56,6 @@ class OpenAICompatibleProvider(LLMProvider):
         content = message.get("content")
         return str(content).strip() if content else ""
 
-    async def _handle_error(self, exc: Exception) -> CommentaryResult | None:  # noqa: ARG002
-        """Hook called on request failure. Return a result to short-circuit, or None to propagate."""
-        return None
-
     # -- public API ------------------------------------------------------------
 
     async def generate_commentary(
@@ -85,12 +81,12 @@ class OpenAICompatibleProvider(LLMProvider):
             response = await self._client.post(url, json=payload, headers=headers)
             response.raise_for_status()
             body = response.json()
-        except Exception as exc:
+        except httpx.HTTPStatusError as exc:
+            logger.warning("%s API error %d: %s", self.name, exc.response.status_code, exc)
+            return CommentaryResult(text=FALLBACK_COMMENTARY, model=None)
+        except (httpx.HTTPError, OSError) as exc:
             logger.warning("%s API request failed: %s", self.name, exc)
-            handled = await self._handle_error(exc)
-            if handled is not None:
-                return handled
-            raise
+            return CommentaryResult(text=FALLBACK_COMMENTARY, model=None)
 
         text = self._parse_response(body)
         return CommentaryResult(text=text, model=self._model)

@@ -41,8 +41,8 @@ def test_render_weekly_report_user_prompt_formats_analytics():
     assert '"asset": "BTC"' in prompt
     assert '"category": "crypto"' in prompt
     assert '"asset_type": "crypto"' in prompt
-    assert '"concentration_percentage": "56.7"' in prompt
-    assert '"absolute_change": "120"' in prompt
+    assert '"concentration_percentage": "56.70%"' in prompt
+    assert '"absolute_change": "$120.00"' in prompt
     assert "Top holdings" in prompt
     assert "Top weekly movers by asset" in prompt
     assert "Allocation by source" not in prompt

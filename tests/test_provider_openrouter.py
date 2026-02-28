@@ -5,7 +5,7 @@ from pfm.ai.providers.openrouter import OpenRouterProvider
 
 def test_openrouter_defaults():
     assert OpenRouterProvider.name == "openrouter"
-    assert OpenRouterProvider.default_model == "anthropic/claude-sonnet-4"
+    assert OpenRouterProvider.default_model == "qwen/qwen3-235b-a22b-thinking-2507"
     assert "openrouter.ai" in OpenRouterProvider.default_base_url
 
 
