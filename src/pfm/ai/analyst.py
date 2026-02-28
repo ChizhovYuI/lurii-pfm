@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -34,6 +35,15 @@ GEMINI_RATE_LIMIT_STATE_FILE = Path("data/gemini_last_request_at.txt")
 HTTP_TOO_MANY_REQUESTS = 429
 FALLBACK_COMMENTARY = (
     "AI commentary is currently unavailable. " "Review net worth trend, concentration risk, and PnL changes manually."
+)
+_TRAILING_SECTION_HEADER_RE = re.compile(r"^\s*(?:#{1,6}\s*)?(?:\d+\)\s*)?[A-Za-z][A-Za-z0-9\s()/&-]{1,80}:$")
+_SECTION_TITLE_ONLY_RE = re.compile(
+    (
+        r"^\s*(?:#{1,6}\s*)?(?:\d+\)\s*)?"
+        r"(?:market context|portfolio health(?: assessment)?|rebalancing opportunities|"
+        r"risk alerts|actionable recommendations(?: for next 7 days)?)\s*:?\s*$"
+    ),
+    flags=re.IGNORECASE,
 )
 
 
@@ -310,18 +320,21 @@ def _finalize_commentary_text(text: str) -> str:
         return normalized
 
     lines = [line.rstrip() for line in normalized.split("\n")]
-    while lines and not lines[-1].strip():
-        lines.pop()
-    if not lines:
-        return ""
-
-    last_line = lines[-1].strip()
-    if _looks_incomplete_tail(last_line):
-        lines.pop()
-        while lines and not lines[-1].strip():
+    while lines:
+        last_line = lines[-1].strip()
+        if not last_line:
             lines.pop()
-        if not lines:
-            return ""
+            continue
+        if _is_trailing_section_header(last_line):
+            lines.pop()
+            continue
+        if _looks_incomplete_tail(last_line):
+            lines.pop()
+            continue
+        break
+
+    if not lines:
+        return FALLBACK_COMMENTARY
 
     return "\n".join(lines).strip()
 
@@ -336,6 +349,10 @@ def _looks_incomplete_tail(line: str) -> bool:
     return len(words) <= INCOMPLETE_TAIL_MAX_WORDS or line_lower.endswith(
         ("to", "for", "with", "and", "or", "the", "a", "an", "your")
     )
+
+
+def _is_trailing_section_header(line: str) -> bool:
+    return bool(_TRAILING_SECTION_HEADER_RE.match(line) or _SECTION_TITLE_ONLY_RE.match(line))
 
 
 def _log_token_usage(body: object, *, model: str) -> None:
