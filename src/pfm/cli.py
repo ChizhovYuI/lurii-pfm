@@ -29,9 +29,6 @@ from pfm.db.source_store import (
 )
 from pfm.db.telegram_store import TelegramStore
 from pfm.server.serializers import (
-    build_asset_type_map as _build_asset_type_map,
-)
-from pfm.server.serializers import (
     fmt_amount as _fmt_amount,
 )
 from pfm.server.serializers import (
@@ -808,8 +805,6 @@ async def _analyze_async() -> None:
             return
 
         analysis_date = latest[0].date
-        analysis_snapshots = await repo.get_snapshots_by_date(analysis_date)
-        asset_type_map = _build_asset_type_map(analysis_snapshots)
         net_worth = await compute_net_worth(repo, analysis_date)
         alloc_asset = await compute_allocation_by_asset(repo, analysis_date)
         alloc_source = await compute_allocation_by_source(repo, analysis_date)
@@ -831,12 +826,12 @@ async def _analyze_async() -> None:
                 [
                     {
                         "asset": row.asset,
+                        "asset_type": row.asset_type,
                         "sources": list(row.sources),
                         "amount": _fmt_amount(row.amount),
                         "usd_value": _fmt_usd(row.usd_value),
                         "price": _fmt_price(row.price),
                         "percentage": _fmt_pct(row.percentage),
-                        "asset_type": asset_type_map.get(row.asset.upper(), "other"),
                     }
                     for row in alloc_asset
                 ]

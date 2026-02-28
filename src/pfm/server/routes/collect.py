@@ -13,7 +13,6 @@ if TYPE_CHECKING:
     from pfm.db.repository import Repository
 
 from pfm.server.serializers import (
-    build_asset_type_map,
     collector_result_to_dict,
     fmt_amount,
     fmt_pct,
@@ -175,9 +174,6 @@ async def _run_analyze(repo: Repository) -> None:
         return
 
     analysis_date = latest[0].date
-    analysis_snapshots = await repo.get_snapshots_by_date(analysis_date)
-    asset_type_map = build_asset_type_map(analysis_snapshots)
-
     net_worth = await compute_net_worth(repo, analysis_date)
     alloc_asset = await compute_allocation_by_asset(repo, analysis_date)
     alloc_source = await compute_allocation_by_source(repo, analysis_date)
@@ -202,12 +198,12 @@ async def _run_analyze(repo: Repository) -> None:
             [
                 {
                     "asset": row.asset,
+                    "asset_type": row.asset_type,
                     "sources": list(row.sources),
                     "amount": fmt_amount(row.amount),
                     "usd_value": fmt_usd(row.usd_value),
                     "price": fmt_price(row.price),
                     "percentage": fmt_pct(row.percentage),
-                    "asset_type": asset_type_map.get(row.asset.upper(), "other"),
                 }
                 for row in alloc_asset
             ]

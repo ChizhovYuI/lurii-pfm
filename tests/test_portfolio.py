@@ -41,8 +41,8 @@ async def test_compute_allocation_by_asset(repo):
     )
 
     rows = await compute_allocation_by_asset(repo, target_date)
-    # Grouped by asset; USDC aggregated across lobstr+okx
-    assert [row.asset for row in rows] == ["GBP", "USDC"]
+    # Grouped by (asset, asset_type); USDC(crypto) aggregated across lobstr+okx
+    assert [(row.asset, row.asset_type) for row in rows] == [("GBP", "fiat"), ("USDC", "crypto")]
     assert rows[0].usd_value == Decimal(250)
     assert rows[0].sources == ("wise",)
     assert rows[1].amount == Decimal(150)
@@ -143,12 +143,17 @@ async def test_compute_risk_metrics(repo):
     )
 
     metrics = await compute_risk_metrics(repo, target_date)
-    # 5 unique assets: BTC, USDC (lobstr+blend), AAPL, GBP, XLM
+    # 6 rows: BTC/crypto, USDC/defi, USDC/crypto, AAPL/stocks, GBP/fiat, XLM/crypto
     assert metrics.concentration_percentage == Decimal("82.91873963515754560530679934")
     assert len(metrics.top_5_assets) == 5
     assert metrics.top_5_assets[0].asset == "BTC"
     assert metrics.top_5_assets[0].sources == ("okx",)
-    assert metrics.hhi_index == Decimal("0.7025582425077487080902837939")
+    assert metrics.top_5_assets[0].asset_type == "crypto"
+    total = Decimal(6030)
+    hhi = sum(
+        (v / total) ** 2 for v in [Decimal(5000), Decimal(400), Decimal(300), Decimal(200), Decimal(125), Decimal(5)]
+    )
+    assert metrics.hhi_index == hhi
 
 
 async def test_empty_portfolio(repo):

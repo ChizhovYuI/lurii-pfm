@@ -37,9 +37,10 @@ _DEFI_SOURCES: frozenset[str] = frozenset({"blend"})
 
 @dataclass(frozen=True, slots=True)
 class AssetAllocation:
-    """Allocation row for a single asset aggregated across sources."""
+    """Allocation row for a single (asset, asset_type) pair across sources."""
 
     asset: str
+    asset_type: str
     sources: tuple[str, ...]
     amount: Decimal
     usd_value: Decimal
@@ -81,15 +82,17 @@ async def compute_net_worth(repo: Repository, snapshot_date: date) -> Decimal:
 
 
 async def compute_allocation_by_asset(repo: Repository, snapshot_date: date) -> list[AssetAllocation]:
-    """Compute per-asset allocation with sources list and cached price."""
+    """Compute per-(asset, asset_type) allocation with sources list and cached price."""
     snapshots = await repo.get_snapshots_by_date(snapshot_date)
     total_usd = _sum_usd(snapshots)
-    by_asset: dict[str, tuple[Decimal, Decimal, set[str]]] = {}
+    by_key: dict[tuple[str, str], tuple[Decimal, Decimal, set[str]]] = {}
 
     for snap in snapshots:
-        amount, usd_value, sources = by_asset.get(snap.asset, (Decimal(0), Decimal(0), set()))
+        a_type = _asset_type(snap.source, snap.asset)
+        key = (snap.asset, a_type)
+        amount, usd_value, sources = by_key.get(key, (Decimal(0), Decimal(0), set()))
         sources.add(snap.source)
-        by_asset[snap.asset] = (amount + snap.amount, usd_value + snap.usd_value, sources)
+        by_key[key] = (amount + snap.amount, usd_value + snap.usd_value, sources)
 
     # Build price lookup from prices table
     prices = await repo.get_prices_by_date(snapshot_date)
@@ -101,13 +104,14 @@ async def compute_allocation_by_asset(repo: Repository, snapshot_date: date) -> 
     rows = [
         AssetAllocation(
             asset=asset,
+            asset_type=a_type,
             sources=tuple(sorted(sources)),
             amount=amount,
             usd_value=usd_value,
             price=price_map.get(asset.upper(), usd_value / amount if amount else Decimal(0)),
             percentage=_percentage(usd_value, total_usd),
         )
-        for asset, (amount, usd_value, sources) in by_asset.items()
+        for (asset, a_type), (amount, usd_value, sources) in by_key.items()
     ]
     rows.sort(key=lambda r: r.usd_value, reverse=True)
     return rows
@@ -207,6 +211,23 @@ def _percentage(value: Decimal, total: Decimal) -> Decimal:
     if total == 0:
         return Decimal(0)
     return (value / total) * _HUNDRED
+
+
+def _asset_type(source: str, asset: str) -> str:
+    """Classify an asset by its source and ticker."""
+    src = source.lower()
+    tkr = asset.upper()
+    if src in _DEFI_SOURCES:
+        return "defi"
+    if src in _FIAT_SOURCES:
+        return "fiat"
+    if src in _STOCK_SOURCES:
+        return "fiat" if tkr in _FIAT_ASSETS else "stocks"
+    if tkr in _FIAT_ASSETS:
+        return "fiat"
+    if src in _CRYPTO_SOURCES:
+        return "crypto"
+    return "other"
 
 
 def _category_for_snapshot(snap: Snapshot) -> str:
