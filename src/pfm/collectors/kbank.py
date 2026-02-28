@@ -17,6 +17,8 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import pdfplumber
+
 from pfm.collectors import register_collector
 from pfm.collectors.base import BaseCollector
 from pfm.db.models import Snapshot, Transaction, TransactionType
@@ -186,12 +188,6 @@ class KbankCollector(BaseCollector):
         - Table 1: header with account info and ending balance (page 1 only)
         - Table 2: transactions with all entries newline-delimited in one row
         """
-        try:
-            import pdfplumber
-        except ImportError:
-            logger.exception("pdfplumber not installed. Run: uv add pdfplumber")
-            return [], []
-
         if not pdf_path.exists():
             logger.error("KBank PDF not found: %s", pdf_path)
             return [], []
