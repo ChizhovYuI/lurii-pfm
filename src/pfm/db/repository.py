@@ -18,14 +18,19 @@ if TYPE_CHECKING:
 class Repository:
     """Async repository for all database operations."""
 
-    def __init__(self, db_path: Path) -> None:
+    def __init__(self, db_path: Path, key_hex: str | None = None) -> None:
         self._db_path = db_path
+        self._key_hex = key_hex
         self._conn: aiosqlite.Connection | None = None
 
     async def __aenter__(self) -> Self:
-        await init_db(self._db_path)
-        self._conn = await aiosqlite.connect(str(self._db_path))
-        self._conn.row_factory = aiosqlite.Row
+        from pfm.db.encryption import connect_db
+
+        await init_db(self._db_path, key_hex=self._key_hex)
+        conn = connect_db(self._db_path, key_hex=self._key_hex)
+        await conn.__aenter__()
+        conn.row_factory = aiosqlite.Row
+        self._conn = conn
         return self
 
     async def __aexit__(

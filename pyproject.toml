@@ -12,6 +12,7 @@ dependencies = [
     "httpx>=0.28.1",
     "pdfplumber>=0.11.9",
     "pydantic-settings>=2.13.1",
+    "sqlcipher3>=0.6.2",
     "stellar-sdk>=13.2.1",
 ]
 
@@ -97,6 +98,15 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+"src/pfm/db/encryption.py" = [
+    "PLC0415", # late imports to break circular dep with models.py and defer sqlcipher3
+]
+"src/pfm/db/models.py" = [
+    "PLC0415", # late import to break circular dep with encryption.py
+]
+"src/pfm/db/repository.py" = [
+    "PLC0415", # late import to break circular dep with encryption.py
+]
 "src/pfm/server/**/*.py" = [
     "PLC0415", # late imports are used to avoid circular deps and keep startup fast
 ]
@@ -163,6 +173,10 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["pdfplumber", "pdfplumber.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["sqlcipher3", "sqlcipher3.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

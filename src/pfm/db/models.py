@@ -189,9 +189,17 @@ CREATE TABLE IF NOT EXISTS app_settings (
 """
 
 
-async def init_db(path: Path) -> None:
-    """Create database and all tables if they don't exist."""
+async def init_db(path: Path, *, key_hex: str | None = None) -> None:
+    """Create database and all tables if they don't exist.
+
+    When *key_hex* is provided the database is opened via SQLCipher.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    async with aiosqlite.connect(str(path)) as db:
-        await db.executescript(SCHEMA_SQL)
-        await db.commit()
+    if key_hex is not None:
+        from pfm.db.encryption import init_encrypted_db
+
+        await init_encrypted_db(path, key_hex)
+    else:
+        async with aiosqlite.connect(str(path)) as db:
+            await db.executescript(SCHEMA_SQL)
+            await db.commit()

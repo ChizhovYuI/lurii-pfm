@@ -206,3 +206,38 @@ If all fail, use fallback commentary text.
 - Ollama enables fully local/private AI commentary (no API key needed)
 - OpenRouter provides access to Claude, GPT, Mistral, etc. via single API key
 - Legacy `pfm gemini set/show/clear` commands still work as aliases
+
+---
+
+## ADR-009: SQLCipher database encryption with locked/unlocked daemon state
+
+**Date:** 2026-02-28
+
+**Status:** Accepted
+
+**Context:** The SQLite database stores source credentials and financial data in plain text. Phase 4 of the v2 evolution spec calls for encrypting the database at rest using SQLCipher, with the key stored in macOS Keychain and supplied to the daemon at startup (or via an unlock endpoint from the SwiftUI app).
+
+**Problem:**
+- Database file is readable by any process with file access
+- Source credentials (API keys, tokens) are stored in plain text in SQLite
+- No mechanism for the SwiftUI app to unlock an encrypted daemon post-launch
+
+**Decision:** Use `sqlcipher3` (coleifer, v0.6.2) for transparent database encryption, with an opt-in locked/unlocked daemon state machine and a `/api/v1/unlock` endpoint.
+
+**Design choices:**
+- **`sqlcipher3` over `pysqlcipher3` / Rotki fork** — `sqlcipher3` ships pre-built wheels for Python 3.13 with a self-contained SQLCipher build (no system-level library dependency). It is DB-API 2.0 compatible and maintained by the `peewee` author. `pysqlcipher3` requires linking against a separately-installed `libsqlcipher`, and the Rotki fork adds custom patches we don't need.
+- **Connector injection for aiosqlite** — `aiosqlite.Connection` accepts any `Callable[[], sqlite3.Connection]` as its connector. We inject a factory that calls `sqlcipher3.connect()` + `PRAGMA key` instead of monkey-patching or subclassing. This keeps the encryption layer contained in `db/encryption.py`.
+- **`connect_db()` helper** — returns either encrypted or plain `aiosqlite.Connection` based on whether a key is supplied, so `Repository`, `init_db`, and stores don't need to know the encryption state.
+- **Opt-in encryption** — DB starts plain. Encryption is enabled via a future `pfm db encrypt` CLI command or SwiftUI settings. Once encrypted, the daemon requires a key on startup.
+- **Locked state machine** — if encryption is enabled but no key is available at startup, the daemon enters a locked state where all endpoints except `/api/v1/health`, `/api/v1/unlock`, and `/api/v1/encryption/status` return `423 Locked`. The SwiftUI app detects this via health, reads the key from Keychain, and POSTs to `/api/v1/unlock`.
+- **Key via env var or unlock endpoint** — `PFM_DB_KEY` env var for headless/CLI use, `POST /api/v1/unlock` for interactive SwiftUI flow.
+- **`PRAGMA cipher_compatibility = 4`** — ensures forward compatibility with SQLCipher 4.x format.
+- **Plain-to-encrypted migration** — `migrate_to_encrypted()` uses `sqlite3.backup()` to stream from plain to encrypted DB. Original file is preserved.
+
+**Consequences:**
+- New `src/pfm/db/encryption.py` module (~90 lines)
+- `Repository` and `init_db` accept optional `key_hex` parameter
+- New `db_locked_middleware` gates data endpoints behind unlock
+- Three new HTTP endpoints: `POST /unlock`, `GET /encryption/status`, updated `GET /health` with `locked` field
+- Phase 4 proper (Swift Keychain, `pfm db encrypt/decrypt` CLI) can build on this foundation
+- No breaking changes — plain DB continues to work identically when no key is configured

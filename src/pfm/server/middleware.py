@@ -14,6 +14,9 @@ logger = logging.getLogger(__name__)
 
 _LOCAL_ADDRS = frozenset({"127.0.0.1", "::1"})
 
+# Paths that remain accessible when the database is locked.
+_UNLOCKED_PATHS = frozenset({"/api/v1/health", "/api/v1/unlock", "/api/v1/encryption/status"})
+
 
 @web.middleware
 async def local_only_middleware(
@@ -23,6 +26,17 @@ async def local_only_middleware(
     """Reject requests not originating from localhost."""
     if request.remote not in _LOCAL_ADDRS:
         raise web.HTTPForbidden(text="Access restricted to localhost")
+    return await handler(request)
+
+
+@web.middleware
+async def db_locked_middleware(
+    request: web.Request,
+    handler: Callable[[web.Request], Awaitable[web.StreamResponse]],
+) -> web.StreamResponse:
+    """Return 423 Locked for data endpoints when DB is locked."""
+    if request.app.get("db_locked") and request.path not in _UNLOCKED_PATHS:
+        return web.json_response({"error": "Database is locked"}, status=423)
     return await handler(request)
 
 
