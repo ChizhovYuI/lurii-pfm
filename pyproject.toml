@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Personal Financial Management — aggregate assets, statements, PnL from crypto/finance apps"
 requires-python = ">=3.13"
 dependencies = [
+    "aiohttp>=3.11",
     "aiosqlite>=0.22.1",
     "alembic>=1.18.4",
     "click>=8.3.1",
@@ -23,6 +24,7 @@ dev = [
     "mypy>=1.13",
     "pre-commit>=4.0",
     "pytest>=8.3",
+    "pytest-aiohttp>=1.0",
     "pytest-cov>=6.0",
     "pytest-asyncio>=0.24",
 ]
@@ -95,8 +97,15 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+"src/pfm/server/**/*.py" = [
+    "PLC0415", # late imports are used to avoid circular deps and keep startup fast
+]
+"src/pfm/cli.py" = [
+    "PLC0415", # late imports are used to avoid circular deps and keep startup fast
+]
 "tests/**/*.py" = [
     "S101",    # assert is fine in tests
+    "S105",    # hardcoded password comparisons fine in tests
     "S106",    # hardcoded passwords fine in test fixtures
     "S108",    # temp file paths fine in tests
     "ANN",     # no type annotations required in tests
@@ -155,6 +164,14 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = ["pdfplumber", "pdfplumber.*"]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["aiohttp", "aiohttp.*", "aiohttp_client"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["pfm.server.routes.*", "pfm.server.middleware"]
+disable_error_code = ["misc"]  # aiohttp RouteTableDef decorators are untyped
 
 # ── Pytest ────────────────────────────────────────────────────────────
 [tool.pytest.ini_options]

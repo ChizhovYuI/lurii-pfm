@@ -34,6 +34,16 @@ class Settings(BaseSettings):
     # ── Logging ───────────────────────────────────────────────────────
     log_level: str = "INFO"
 
+    @property
+    def resolved_database_path(self) -> Path:
+        """Prefer old path if exists, fall back to App Support path."""
+        if self.database_path.exists():
+            return self.database_path
+        app_support = Path.home() / "Library" / "Application Support" / "Lurii Finance" / "lurii.db"
+        if app_support.exists():
+            return app_support
+        return self.database_path
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

@@ -28,14 +28,22 @@ from pfm.db.source_store import (
     SourceStore,
 )
 from pfm.db.telegram_store import TelegramStore
+from pfm.server.serializers import (
+    build_asset_type_map as _build_asset_type_map,
+)
+from pfm.server.serializers import (
+    mask_secret as _mask,
+)
+from pfm.server.serializers import (
+    pnl_result_to_dict as _pnl_result_to_dict,
+)
 from pfm.source_types import SOURCE_TYPES
 
 if TYPE_CHECKING:
     from collections.abc import Coroutine
 
     from pfm.ai import AnalyticsSummary
-    from pfm.analytics import PnlResult
-    from pfm.db.models import Snapshot, Source
+    from pfm.db.models import Source
     from pfm.db.repository import Repository
 
 logger = logging.getLogger(__name__)
@@ -43,32 +51,6 @@ _COUNTRY_ACCESS_HINT_PATTERNS = (
     "service access appears restricted from your current network or region",
     "you don't have access from this country. use vpn or smth to handle this",
 )
-_FIAT_ASSETS: frozenset[str] = frozenset(
-    {
-        "USD",
-        "THB",
-        "GBP",
-        "EUR",
-        "JPY",
-        "CHF",
-        "CAD",
-        "AUD",
-        "NZD",
-        "SGD",
-        "HKD",
-    }
-)
-_CRYPTO_SOURCES: frozenset[str] = frozenset({"okx", "binance", "binance_th", "bybit", "lobstr"})
-_FIAT_SOURCES: frozenset[str] = frozenset({"wise", "kbank"})
-_STOCK_SOURCES: frozenset[str] = frozenset({"ibkr"})
-_DEFI_SOURCES: frozenset[str] = frozenset({"blend"})
-
-
-def _mask(value: str) -> str:
-    """Mask a secret value, showing first 3 and last 3 chars."""
-    if len(value) <= 8:  # noqa: PLR2004
-        return "***"
-    return f"{value[:3]}...{value[-3:]}"
 
 
 def _get_store() -> SourceStore:
@@ -199,6 +181,25 @@ def source_add() -> None:
 @source.command("list")
 def source_list() -> None:
     """List all configured sources."""
+    from pfm.server.client import is_daemon_reachable, proxy_sources_list
+
+    if is_daemon_reachable():
+        data = _run(proxy_sources_list())
+        if not data:
+            click.echo("No sources configured. Run 'pfm source add' to add one.")
+            return
+        name_w = max(len(s["name"]) for s in data)
+        name_w = max(name_w, 4)
+        type_w = max(len(s["type"]) for s in data)
+        type_w = max(type_w, 4)
+        header = f"{'NAME':<{name_w}}  {'TYPE':<{type_w}}  {'ENABLED':<7}"
+        click.echo(header)
+        click.echo("-" * len(header))
+        for s in data:
+            enabled = "yes" if s["enabled"] else "no"
+            click.echo(f"{s['name']:<{name_w}}  {s['type']:<{type_w}}  {enabled:<7}")
+        return
+
     _ensure_db()
     store = _get_store()
     sources: list[Source] = _run(store.list_all())
@@ -596,6 +597,13 @@ def telegram_clear() -> None:
 @click.option("--source", "source_name", default=None, help="Run a single source by name.")
 def collect(source_name: str | None) -> None:
     """Fetch balances and transactions from configured sources."""
+    from pfm.server.client import is_daemon_reachable, proxy_collect
+
+    if is_daemon_reachable():
+        result = _run(proxy_collect(source_name))
+        click.echo(f"Collection triggered via daemon: {result.get('status', 'unknown')}")
+        return
+
     _ensure_db()
     results = _run(_collect_async(source_name))
     _print_collect_results(results)
@@ -937,83 +945,6 @@ async def _analyze_async() -> None:
     )
 
 
-def _pnl_result_to_dict(result: PnlResult) -> dict[str, object]:
-    """Serialize PnL dataclass to a JSON-safe dict."""
-    pnl = result
-    return {
-        "start_date": pnl.start_date.isoformat() if pnl.start_date else None,
-        "end_date": pnl.end_date.isoformat() if pnl.end_date else None,
-        "start_value": str(pnl.start_value),
-        "end_value": str(pnl.end_value),
-        "absolute_change": str(pnl.absolute_change),
-        "percentage_change": str(pnl.percentage_change),
-        "by_asset": [
-            {
-                "asset": row.asset,
-                "start_value": str(row.start_value),
-                "end_value": str(row.end_value),
-                "absolute_change": str(row.absolute_change),
-                "percentage_change": str(row.percentage_change),
-                "cost_basis_value": str(row.cost_basis_value) if row.cost_basis_value is not None else None,
-            }
-            for row in pnl.by_asset
-        ],
-        "top_gainers": [
-            {
-                "asset": row.asset,
-                "start_value": str(row.start_value),
-                "end_value": str(row.end_value),
-                "absolute_change": str(row.absolute_change),
-                "percentage_change": str(row.percentage_change),
-                "cost_basis_value": str(row.cost_basis_value) if row.cost_basis_value is not None else None,
-            }
-            for row in pnl.top_gainers
-        ],
-        "top_losers": [
-            {
-                "asset": row.asset,
-                "start_value": str(row.start_value),
-                "end_value": str(row.end_value),
-                "absolute_change": str(row.absolute_change),
-                "percentage_change": str(row.percentage_change),
-                "cost_basis_value": str(row.cost_basis_value) if row.cost_basis_value is not None else None,
-            }
-            for row in pnl.top_losers
-        ],
-        "notes": list(pnl.notes),
-    }
-
-
-def _build_asset_type_map(snapshots: list[Snapshot]) -> dict[str, str]:
-    by_asset: dict[str, dict[str, Decimal]] = {}
-    for snap in snapshots:
-        asset = snap.asset.upper()
-        asset_types = by_asset.setdefault(asset, {})
-        asset_type = _asset_type_for_snapshot(snap.source, snap.asset)
-        asset_types[asset_type] = asset_types.get(asset_type, Decimal(0)) + snap.usd_value
-
-    resolved: dict[str, str] = {}
-    for asset, scored_types in by_asset.items():
-        resolved[asset] = max(scored_types.items(), key=lambda item: item[1])[0]
-    return resolved
-
-
-def _asset_type_for_snapshot(source: str, asset: str) -> str:
-    source_lower = source.lower()
-    asset_upper = asset.upper()
-    if source_lower in _DEFI_SOURCES:
-        return "defi"
-    if source_lower in _FIAT_SOURCES:
-        return "fiat"
-    if source_lower in _STOCK_SOURCES:
-        return "fiat" if asset_upper in _FIAT_ASSETS else "stocks"
-    if asset_upper in _FIAT_ASSETS:
-        return "fiat"
-    if source_lower in _CRYPTO_SOURCES:
-        return "crypto"
-    return "other"
-
-
 _REQUIRED_ANALYTICS_METRICS = (
     "net_worth",
     "allocation_by_asset",
@@ -1292,3 +1223,82 @@ def _parse_cached_ai_commentary_model(raw_json: str | None) -> str | None:
             return value or None
 
     return None
+
+
+# ── Daemon management ────────────────────────────────────────────────
+
+
+@cli.group()
+def daemon() -> None:
+    """Manage the background HTTP server."""
+
+
+@daemon.command("start")
+@click.option("--port", default=19274, show_default=True, help="Port to listen on.")
+def daemon_start(port: int) -> None:
+    """Start the daemon via launchd."""
+    from pfm.server.daemon import install_plist, is_daemon_running, load_daemon
+
+    running, pid = is_daemon_running()
+    if running:
+        click.echo(f"Daemon is already running (PID {pid}).")
+        return
+
+    install_plist(port)
+    load_daemon()
+    click.echo(f"Daemon started on port {port}.")
+
+
+@daemon.command("stop")
+def daemon_stop() -> None:
+    """Stop the daemon via launchd."""
+    from pfm.server.daemon import is_daemon_running, unload_daemon
+
+    running, _pid = is_daemon_running()
+    if not running:
+        click.echo("Daemon is not running.")
+        return
+
+    unload_daemon()
+    click.echo("Daemon stopped.")
+
+
+@daemon.command("status")
+def daemon_status() -> None:
+    """Show daemon status and PID."""
+    from pfm.server.daemon import is_daemon_running
+
+    running, pid = is_daemon_running()
+    if running:
+        click.echo(f"Daemon is running (PID {pid}).")
+    else:
+        click.echo("Daemon is not running.")
+
+
+@daemon.command("logs")
+@click.option("-f", "--follow", is_flag=True, help="Follow log output.")
+def daemon_logs(*, follow: bool) -> None:
+    """Tail the daemon log file."""
+    import subprocess
+
+    from pfm.server.daemon import get_log_path
+
+    log_path = get_log_path()
+    if not log_path.exists():
+        click.echo("No log file found.")
+        return
+
+    cmd = ["/usr/bin/tail"]
+    if follow:
+        cmd.append("-f")
+    cmd.append(str(log_path))
+    subprocess.run(cmd, check=False)  # noqa: S603
+
+
+@cli.command("server", hidden=True)
+@click.option("--port", default=19274, show_default=True, help="Port to listen on.")
+def server_command(port: int) -> None:
+    """Run the HTTP server directly (used by launchd)."""
+    from pfm.server.run import run_server
+
+    run_server(port=port)
