@@ -7,7 +7,17 @@ from typing import Any
 import aiosqlite
 from aiohttp import web
 
+from pfm.server.serializers import mask_secret
+
 routes = web.RouteTableDef()
+
+_SECRET_KEYS: frozenset[str] = frozenset(
+    {
+        "telegram_bot_token",
+        "gemini_api_key",
+        "ai_provider_api_key",
+    }
+)
 
 
 @routes.get("/api/v1/settings")
@@ -16,7 +26,9 @@ async def get_settings(request: web.Request) -> web.Response:
     db_path = request.app["db_path"]
     async with aiosqlite.connect(str(db_path)) as db:
         rows = await (await db.execute("SELECT key, value FROM app_settings")).fetchall()
-    settings_dict = {str(row[0]): str(row[1]) for row in rows}
+    settings_dict = {
+        str(row[0]): mask_secret(str(row[1])) if str(row[0]) in _SECRET_KEYS else str(row[1]) for row in rows
+    }
     return web.json_response(settings_dict)
 
 
