@@ -412,4 +412,5 @@ CREATE TABLE IF NOT EXISTS ai_providers (
 - UI can group/filter holdings by any dimension without additional API calls
 - `compute_allocation_by_asset()` is no longer called by this endpoint (still used by other analytics endpoints)
 - Per-source granularity preserved in the response
-- `asset_type` and `percentage` are computed per-snapshot row using existing `asset_type_for_snapshot()` helper
+- `asset_type` is computed per-snapshot row using existing `asset_type_for_snapshot()` helper
+- `percentage` removed from response — UI computes it from `usd_value` / `net_worth`

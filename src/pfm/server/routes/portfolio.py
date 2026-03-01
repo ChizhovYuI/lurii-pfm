@@ -23,7 +23,6 @@ async def portfolio_summary(request: web.Request) -> web.Response:
 
     analysis_date = latest[0].date
     net_worth = await compute_net_worth(repo, analysis_date)
-    total_usd = sum(s.usd_value for s in latest)
 
     return web.json_response(
         {
@@ -37,9 +36,6 @@ async def portfolio_summary(request: web.Request) -> web.Response:
                     "amount": _str_decimal(snap.amount),
                     "usd_value": _str_decimal(snap.usd_value),
                     "price": _str_decimal(snap.price),
-                    "percentage": _str_decimal(
-                        snap.usd_value * 100 / total_usd if total_usd else snap.usd_value,
-                    ),
                 }
                 for snap in latest
             ],
