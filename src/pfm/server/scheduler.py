@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, time, timedelta
+from datetime import UTC, datetime, time, timedelta
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -12,12 +12,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_TARGET_TIME = time(0, 5)  # 00:05 local
+_TARGET_TIME = time(0, 5, tzinfo=UTC)  # 00:05 UTC
 
 
 def _seconds_until(target: time) -> float:
-    """Return seconds from now until the next occurrence of *target* today/tomorrow."""
-    now = datetime.now()  # noqa: DTZ005 — intentionally wall-clock local
+    """Return seconds from now until the next occurrence of *target* (UTC)."""
+    now = datetime.now(tz=UTC)
     today_target = datetime.combine(now.date(), target)
     if today_target <= now:
         today_target += timedelta(days=1)
@@ -28,7 +28,7 @@ async def run_daily_collector(app: web.Application) -> None:
     """Sleep until 00:05, trigger collection, repeat."""
     from pfm.server.routes.collect import _run_collection
 
-    logger.info("Scheduler started — daily collection at %s", _TARGET_TIME)
+    logger.info("Scheduler started — daily collection at %s UTC", _TARGET_TIME.strftime("%H:%M"))
 
     try:
         while True:
