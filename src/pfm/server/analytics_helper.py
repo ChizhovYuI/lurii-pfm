@@ -9,12 +9,15 @@ from pfm.server.serializers import _str_decimal
 
 if TYPE_CHECKING:
     from datetime import date
+    from pathlib import Path
 
     from pfm.ai import AnalyticsSummary
     from pfm.db.repository import Repository
 
 
-async def build_analytics_summary(repo: Repository, snapshot_date: date) -> AnalyticsSummary:
+async def build_analytics_summary(
+    repo: Repository, snapshot_date: date, *, db_path: Path | None = None
+) -> AnalyticsSummary:
     """Compute all analytics metrics live and return an AnalyticsSummary."""
     from pfm.ai import AnalyticsSummary
     from pfm.analytics import (
@@ -22,9 +25,21 @@ async def build_analytics_summary(repo: Repository, snapshot_date: date) -> Anal
         compute_allocation_by_category,
         compute_allocation_by_source,
         compute_currency_exposure,
+        compute_data_warnings,
         compute_net_worth,
         compute_risk_metrics,
     )
+
+    snapshots = await repo.get_snapshots_resolved(snapshot_date)
+
+    # Compute data warnings (stale KBank, missing sources)
+    enabled_types: set[str] = set()
+    if db_path is not None:
+        from pfm.db.source_store import SourceStore
+
+        store = SourceStore(db_path)
+        enabled_types = {s.type for s in await store.list_enabled()}
+    warnings = compute_data_warnings(snapshots, enabled_types, snapshot_date)
 
     net_worth = await compute_net_worth(repo, snapshot_date)
     alloc_asset = await compute_allocation_by_asset(repo, snapshot_date)
@@ -96,4 +111,5 @@ async def build_analytics_summary(repo: Repository, snapshot_date: date) -> Anal
                 ],
             }
         ),
+        warnings=tuple(warnings),
     )

@@ -18,18 +18,24 @@ async def analytics_allocation(request: web.Request) -> web.Response:
         compute_allocation_by_asset,
         compute_allocation_by_category,
         compute_allocation_by_source,
+        compute_data_warnings,
     )
+    from pfm.db.source_store import SourceStore
 
     repo = request.app["repo"]
     latest = await repo.get_latest_snapshots()
     if not latest:
         return web.json_response({"error": "No snapshots available"}, status=404)
 
-    analysis_date = latest[0].date
+    analysis_date = max(s.date for s in latest)
 
     alloc_asset = await compute_allocation_by_asset(repo, analysis_date)
     alloc_source = await compute_allocation_by_source(repo, analysis_date)
     alloc_category = await compute_allocation_by_category(repo, analysis_date)
+
+    store = SourceStore(request.app["db_path"])
+    enabled_types = {s.type for s in await store.list_enabled()}
+    warnings = compute_data_warnings(latest, enabled_types, analysis_date)
 
     return web.json_response(
         {
@@ -62,6 +68,7 @@ async def analytics_allocation(request: web.Request) -> web.Response:
                 }
                 for row in alloc_category
             ],
+            "warnings": warnings,
         }
     )
 
@@ -76,7 +83,7 @@ async def analytics_exposure(request: web.Request) -> web.Response:
     if not latest:
         return web.json_response({"error": "No snapshots available"}, status=404)
 
-    analysis_date = latest[0].date
+    analysis_date = max(s.date for s in latest)
     exposure = await compute_currency_exposure(repo, analysis_date)
 
     return web.json_response(

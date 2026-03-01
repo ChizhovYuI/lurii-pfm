@@ -12,7 +12,7 @@ import email
 import imaplib
 import json
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -218,7 +218,7 @@ class KbankCollector(BaseCollector):
                     txs = self._parse_transaction_table(tables[-1])
                     transactions.extend(txs)
 
-        snapshot_date = statement_date or self._pricing.today()
+        snapshot_date = (statement_date + timedelta(days=1)) if statement_date else self._pricing.today()
 
         if ending_balance > 0:
             snapshots.append(

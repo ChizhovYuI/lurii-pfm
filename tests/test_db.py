@@ -86,6 +86,53 @@ async def test_get_latest_snapshots(repo):
     assert results[0].date == date(2024, 1, 15)
 
 
+async def test_get_latest_snapshots_resolves_per_source(repo):
+    """Stale sources (e.g., KBank) are included by resolving per-source latest date."""
+    await repo.save_snapshot(
+        Snapshot(date=date(2024, 1, 10), source="kbank", asset="THB", amount=Decimal(1000), usd_value=Decimal(28))
+    )
+    await repo.save_snapshot(
+        Snapshot(date=date(2024, 1, 15), source="okx", asset="BTC", amount=Decimal(1), usd_value=Decimal(45000))
+    )
+    results = await repo.get_latest_snapshots()
+    assert len(results) == 2
+    sources = {r.source for r in results}
+    assert sources == {"kbank", "okx"}
+
+
+async def test_get_snapshots_resolved(repo):
+    """get_snapshots_resolved returns latest per source up to target date."""
+    await repo.save_snapshots(
+        [
+            Snapshot(date=date(2024, 1, 5), source="kbank", asset="THB", amount=Decimal(900), usd_value=Decimal(25)),
+            Snapshot(date=date(2024, 1, 10), source="kbank", asset="THB", amount=Decimal(1000), usd_value=Decimal(28)),
+            Snapshot(date=date(2024, 1, 12), source="okx", asset="BTC", amount=Decimal(1), usd_value=Decimal(45000)),
+            Snapshot(date=date(2024, 1, 12), source="okx", asset="ETH", amount=Decimal(5), usd_value=Decimal(12000)),
+        ]
+    )
+    results = await repo.get_snapshots_resolved(date(2024, 1, 12))
+    assert len(results) == 3  # kbank(Jan 10) + okx BTC(Jan 12) + okx ETH(Jan 12)
+    kbank = [r for r in results if r.source == "kbank"]
+    assert len(kbank) == 1
+    assert kbank[0].date == date(2024, 1, 10)
+    assert kbank[0].amount == Decimal(1000)
+    okx = [r for r in results if r.source == "okx"]
+    assert len(okx) == 2
+
+
+async def test_get_snapshots_resolved_ignores_future(repo):
+    """Snapshots after target date are excluded."""
+    await repo.save_snapshots(
+        [
+            Snapshot(date=date(2024, 1, 10), source="kbank", asset="THB", amount=Decimal(1000), usd_value=Decimal(28)),
+            Snapshot(date=date(2024, 1, 20), source="okx", asset="BTC", amount=Decimal(1), usd_value=Decimal(45000)),
+        ]
+    )
+    results = await repo.get_snapshots_resolved(date(2024, 1, 15))
+    assert len(results) == 1
+    assert results[0].source == "kbank"
+
+
 async def test_save_and_get_transaction(repo):
     tx = Transaction(
         date=date(2024, 1, 15),

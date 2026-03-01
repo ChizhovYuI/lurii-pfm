@@ -9,6 +9,7 @@ from pfm.analytics.portfolio import (
     compute_allocation_by_category,
     compute_allocation_by_source,
     compute_currency_exposure,
+    compute_data_warnings,
     compute_net_worth,
     compute_risk_metrics,
 )
@@ -24,6 +25,7 @@ __all__ = [
     "compute_allocation_by_category",
     "compute_allocation_by_source",
     "compute_currency_exposure",
+    "compute_data_warnings",
     "compute_net_worth",
     "compute_risk_metrics",
     "compute_yield",

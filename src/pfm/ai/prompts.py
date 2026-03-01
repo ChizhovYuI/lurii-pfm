@@ -34,6 +34,9 @@ Allocation by category:
 Risk metrics:
 {risk_metrics}
 
+Data warnings:
+{warnings}
+
 Write a compact report with these sections in plain text:
 1) Market context
 2) Portfolio health assessment
@@ -61,6 +64,7 @@ class AnalyticsSummary:
     allocation_by_category: str
     currency_exposure: str
     risk_metrics: str
+    warnings: tuple[str, ...] = ()
 
 
 def render_weekly_report_user_prompt(analytics: AnalyticsSummary) -> str:
@@ -68,12 +72,14 @@ def render_weekly_report_user_prompt(analytics: AnalyticsSummary) -> str:
     top_holdings = _compact_top_holdings(analytics.allocation_by_asset)
     allocation_by_category = _compact_allocation_by_category(analytics.allocation_by_category)
     risk_metrics = _compact_risk_metrics(analytics.risk_metrics)
+    warnings_text = "\n".join(analytics.warnings) if analytics.warnings else "None"
     return WEEKLY_REPORT_USER_PROMPT_TEMPLATE.format(
         as_of_date=analytics.as_of_date.isoformat(),
         net_worth_usd=_fmt_usd(analytics.net_worth_usd),
         top_holdings=_pretty_json(top_holdings),
         allocation_by_category=_pretty_json(allocation_by_category),
         risk_metrics=_pretty_json(risk_metrics),
+        warnings=warnings_text,
     )
 
 

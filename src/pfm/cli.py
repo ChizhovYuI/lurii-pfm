@@ -849,7 +849,7 @@ async def _analyze_async() -> None:
             click.echo("No snapshots found. Run 'pfm collect' first.")
             return
 
-        analysis_date = latest[0].date
+        analysis_date = max(s.date for s in latest)
         net_worth = await compute_net_worth(repo, analysis_date)
         alloc_asset = await compute_allocation_by_asset(repo, analysis_date)
 
@@ -1049,7 +1049,7 @@ async def _load_latest_analytics_summary(repo: Repository) -> AnalyticsSummary |
         click.echo("No snapshots found. Run 'pfm collect' first.")
         return None
 
-    return await build_analytics_summary(repo, latest[0].date)
+    return await build_analytics_summary(repo, max(s.date for s in latest))
 
 
 def _parse_cached_ai_commentary(raw_json: str | None) -> str | None:

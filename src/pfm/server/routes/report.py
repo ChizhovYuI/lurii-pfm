@@ -29,8 +29,8 @@ async def send_report_notify(request: web.Request) -> web.Response:
     if not latest:
         return web.json_response({"error": "No snapshots available"}, status=404)
 
-    report_date = latest[0].date
-    analytics = await build_analytics_summary(repo, report_date)
+    report_date = max(s.date for s in latest)
+    analytics = await build_analytics_summary(repo, report_date, db_path=db_path)
 
     metrics = await repo.get_analytics_metrics_by_date(report_date)
     commentary = parse_cached_ai_commentary(metrics.get("ai_commentary"))

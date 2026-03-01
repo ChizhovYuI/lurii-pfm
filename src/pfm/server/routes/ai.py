@@ -24,7 +24,7 @@ async def get_commentary(request: web.Request) -> web.Response:
     if not latest:
         return web.json_response({"error": "No snapshots available"}, status=404)
 
-    analysis_date = latest[0].date
+    analysis_date = max(s.date for s in latest)
     metrics = await repo.get_analytics_metrics_by_date(analysis_date)
     raw = metrics.get("ai_commentary")
     if raw is None:
@@ -53,8 +53,8 @@ async def generate_commentary(request: web.Request) -> web.Response:
     if not latest:
         return web.json_response({"error": "No snapshots available"}, status=404)
 
-    report_date = latest[0].date
-    analytics = await build_analytics_summary(repo, report_date)
+    report_date = max(s.date for s in latest)
+    analytics = await build_analytics_summary(repo, report_date, db_path=db_path)
 
     result = await generate_commentary_with_model(analytics, db_path=db_path)
 

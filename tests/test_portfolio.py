@@ -10,6 +10,7 @@ from pfm.analytics.portfolio import (
     compute_allocation_by_category,
     compute_allocation_by_source,
     compute_currency_exposure,
+    compute_data_warnings,
     compute_net_worth,
     compute_risk_metrics,
 )
@@ -184,3 +185,56 @@ async def test_compute_allocation_by_category_unknown_source_fallbacks(repo):
     assert by_bucket["fiat"] == Decimal(110)
     # Unknown non-fiat assets currently map to crypto fallback bucket.
     assert by_bucket["crypto"] == Decimal(90)
+
+
+# ── Data Warnings ────────────────────────────────────────────────────
+
+
+def test_data_warnings_missing_source():
+    snapshots = [
+        Snapshot(date(2024, 1, 15), "okx", "BTC", Decimal(1), Decimal(45000)),
+    ]
+    enabled = {"okx", "kbank", "wise"}
+    warnings = compute_data_warnings(snapshots, enabled, date(2024, 1, 15))
+    assert "No snapshot data for source: kbank" in warnings
+    assert "No snapshot data for source: wise" in warnings
+    assert not any("okx" in w for w in warnings)
+
+
+def test_data_warnings_kbank_outdated():
+    snapshots = [
+        Snapshot(date(2024, 1, 15), "okx", "BTC", Decimal(1), Decimal(45000)),
+        Snapshot(date(2023, 12, 1), "kbank", "THB", Decimal(1000), Decimal(28)),
+    ]
+    enabled = {"okx", "kbank"}
+    warnings = compute_data_warnings(snapshots, enabled, date(2024, 1, 15))
+    assert any("KBank statement is outdated" in w for w in warnings)
+
+
+def test_data_warnings_kbank_fresh():
+    snapshots = [
+        Snapshot(date(2024, 1, 15), "okx", "BTC", Decimal(1), Decimal(45000)),
+        Snapshot(date(2024, 1, 2), "kbank", "THB", Decimal(1000), Decimal(28)),
+    ]
+    enabled = {"okx", "kbank"}
+    warnings = compute_data_warnings(snapshots, enabled, date(2024, 1, 15))
+    assert not any("KBank" in w for w in warnings)
+
+
+def test_data_warnings_no_issues():
+    snapshots = [
+        Snapshot(date(2024, 1, 15), "okx", "BTC", Decimal(1), Decimal(45000)),
+        Snapshot(date(2024, 1, 15), "wise", "GBP", Decimal(100), Decimal(125)),
+    ]
+    enabled = {"okx", "wise"}
+    warnings = compute_data_warnings(snapshots, enabled, date(2024, 1, 15))
+    assert warnings == []
+
+
+def test_data_warnings_no_enabled_sources():
+    """When no enabled sources are configured, skip missing-source check."""
+    snapshots = [
+        Snapshot(date(2024, 1, 15), "okx", "BTC", Decimal(1), Decimal(45000)),
+    ]
+    warnings = compute_data_warnings(snapshots, set(), date(2024, 1, 15))
+    assert warnings == []

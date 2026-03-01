@@ -14,15 +14,20 @@ routes = web.RouteTableDef()
 @routes.get("/api/v1/portfolio/summary")
 async def portfolio_summary(request: web.Request) -> web.Response:
     """Return live-computed net_worth + per-snapshot holdings for the latest date."""
-    from pfm.analytics import compute_net_worth
+    from pfm.analytics import compute_data_warnings, compute_net_worth
+    from pfm.db.source_store import SourceStore
 
     repo = request.app["repo"]
     latest = await repo.get_latest_snapshots()
     if not latest:
         return web.json_response({"error": "No snapshots available"}, status=404)
 
-    analysis_date = latest[0].date
+    analysis_date = max(s.date for s in latest)
     net_worth = await compute_net_worth(repo, analysis_date)
+
+    store = SourceStore(request.app["db_path"])
+    enabled_types = {s.type for s in await store.list_enabled()}
+    warnings = compute_data_warnings(latest, enabled_types, analysis_date)
 
     return web.json_response(
         {
@@ -40,6 +45,7 @@ async def portfolio_summary(request: web.Request) -> web.Response:
                 }
                 for snap in latest
             ],
+            "warnings": warnings,
         }
     )
 
@@ -77,7 +83,7 @@ async def portfolio_holdings(request: web.Request) -> web.Response:
 
     return web.json_response(
         {
-            "date": latest[0].date.isoformat(),
+            "date": max(s.date for s in latest).isoformat(),
             "holdings": [snapshot_to_dict(s) for s in latest],
         }
     )

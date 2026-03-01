@@ -1503,7 +1503,7 @@ async def test_kbank_tracks_last_statement_date(pricing):
         pricing._set_cache("THB", Decimal("0.028"))
         await collector.fetch_balances()
 
-    # last_statement_date comes from the snapshot date (parsed from Period field)
+    # last_statement_date comes from the snapshot date (Period end date)
     assert collector.last_statement_date == date(2026, 2, 27)
 
 

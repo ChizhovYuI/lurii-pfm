@@ -77,13 +77,13 @@ class RiskMetrics:
 
 async def compute_net_worth(repo: Repository, snapshot_date: date) -> Decimal:
     """Compute total USD value of all snapshots for a date."""
-    snapshots = await repo.get_snapshots_by_date(snapshot_date)
+    snapshots = await repo.get_snapshots_resolved(snapshot_date)
     return sum((s.usd_value for s in snapshots), Decimal(0))
 
 
 async def compute_allocation_by_asset(repo: Repository, snapshot_date: date) -> list[AssetAllocation]:
     """Compute per-(asset, asset_type) allocation with sources list and cached price."""
-    snapshots = await repo.get_snapshots_by_date(snapshot_date)
+    snapshots = await repo.get_snapshots_resolved(snapshot_date)
     total_usd = _sum_usd(snapshots)
     by_key: dict[tuple[str, str], tuple[Decimal, Decimal, set[str]]] = {}
 
@@ -119,7 +119,7 @@ async def compute_allocation_by_asset(repo: Repository, snapshot_date: date) -> 
 
 async def compute_allocation_by_source(repo: Repository, snapshot_date: date) -> list[BucketAllocation]:
     """Compute per-source allocation as share of total portfolio value."""
-    snapshots = await repo.get_snapshots_by_date(snapshot_date)
+    snapshots = await repo.get_snapshots_resolved(snapshot_date)
     total_usd = _sum_usd(snapshots)
     by_source: dict[str, Decimal] = {}
 
@@ -140,7 +140,7 @@ async def compute_allocation_by_source(repo: Repository, snapshot_date: date) ->
 
 async def compute_allocation_by_category(repo: Repository, snapshot_date: date) -> list[BucketAllocation]:
     """Compute allocation across category buckets: crypto/fiat/stocks/DeFi."""
-    snapshots = await repo.get_snapshots_by_date(snapshot_date)
+    snapshots = await repo.get_snapshots_resolved(snapshot_date)
     total_usd = _sum_usd(snapshots)
     by_category: dict[str, Decimal] = {}
 
@@ -162,7 +162,7 @@ async def compute_allocation_by_category(repo: Repository, snapshot_date: date) 
 
 async def compute_currency_exposure(repo: Repository, snapshot_date: date) -> list[CurrencyExposure]:
     """Compute fiat currency exposure as share of total portfolio value."""
-    snapshots = await repo.get_snapshots_by_date(snapshot_date)
+    snapshots = await repo.get_snapshots_resolved(snapshot_date)
     total_usd = _sum_usd(snapshots)
     by_currency: dict[str, Decimal] = {}
 
@@ -201,6 +201,36 @@ async def compute_risk_metrics(repo: Repository, snapshot_date: date) -> RiskMet
         top_5_assets=top_5,
         hhi_index=hhi,
     )
+
+
+_KBANK_STALE_DAYS = 35
+
+
+def compute_data_warnings(
+    snapshots: list[Snapshot],
+    enabled_source_types: set[str],
+    analysis_date: date,
+) -> list[str]:
+    """Generate warnings about stale KBank data and missing sources."""
+    # Sources present in resolved snapshots (with their latest date)
+    source_dates: dict[str, date] = {}
+    for snap in snapshots:
+        src = snap.source
+        if src not in source_dates or snap.date > source_dates[src]:
+            source_dates[src] = snap.date
+
+    # Warn about enabled sources with no snapshot data at all
+    missing = sorted(enabled_source_types - set(source_dates))
+    warnings = [f"No snapshot data for source: {src}" for src in missing]
+
+    # Warn if KBank statement is outdated
+    kbank_date = source_dates.get("kbank")
+    if kbank_date is not None:
+        age_days = (analysis_date - kbank_date).days
+        if age_days > _KBANK_STALE_DAYS:
+            warnings.append(f"KBank statement is outdated ({kbank_date.isoformat()}, {age_days} days old)")
+
+    return warnings
 
 
 def _sum_usd(snapshots: list[Snapshot]) -> Decimal:

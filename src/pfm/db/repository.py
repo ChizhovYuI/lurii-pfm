@@ -88,12 +88,33 @@ class Repository:
         return [self._row_to_snapshot(row) for row in rows]
 
     async def get_latest_snapshots(self) -> list[Snapshot]:
-        """Get snapshots from the most recent date."""
+        """Get snapshots resolving each source to its most recent date."""
         cursor = await self._db.execute("SELECT MAX(date) FROM snapshots")
         row = await cursor.fetchone()
         if not row or not row[0]:
             return []
-        return await self.get_snapshots_by_date(date.fromisoformat(row[0]))
+        return await self.get_snapshots_resolved(date.fromisoformat(row[0]))
+
+    async def get_snapshots_resolved(self, target_date: date) -> list[Snapshot]:
+        """Get the most recent snapshots per source where date <= target_date.
+
+        For each source, finds MAX(date) where date <= target_date,
+        then returns all snapshot rows for those source+date combos.
+        This ensures sources with older data (e.g., KBank monthly statements)
+        are included even when other sources have fresher snapshots.
+        """
+        cursor = await self._db.execute(
+            "SELECT s.* FROM snapshots s"
+            " INNER JOIN ("
+            "   SELECT source, MAX(date) AS max_date"
+            "   FROM snapshots WHERE date <= ?"
+            "   GROUP BY source"
+            " ) latest ON s.source = latest.source AND s.date = latest.max_date"
+            " ORDER BY s.source, s.asset",
+            (str(target_date),),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_snapshot(row) for row in rows]
 
     async def get_snapshots_for_range(self, start: date, end: date) -> list[Snapshot]:
         """Get all snapshots between two dates (inclusive)."""
