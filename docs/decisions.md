@@ -461,3 +461,48 @@ ORDER BY s.source, s.asset
 - `get_snapshots_by_date` still exists for exact-date queries (e.g. historical lookups)
 - No breaking API changes — `warnings` is a new additive field (empty array when no issues)
 - 14 files changed, 8 new tests (3 DB + 5 portfolio)
+
+---
+
+## ADR-014: Dedicated earn summary endpoint for yield-bearing positions
+
+**Date:** 2026-03-01
+
+**Status:** Accepted
+
+**Context:** The SwiftUI app needs a dedicated page to display yield-earning positions as a table. The existing `GET /api/v1/portfolio/summary` returns all holdings, leaving the UI to filter and compute yield-specific aggregates client-side.
+
+**Decision:** Add `GET /api/v1/earn/summary` that filters latest snapshots to positions with `apy > 0` and returns aggregate totals alongside the filtered positions.
+
+**Design choices:**
+- **Server-side filtering** (`apy > 0`) — avoids sending all holdings and re-filtering in Swift; keeps yield logic in one place
+- **Weighted average APY** — `sum(apy * usd_value) / total_usd_value` gives a meaningful portfolio-level yield metric that accounts for position size
+- **Reuses `get_latest_snapshots()`** — same per-source resolved snapshot query as portfolio summary (ADR-013), no new DB queries
+- **Empty vs missing distinction** — 404 when no snapshots exist at all (DB is empty); 200 with `positions: []` and zero totals when snapshots exist but none are earning. This lets the UI distinguish "no data" from "no yield positions"
+- **Same serialization helpers** — `_str_decimal`, `asset_type_for_snapshot` from `serializers.py`, consistent with portfolio response shape
+
+**Response shape:**
+```json
+{
+  "date": "2024-01-07",
+  "total_usd_value": "12500.50",
+  "weighted_avg_apy": "0.0832",
+  "positions": [
+    {
+      "source": "okx",
+      "asset": "USDT",
+      "asset_type": "crypto",
+      "amount": "10000",
+      "usd_value": "10000",
+      "price": "1",
+      "apy": "0.1049"
+    }
+  ]
+}
+```
+
+**Consequences:**
+- New `src/pfm/server/routes/earn.py` module (single endpoint)
+- Registered in `setup_routes()` alongside existing route modules
+- 3 new tests covering happy path, empty DB, and no-earning-positions cases
+- No changes to existing endpoints or DB schema
