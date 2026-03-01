@@ -13,6 +13,7 @@ import httpx
 
 from pfm.collectors import register_collector
 from pfm.collectors._auth import sign_bybit
+from pfm.collectors._math import apr_to_apy
 from pfm.collectors._retry import RateLimiter, retry
 from pfm.collectors.base import BaseCollector
 from pfm.db.models import Snapshot, Transaction, TransactionType
@@ -108,8 +109,9 @@ class BybitCollector(BaseCollector):
             ticker = str(item.get("coin", "")).upper()
             self._accumulate(totals, ticker, Decimal(str(item.get("walletBalance", "0"))))
 
-    async def _fetch_earn(self, totals: dict[str, Decimal]) -> None:
-        """Fetch Bybit Earn positions (FlexibleSaving + OnChain)."""
+    async def _fetch_earn(self, today: date) -> list[Snapshot]:
+        """Fetch Bybit Earn positions with APY as separate snapshots."""
+        snapshots: list[Snapshot] = []
         for category in ("FlexibleSaving", "OnChain"):
             try:
                 data = await self._get(
@@ -122,14 +124,48 @@ class BybitCollector(BaseCollector):
 
             for item in data.get("result", {}).get("list", []):
                 ticker = str(item.get("coin", "")).upper()
-                self._accumulate(totals, ticker, Decimal(str(item.get("amount", "0"))))
+                amount = Decimal(str(item.get("amount", "0")))
+                if not ticker or amount == 0:
+                    continue
+
+                # Primary: yesterdayYield → APR
+                yesterday_yield = Decimal(str(item.get("yesterdayYield", "0")))
+                if yesterday_yield > 0 and amount > 0:
+                    apr = yesterday_yield * 365 / amount
+                else:
+                    # Fallback: estimateApr string from position
+                    est_apr_str = str(item.get("estimateApr", "0"))
+                    est_apr_str = est_apr_str.rstrip("%")
+                    try:
+                        apr = Decimal(est_apr_str) / 100 if Decimal(est_apr_str) > 1 else Decimal(est_apr_str)
+                    except ArithmeticError:
+                        apr = Decimal(0)
+
+                apy = apr_to_apy(apr)
+                try:
+                    price = await self._pricing.get_price_usd(ticker)
+                except ValueError:
+                    logger.warning("Bybit: cannot price %s, skipping earn position", ticker)
+                    continue
+                snapshots.append(
+                    Snapshot(
+                        date=today,
+                        source=self.source_name,
+                        asset=ticker,
+                        amount=amount,
+                        usd_value=amount * price,
+                        price=price,
+                        apy=apy,
+                    )
+                )
+
+        return snapshots
 
     async def fetch_balances(self) -> list[Snapshot]:
         """Fetch unified + funding + earn account balances."""
         totals: dict[str, Decimal] = {}
         await self._fetch_unified(totals)
         await self._fetch_funding(totals)
-        await self._fetch_earn(totals)
 
         today = self._pricing.today()
         snapshots: list[Snapshot] = []
@@ -152,6 +188,10 @@ class BybitCollector(BaseCollector):
                     price=price,
                 )
             )
+
+        # Earn accounts are separate — append as distinct snapshots with APY
+        earn_snapshots = await self._fetch_earn(today)
+        snapshots.extend(earn_snapshots)
 
         logger.info("Bybit: found %d non-zero balances", len(snapshots))
         return snapshots

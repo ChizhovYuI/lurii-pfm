@@ -36,6 +36,7 @@ async def portfolio_summary(request: web.Request) -> web.Response:
                     "amount": _str_decimal(snap.amount),
                     "usd_value": _str_decimal(snap.usd_value),
                     "price": _str_decimal(snap.price),
+                    "apy": _str_decimal(snap.apy),
                 }
                 for snap in latest
             ],

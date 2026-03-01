@@ -64,6 +64,20 @@ class TestSnapshotToDict:
         assert result["amount"] == "1.5"
         assert result["usd_value"] == "45000"
         assert result["price"] == "0"
+        assert result["apy"] == "0"
+
+    def test_with_apy(self):
+        snap = Snapshot(
+            date=date(2024, 1, 1),
+            source="okx",
+            asset="USDT",
+            amount=Decimal(500),
+            usd_value=Decimal(500),
+            price=Decimal(1),
+            apy=Decimal("0.1049"),
+        )
+        result = snapshot_to_dict(snap)
+        assert result["apy"] == "0.1049"
 
 
 class TestCollectorResultToDict:

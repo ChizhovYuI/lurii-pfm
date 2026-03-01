@@ -69,10 +69,10 @@ class Repository:
             )
 
         await self._db.executemany(
-            "INSERT INTO snapshots (date, source, asset, amount, usd_value, price, raw_json)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO snapshots (date, source, asset, amount, usd_value, price, apy, raw_json)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             [
-                (str(s.date), s.source, s.asset, str(s.amount), str(s.usd_value), str(s.price), s.raw_json)
+                (str(s.date), s.source, s.asset, str(s.amount), str(s.usd_value), str(s.price), str(s.apy), s.raw_json)
                 for s in snapshots
             ],
         )
@@ -114,6 +114,7 @@ class Repository:
             amount=Decimal(row["amount"]),
             usd_value=Decimal(row["usd_value"]),
             price=Decimal(row["price"]),
+            apy=Decimal(row["apy"]),
             raw_json=row["raw_json"],
         )
 

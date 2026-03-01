@@ -12,6 +12,7 @@ from stellar_sdk import xdr as stellar_xdr
 from stellar_sdk.exceptions import SdkError
 
 from pfm.collectors import register_collector
+from pfm.collectors._math import apr_to_apy
 from pfm.collectors.base import BaseCollector
 from pfm.db.models import Snapshot
 
@@ -23,7 +24,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_SCALAR_7 = 10**7
 _SCALAR_12 = 10**12
+_U_95 = Decimal("0.95")
 # Known Stellar asset contract → ticker mapping (mainnet).
 # Native XLM uses a Stellar Asset Contract (SAC) wrapper.
 _KNOWN_ASSETS: dict[str, str] = {
@@ -134,10 +137,73 @@ class BlendCollector(BaseCollector):
             logger.warning("Blend: could not resolve ticker for %s", contract_id[:12])
         return "UNKNOWN"
 
+    def _get_pool_config(self) -> dict[str, Any]:
+        """Call get_config() on the pool contract."""
+        result = self._simulate("get_config", [])
+        if not isinstance(result, dict):
+            return {}
+        return result
+
+    @staticmethod
+    def _compute_supply_apy(reserve: dict[str, Any], backstop_rate: Decimal) -> Decimal:
+        """Compute supply APY from on-chain reserve data.
+
+        Uses Blend's 3-segment piecewise borrow interest rate curve,
+        then derives supply APR and converts to APY (weekly compounding).
+        """
+        data = reserve.get("data", {})
+        config = reserve.get("config", {})
+
+        b_supply = int(data.get("b_supply", 0))
+        d_supply = int(data.get("d_supply", 0))
+        b_rate = int(data.get("b_rate", 0))
+        d_rate = int(data.get("d_rate", 0))
+        ir_mod = int(data.get("ir_mod", _SCALAR_7))
+
+        r_base = int(config.get("r_base", 0))
+        r_one = int(config.get("r_one", 0))
+        r_two = int(config.get("r_two", 0))
+        r_three = int(config.get("r_three", 0))
+        util_target_raw = int(config.get("util", 0))
+
+        # Compute utilization
+        total_supply = Decimal(b_supply) * Decimal(b_rate) / Decimal(_SCALAR_12)
+        total_borrow = Decimal(d_supply) * Decimal(d_rate) / Decimal(_SCALAR_12)
+        if total_supply == 0:
+            return Decimal(0)
+        utilization = total_borrow / total_supply
+
+        # 3-segment piecewise borrow curve
+        u_target = Decimal(util_target_raw) / Decimal(_SCALAR_7)
+        u = utilization
+
+        if u_target > 0 and u <= u_target:
+            base_ir = (u / u_target) * Decimal(r_one) + Decimal(r_base)
+        elif u <= _U_95:
+            denom = _U_95 - u_target
+            if denom > 0:
+                base_ir = ((u - u_target) / denom) * Decimal(r_two) + Decimal(r_one) + Decimal(r_base)
+            else:
+                base_ir = Decimal(r_one) + Decimal(r_base)
+        else:
+            base_ir = (
+                ((u - _U_95) / Decimal("0.05")) * Decimal(r_three) + Decimal(r_two) + Decimal(r_one) + Decimal(r_base)
+            )
+
+        # Apply reactive interest rate modifier
+        cur_ir = base_ir * Decimal(ir_mod) / Decimal(_SCALAR_7)
+        borrow_apr = cur_ir / Decimal(_SCALAR_7)
+
+        # Supply APR = borrow_apr * (1 - backstop_rate) * utilization
+        supply_apr = borrow_apr * (1 - backstop_rate) * utilization
+
+        # Weekly compounding per Blend SDK convention
+        return apr_to_apy(supply_apr, periods=52)
+
     # ── Public interface ───────────────────────────────────────────────
 
     async def fetch_balances(self) -> list[Snapshot]:
-        """Fetch Blend lending positions (supply + collateral)."""
+        """Fetch Blend lending positions (supply + collateral) with APY."""
         if not self._pool_contract_id:
             logger.warning("Blend: pool contract ID not configured, skipping")
             return []
@@ -160,6 +226,13 @@ class BlendCollector(BaseCollector):
             logger.info("Blend: no active positions")
             return []
 
+        # Fetch pool config for backstop rate
+        try:
+            pool_config = self._get_pool_config()
+            backstop_rate = Decimal(int(pool_config.get("bstop_rate", 0))) / Decimal(_SCALAR_7)
+        except (httpx.HTTPStatusError, SdkError, ValueError, KeyError):
+            backstop_rate = Decimal("0.20")
+
         today = self._pricing.today()
         snapshots: list[Snapshot] = []
 
@@ -180,6 +253,8 @@ class BlendCollector(BaseCollector):
             price = await self._pricing.get_price_usd(ticker)
             usd_value = amount * price
 
+            apy = self._compute_supply_apy(reserve, backstop_rate)
+
             snapshots.append(
                 Snapshot(
                     date=today,
@@ -188,6 +263,7 @@ class BlendCollector(BaseCollector):
                     amount=amount,
                     usd_value=usd_value,
                     price=price,
+                    apy=apy,
                 )
             )
 

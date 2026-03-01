@@ -12,6 +12,7 @@ import httpx
 
 from pfm.collectors import register_collector
 from pfm.collectors._auth import sign_okx
+from pfm.collectors._math import apr_to_apy
 from pfm.collectors._retry import RateLimiter, retry
 from pfm.collectors.base import BaseCollector
 from pfm.db.models import Snapshot, Transaction, TransactionType
@@ -91,29 +92,95 @@ class OkxCollector(BaseCollector):
             total = Decimal(str(item.get("availBal", "0"))) + Decimal(str(item.get("frozenBal", "0")))
             self._accumulate(totals, ticker, total)
 
-    async def _fetch_earn(self, totals: dict[str, Decimal]) -> None:
+    async def _fetch_savings_apr(self, ccy: str, balance: Decimal) -> Decimal:
+        """Get effective APR for a savings currency (includes bonus rate).
+
+        Primary: ``lending-history`` → sum(earnings) * 8760 / balance.
+        Fallback: ``lending-rate-summary`` → ``estRate``.
+        """
+        try:
+            data = await self._get("/api/v5/finance/savings/lending-history", params={"ccy": ccy})
+            entries = data.get("data", [])
+            if entries:
+                latest_ts = entries[0]["ts"]
+                latest = [e for e in entries if e["ts"] == latest_ts]
+                total_earnings = sum(Decimal(str(e["earnings"])) for e in latest)
+                if balance > 0:
+                    return total_earnings * 8760 / balance
+        except (httpx.HTTPStatusError, KeyError, ValueError):
+            logger.debug("OKX: lending-history unavailable for %s", ccy)
+
+        try:
+            summary = await self._get("/api/v5/finance/savings/lending-rate-summary", params={"ccy": ccy})
+            items = summary.get("data", [])
+            if items:
+                return Decimal(str(items[0].get("estRate", "0")))
+        except (httpx.HTTPStatusError, KeyError, ValueError):
+            logger.debug("OKX: lending-rate-summary unavailable for %s", ccy)
+
+        return Decimal(0)
+
+    async def _fetch_earn(self, today: date) -> list[Snapshot]:
+        """Fetch earn account balances with APY as separate snapshots."""
+        snapshots: list[Snapshot] = []
+
+        # Savings
         try:
             savings_data = await self._get("/api/v5/finance/savings/balance")
             for item in savings_data.get("data", []):
                 ticker = str(item.get("ccy", "")).upper()
-                self._accumulate(totals, ticker, Decimal(str(item.get("amt", "0"))))
+                amount = Decimal(str(item.get("amt", "0")))
+                if not ticker or amount == 0:
+                    continue
+                apr = await self._fetch_savings_apr(ticker, amount)
+                apy = apr_to_apy(apr)
+                price = await self._pricing.get_price_usd(ticker)
+                snapshots.append(
+                    Snapshot(
+                        date=today,
+                        source=self.source_name,
+                        asset=ticker,
+                        amount=amount,
+                        usd_value=amount * price,
+                        price=price,
+                        apy=apy,
+                    )
+                )
         except httpx.HTTPStatusError:
             logger.warning("OKX: failed to fetch savings balances")
 
+        # Staking
         try:
             staking_data = await self._get("/api/v5/finance/staking-defi/orders-active")
             for item in staking_data.get("data", []):
                 ticker = str(item.get("ccy", "")).upper()
-                self._accumulate(totals, ticker, Decimal(str(item.get("investAmt", "0"))))
+                amount = Decimal(str(item.get("investAmt", "0")))
+                if not ticker or amount == 0:
+                    continue
+                est_apr = Decimal(str(item.get("estApr", "0")))
+                apy = apr_to_apy(est_apr)
+                price = await self._pricing.get_price_usd(ticker)
+                snapshots.append(
+                    Snapshot(
+                        date=today,
+                        source=self.source_name,
+                        asset=ticker,
+                        amount=amount,
+                        usd_value=amount * price,
+                        price=price,
+                        apy=apy,
+                    )
+                )
         except httpx.HTTPStatusError:
             logger.warning("OKX: failed to fetch staking balances")
+
+        return snapshots
 
     async def fetch_balances(self) -> list[Snapshot]:
         """Fetch trading + funding + earn account balances."""
         totals: dict[str, Decimal] = {}
         await self._fetch_trading(totals)
         await self._fetch_funding(totals)
-        await self._fetch_earn(totals)
 
         today = self._pricing.today()
         snapshots: list[Snapshot] = []
@@ -130,6 +197,10 @@ class OkxCollector(BaseCollector):
                     price=price,
                 )
             )
+
+        # Earn accounts are separate — append as distinct snapshots with APY
+        earn_snapshots = await self._fetch_earn(today)
+        snapshots.extend(earn_snapshots)
 
         logger.info("OKX: found %d non-zero balances", len(snapshots))
         return snapshots

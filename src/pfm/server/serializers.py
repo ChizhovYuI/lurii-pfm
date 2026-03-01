@@ -76,6 +76,7 @@ def snapshot_to_dict(snapshot: Snapshot) -> dict[str, Any]:
         "amount": _str_decimal(snapshot.amount),
         "usd_value": _str_decimal(snapshot.usd_value),
         "price": _str_decimal(snapshot.price),
+        "apy": _str_decimal(snapshot.apy),
     }
 
 

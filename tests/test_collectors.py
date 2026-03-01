@@ -349,11 +349,7 @@ async def test_binance_th_transactions_404_on_all_paths_is_clean_skip(pricing, c
 async def test_okx_fetch_balances(pricing):
     collector = OkxCollector(pricing, api_key="key", api_secret="secret", passphrase="pass")
 
-    call_count = 0
-
     async def mock_get(path, **kwargs):
-        nonlocal call_count
-        call_count += 1
         if "account/balance" in path:
             return _mock_response(
                 {
@@ -367,15 +363,17 @@ async def test_okx_fetch_balances(pricing):
                     ]
                 }
             )
-        # funding balances
-        return _mock_response(
-            {
-                "data": [
-                    {"ccy": "USDC", "availBal": "1000", "frozenBal": "0"},
-                    {"ccy": "BTC", "availBal": "0.5", "frozenBal": "0"},  # merge with trading
-                ]
-            }
-        )
+        if "asset/balances" in path:
+            return _mock_response(
+                {
+                    "data": [
+                        {"ccy": "USDC", "availBal": "1000", "frozenBal": "0"},
+                        {"ccy": "BTC", "availBal": "0.5", "frozenBal": "0"},  # merge with trading
+                    ]
+                }
+            )
+        # earn endpoints return empty data
+        return _mock_response({"data": []})
 
     collector._client.get = mock_get  # type: ignore[assignment]
 
@@ -383,6 +381,44 @@ async def test_okx_fetch_balances(pricing):
     assert len(snapshots) == 2  # BTC (merged), USDC
     btc = next(s for s in snapshots if s.asset == "BTC")
     assert btc.amount == Decimal("2.5")  # 2.0 trading + 0.5 funding
+    assert btc.apy == Decimal(0)
+
+
+async def test_okx_fetch_earn_with_apy(pricing):
+    """Test OKX earn snapshots include APY from lending-history."""
+    pricing._set_cache("USDT", Decimal(1))
+    collector = OkxCollector(pricing, api_key="key", api_secret="secret", passphrase="pass")
+
+    async def mock_get(path, **kwargs):
+        if "account/balance" in path:
+            return _mock_response({"data": [{"details": []}]})
+        if "asset/balances" in path:
+            return _mock_response({"data": []})
+        if "savings/balance" in path:
+            return _mock_response({"data": [{"ccy": "USDT", "amt": "500"}]})
+        if "lending-history" in path:
+            return _mock_response(
+                {
+                    "data": [
+                        {"amt": "500", "earnings": "0.005", "rate": "0.09", "ts": "1000"},
+                        {"amt": "500", "earnings": "0.0005", "rate": "0.01", "ts": "1000"},
+                    ]
+                }
+            )
+        if "staking-defi" in path:
+            return _mock_response({"data": []})
+        return _mock_response({"data": []})
+
+    collector._client.get = mock_get  # type: ignore[assignment]
+
+    snapshots = await collector.fetch_balances()
+    earn_snaps = [s for s in snapshots if s.apy > 0]
+    assert len(earn_snaps) == 1
+    usdt = earn_snaps[0]
+    assert usdt.asset == "USDT"
+    assert usdt.amount == Decimal(500)
+    # APR = (0.005 + 0.0005) * 8760 / 500 ≈ 0.0964
+    assert usdt.apy > Decimal("0.09")
 
 
 async def test_okx_fetch_transactions(pricing):
@@ -609,6 +645,49 @@ async def test_bybit_dedup_across_account_types(pricing):
     # BTC should appear only once (from UNIFIED, SPOT duplicate skipped)
     btc_snapshots = [s for s in snapshots if s.asset == "BTC"]
     assert len(btc_snapshots) == 1
+
+
+async def test_bybit_fetch_earn_with_apy(pricing):
+    """Test Bybit earn snapshots include APY from yesterdayYield."""
+    pricing._set_cache("USDT", Decimal(1))
+    collector = BybitCollector(pricing, api_key="key", api_secret="secret")
+
+    async def mock_get(path, **kwargs):
+        params = kwargs.get("params", {})
+        acct_type = params.get("accountType", "")
+        category = params.get("category", "")
+        if acct_type == "UNIFIED":
+            return _mock_response({"retCode": 0, "result": {"list": []}})
+        if acct_type == "FUND":
+            return _mock_response({"retCode": 0, "result": {"balance": []}})
+        if "earn/position" in path and category == "FlexibleSaving":
+            return _mock_response(
+                {
+                    "retCode": 0,
+                    "result": {
+                        "list": [
+                            {
+                                "coin": "USDT",
+                                "amount": "200",
+                                "yesterdayYield": "0.030692",
+                                "estimateApr": "0.6%",
+                            }
+                        ]
+                    },
+                }
+            )
+        return _mock_response({"retCode": 0, "result": {"list": []}})
+
+    collector._client.get = mock_get  # type: ignore[assignment]
+
+    snapshots = await collector.fetch_balances()
+    earn_snaps = [s for s in snapshots if s.apy > 0]
+    assert len(earn_snaps) == 1
+    usdt = earn_snaps[0]
+    assert usdt.asset == "USDT"
+    assert usdt.amount == Decimal(200)
+    # APR = 0.030692 * 365 / 200 ≈ 0.0560
+    assert usdt.apy > Decimal("0.05")
 
 
 # ── Wise ──────────────────────────────────────────────────────────────
@@ -989,15 +1068,19 @@ async def test_blend_fetch_balances_with_positions(pricing):
     collector._get_reserve_list = MagicMock(return_value=[MagicMock(), mock_addr])
     collector._get_reserve = MagicMock(
         return_value={
-            "data": {"b_rate": 1_000_000_000_000},
+            "data": {"b_rate": 1_000_000_000_000, "b_supply": 0, "d_supply": 0, "d_rate": 0, "ir_mod": 10_000_000},
+            "config": {"r_base": 0, "r_one": 0, "r_two": 0, "r_three": 0, "util": 8_000_000},
             "scalar": 10_000_000,
         }
     )
+    collector._get_pool_config = MagicMock(return_value={"bstop_rate": 2_000_000})
 
     snapshots = await collector.fetch_balances()
     assert len(snapshots) == 1
     assert snapshots[0].asset == "USDC"
     assert snapshots[0].amount == Decimal(1000)
+    # With zero supply/borrow, APY should be 0
+    assert snapshots[0].apy == Decimal(0)
 
 
 async def test_blend_fetch_balances_empty_positions(pricing):
@@ -1053,14 +1136,44 @@ async def test_blend_supply_and_collateral_merged(pricing):
     collector._get_reserve_list = MagicMock(return_value=[mock_addr])
     collector._get_reserve = MagicMock(
         return_value={
-            "data": {"b_rate": 1_000_000_000_000},
+            "data": {"b_rate": 1_000_000_000_000, "b_supply": 0, "d_supply": 0, "d_rate": 0, "ir_mod": 10_000_000},
+            "config": {"r_base": 0, "r_one": 0, "r_two": 0, "r_three": 0, "util": 8_000_000},
             "scalar": 10_000_000,
         }
     )
+    collector._get_pool_config = MagicMock(return_value={"bstop_rate": 2_000_000})
 
     snapshots = await collector.fetch_balances()
     assert len(snapshots) == 1
     assert snapshots[0].amount == Decimal(1000)
+
+
+async def test_blend_compute_supply_apy(pricing):
+    """Test Blend supply APY calculation with realistic reserve data."""
+    # USDC reserve data matching ~8.57% supply APR from research doc
+    reserve = {
+        "data": {
+            "b_supply": 100_000_0000000,  # 100k USDC in bTokens (7-decimal scalar)
+            "d_supply": 70_000_0000000,  # 70k USDC debt
+            "b_rate": 1_050_000_000_000,  # b_rate (12-decimal)
+            "d_rate": 1_100_000_000_000,  # d_rate (12-decimal)
+            "ir_mod": 23_300_000,  # 2.33x multiplier (7-decimal)
+        },
+        "config": {
+            "r_base": 300_000,
+            "r_one": 400_000,
+            "r_two": 1_200_000,
+            "r_three": 50_000_000,
+            "util": 8_000_000,  # 80% target utilization
+        },
+        "scalar": 10_000_000,
+    }
+    backstop_rate = Decimal("0.20")
+    apy = BlendCollector._compute_supply_apy(reserve, backstop_rate)
+    # Should be a positive APY
+    assert apy > Decimal("0.01")
+    # Should be in a reasonable range for DeFi lending
+    assert apy < Decimal("0.50")
 
 
 # ── KBank ─────────────────────────────────────────────────────────────

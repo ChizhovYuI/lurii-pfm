@@ -52,6 +52,10 @@ async def test_portfolio_summary(client):
     assert len(data["holdings"]) == 2
     sources = {row["source"] for row in data["holdings"]}
     assert sources == {"okx", "wise"}
+    # All holdings should include apy field
+    for holding in data["holdings"]:
+        assert "apy" in holding
+        assert holding["apy"] == "0"
 
 
 async def test_portfolio_summary_no_data(empty_client):

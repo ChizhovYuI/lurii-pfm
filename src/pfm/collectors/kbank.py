@@ -86,7 +86,11 @@ class KbankCollector(BaseCollector):
             return []
 
         snapshots, transactions = self._parse_pdf(self._pdf_path)
-        self._last_statement_date = self._infer_statement_date(transactions)
+        # Use the snapshot date (parsed from Period field) for statement freshness
+        if snapshots:
+            self._last_statement_date = snapshots[0].date
+        else:
+            self._last_statement_date = self._infer_statement_date(transactions)
         converted_snapshots: list[Snapshot] = []
         for snap in snapshots:
             usd_value = snap.usd_value
@@ -188,7 +192,7 @@ class KbankCollector(BaseCollector):
         """Parse a KBank PDF statement using pdfplumber.
 
         KBank PDFs have a specific structure per page:
-        - Table 1: header with account info and ending balance (page 1 only)
+        - Table 1: header with account info, period, and ending balance (page 1)
         - Table 2: transactions with all entries newline-delimited in one row
         """
         if not pdf_path.exists():
@@ -197,26 +201,29 @@ class KbankCollector(BaseCollector):
 
         snapshots: list[Snapshot] = []
         transactions: list[Transaction] = []
-        today = self._pricing.today()
         ending_balance = Decimal(0)
+        statement_date: date | None = None
 
         with pdfplumber.open(str(pdf_path), password=self._pdf_password or None) as pdf:
             for page_num, page in enumerate(pdf.pages):
                 tables = page.extract_tables()
 
-                # Extract ending balance from header table (page 1)
+                # Extract ending balance and period from header table (page 1)
                 if page_num == 0 and tables:
                     ending_balance = self._parse_header_balance(tables[0])
+                    statement_date = self._parse_period_end_date(tables[0])
 
                 # Transaction table is the last table on each page
                 if len(tables) >= 2:  # noqa: PLR2004
                     txs = self._parse_transaction_table(tables[-1])
                     transactions.extend(txs)
 
+        snapshot_date = statement_date or self._pricing.today()
+
         if ending_balance > 0:
             snapshots.append(
                 Snapshot(
-                    date=today,
+                    date=snapshot_date,
                     source=self.source_name,
                     asset="THB",
                     amount=ending_balance,
@@ -225,7 +232,12 @@ class KbankCollector(BaseCollector):
                 )
             )
 
-        logger.info("KBank: parsed %d transactions, ending balance: %s THB", len(transactions), ending_balance)
+        logger.info(
+            "KBank: parsed %d transactions, ending balance: %s THB (date: %s)",
+            len(transactions),
+            ending_balance,
+            snapshot_date,
+        )
         return snapshots, transactions
 
     @staticmethod
@@ -248,6 +260,27 @@ class KbankCollector(BaseCollector):
                     if amount:
                         return amount
         return Decimal(0)
+
+    @staticmethod
+    def _parse_period_end_date(table: list[list[Any]]) -> date | None:
+        """Extract the end date from the Period row in the header table.
+
+        The Period row looks like: ['Period', '01/02/2026 - 28/02/2026']
+        Returns the last date (end of statement period).
+        """
+        for row in table:
+            if not row or str(row[0] or "").strip() != "Period":
+                continue
+            period_str = str(row[1] or "").strip()
+            # Take the date after the dash: "01/02/2026 - 28/02/2026" → "28/02/2026"
+            parts = period_str.split("-")
+            if len(parts) >= 2:  # noqa: PLR2004
+                end_str = parts[-1].strip()
+                try:
+                    return datetime.strptime(end_str, "%d/%m/%Y").date()  # noqa: DTZ007
+                except ValueError:
+                    pass
+        return None
 
     def _parse_transaction_table(self, table: list[list[Any]]) -> list[Transaction]:
         """Parse a KBank transaction table with newline-delimited entries.
