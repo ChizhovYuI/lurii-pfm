@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Self
 
 import aiosqlite
 
-from pfm.db.models import Price, RawResponse, Snapshot, Transaction, TransactionType, init_db
+from pfm.db.models import Price, Snapshot, Transaction, TransactionType, init_db
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -243,16 +243,6 @@ class Repository:
             price=Decimal(row["price"]),
             source=row["source"],
         )
-
-    # ── Raw Responses ─────────────────────────────────────────────────
-
-    async def save_raw_response(self, raw: RawResponse) -> None:
-        """Save a raw API response for auditability."""
-        await self._db.execute(
-            "INSERT INTO raw_responses (date, source, endpoint, response_body) VALUES (?, ?, ?, ?)",
-            (str(raw.date), raw.source, raw.endpoint, raw.response_body),
-        )
-        await self._db.commit()
 
     # ── Analytics Cache ───────────────────────────────────────────────
 

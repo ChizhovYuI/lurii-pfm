@@ -74,18 +74,6 @@ class Price:
 
 
 @dataclass(frozen=True, slots=True)
-class RawResponse:
-    """Raw API response stored for auditability."""
-
-    date: date
-    source: str
-    endpoint: str
-    response_body: str
-    id: int | None = None
-    created_at: datetime | None = None
-
-
-@dataclass(frozen=True, slots=True)
 class Source:
     """A configured data source with credentials."""
 
@@ -166,15 +154,6 @@ CREATE TABLE IF NOT EXISTS prices (
 
 CREATE INDEX IF NOT EXISTS idx_prices_date_asset ON prices(date, asset);
 
-CREATE TABLE IF NOT EXISTS raw_responses (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    date TEXT NOT NULL,
-    source TEXT NOT NULL,
-    endpoint TEXT NOT NULL,
-    response_body TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
 CREATE TABLE IF NOT EXISTS analytics_cache (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     date TEXT NOT NULL,
@@ -240,4 +219,5 @@ async def init_db(path: Path, *, key_hex: str | None = None) -> None:
         async with aiosqlite.connect(str(path)) as db:
             await db.executescript(SCHEMA_SQL)
             await _migrate_snapshots_price(db)
+            await db.execute("DROP TABLE IF EXISTS raw_responses")
             await db.commit()

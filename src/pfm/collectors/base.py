@@ -5,12 +5,11 @@ from __future__ import annotations
 import logging
 import time
 from abc import ABC, abstractmethod
-from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from pfm.collectors._retry import is_dns_resolution_error
-from pfm.db.models import CollectorResult, RawResponse, Snapshot, Transaction
+from pfm.db.models import CollectorResult, Snapshot, Transaction
 
 if TYPE_CHECKING:
     from datetime import date
@@ -114,13 +113,3 @@ class BaseCollector(ABC):
             result.duration_seconds,
         )
         return result
-
-    async def _save_raw(self, repo: Repository, endpoint: str, body: str) -> None:
-        """Save a raw API response for auditability."""
-        raw = RawResponse(
-            date=datetime.now(tz=UTC).date(),
-            source=self.source_name,
-            endpoint=endpoint,
-            response_body=body,
-        )
-        await repo.save_raw_response(raw)

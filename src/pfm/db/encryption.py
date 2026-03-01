@@ -55,6 +55,7 @@ async def init_encrypted_db(path: Path, key_hex: str) -> None:
     async with conn:
         await conn.executescript(SCHEMA_SQL)
         await _migrate_snapshots_price(conn)
+        await conn.execute("DROP TABLE IF EXISTS raw_responses")
         await conn.commit()
     logger.info("Initialized encrypted database at %s", path)
 
