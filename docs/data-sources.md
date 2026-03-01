@@ -17,6 +17,7 @@ Overview of all financial data sources, recommended integration method, and acce
 | 7 | Wise | Multi-currency fiat | GBP + others | REST API (personal token) |
 | 8 | KBank | Thai bank | THB | PDF parsing (Gmail IMAP auto-fetch) |
 | 9 | IBKR | Broker (stocks/ETFs) | USD | Flex Query (automated) |
+| 10 | Revolut | Multi-currency neobank | EUR, GBP, USD + others | GoCardless open banking API |
 
 ## Money Flow
 
@@ -413,6 +414,88 @@ Activity Statements via Client Portal → Reports → Statements (CSV/Excel). Ca
 
 ---
 
+## 10. Revolut
+
+**Method:** GoCardless Bank Account Data API (formerly Nordigen) — PSD2 open banking intermediary
+
+Revolut has no self-service API for individuals. Their Open Banking API requires TPP registration with eIDAS/OBIE certificates. GoCardless provides free open banking access as an AISP intermediary.
+
+### Endpoints
+
+Base URL: `https://bankaccountdata.gocardless.com`
+
+| Purpose | Endpoint | Rate Limit |
+|---------|----------|------------|
+| Obtain access token | `POST /api/v2/token/new/` | — |
+| List requisition accounts | `GET /api/v2/requisitions/{id}/` | — |
+| Account balances | `GET /api/v2/accounts/{id}/balances/` | 4 req/day (auto-sync) |
+| Account transactions | `GET /api/v2/accounts/{id}/transactions/` | 4 req/day (auto-sync) |
+
+Auth: Bearer token from `POST /api/v2/token/new/` (secret_id + secret_key).
+
+### Setup
+
+1. Register at [GoCardless Bank Account Data Portal](https://bankaccountdata.gocardless.com/) → create secret ID and secret key
+2. Create a requisition linking to Revolut (institution ID: `REVOLUT_REVOGB21`) — this generates an authorization link
+3. Open the link → authorize in Revolut app → callback provides account IDs
+4. Add to pfm: `pfm source add` → select `revolut` → enter secret ID, secret key, requisition ID
+5. API docs: [developer.gocardless.com/bank-account-data](https://developer.gocardless.com/bank-account-data/overview)
+
+### Key Details
+
+- **Free tier:** 50 connections/month (sufficient for personal use)
+- **Transaction history:** up to 730 days for Revolut
+- **90-day re-authorization:** PSD2 SCA requires re-consent every 90 days via browser flow
+- **Multi-currency:** all Revolut pockets (EUR, GBP, USD, etc.) returned as separate balance entries
+- **Balance types:** collector uses `closingAvailable`, `interimAvailable`, or `expected` (skips `openingBooked` etc.)
+
+### Balance Response
+
+```json
+{
+  "balances": [
+    {
+      "balanceAmount": {"amount": "1500.50", "currency": "EUR"},
+      "balanceType": "closingAvailable",
+      "referenceDate": "2024-06-15"
+    }
+  ]
+}
+```
+
+### Transaction Response
+
+```json
+{
+  "transactions": {
+    "booked": [
+      {
+        "transactionAmount": {"amount": "-42.50", "currency": "EUR"},
+        "bookingDate": "2024-06-14",
+        "transactionId": "tx-abc-123"
+      }
+    ],
+    "pending": []
+  }
+}
+```
+
+### Why Not Ponto
+
+Ponto (Isabel Group/Ibanity) was evaluated and rejected:
+- Enterprise pricing (~€2,400/yr), no free tier
+- Complex auth (mTLS + HTTP Signatures + OAuth2)
+- Python SDK unmaintained (7 years, not on PyPI)
+- Revolut not explicitly confirmed as supported
+
+See ADR-016 for full rationale.
+
+### Fallback
+
+Revolut app → Transactions → Export (CSV). Manual monthly export.
+
+---
+
 ## Summary: Integration Complexity
 
 | Source | Complexity | Auth | Real-time? |
@@ -426,6 +509,7 @@ Activity Statements via Client Portal → Reports → Statements (CSV/Excel). Ca
 | Wise | Low | Personal token | Yes |
 | KBank | Medium | Gmail App Password | No (batch) |
 | IBKR | Medium | Flex token | No (EOD) |
+| Revolut | Low | GoCardless secret | Yes (4x/day auto-sync) |
 
 ### Recommended Implementation Order
 
