@@ -11,6 +11,10 @@ class GrokProvider(OpenAICompatibleProvider):
     """Grok via xAI API."""
 
     name = "grok"
+    description = "Grok — xAI API, fast reasoning models"
     default_model = "grok-3-mini"
     default_base_url = "https://api.x.ai"
-    models: tuple[str, ...] = ("grok-3-mini", "grok-3")
+    models: tuple[tuple[str, str], ...] = (
+        ("grok-3-mini", "fast, cheap"),
+        ("grok-3", "best quality"),
+    )

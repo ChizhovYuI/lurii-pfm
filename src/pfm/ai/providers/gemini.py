@@ -34,8 +34,13 @@ class GeminiProvider(LLMProvider):
     """Gemini provider with model failover chain and rate limiting."""
 
     name = "gemini"
+    description = "Google Gemini — free tier with rate limits, model failover chain"
     default_model = "gemini-2.5-pro"
-    models: tuple[str, ...] = GEMINI_MODELS
+    models: tuple[tuple[str, str], ...] = (
+        ("gemini-2.5-pro", "best quality, strict rate limits"),
+        ("gemini-2.5-flash", "fast, higher quota"),
+        ("gemini-2.5-flash-lite", "fastest, highest quota"),
+    )
 
     def __init__(
         self,

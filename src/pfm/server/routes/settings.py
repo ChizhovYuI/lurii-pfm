@@ -29,6 +29,13 @@ _PROVIDER_FIELDS = ("api_key", "model", "base_url")
 # Fields whose values must be masked in API responses.
 _SECRET_FIELDS: frozenset[str] = frozenset({"api_key"})
 
+# Per-provider hints for the api_key field (where to obtain the key).
+_API_KEY_HINTS: dict[str, str] = {
+    "gemini": "Get key at aistudio.google.com/apikey",
+    "openrouter": "Get key at openrouter.ai/keys",
+    "grok": "Get key at console.x.ai",
+}
+
 
 def _build_ai_providers_meta() -> list[dict[str, Any]]:
     """Build provider descriptors from the registry for UI rendering."""
@@ -36,6 +43,7 @@ def _build_ai_providers_meta() -> list[dict[str, Any]]:
     for name, cls in sorted(PROVIDER_REGISTRY.items(), key=lambda kv: str(kv[0])):
         sig = inspect.signature(cls.__init__)
         params = sig.parameters
+        provider_type = str(name)
 
         fields: list[dict[str, Any]] = []
         for field_name in _PROVIDER_FIELDS:
@@ -53,14 +61,23 @@ def _build_ai_providers_meta() -> list[dict[str, Any]]:
             cls_default = getattr(cls, default_attr, None)
             if cls_default:
                 field_info["default"] = cls_default
-            # Expose model options list if available
+            # Per-field hint (e.g. where to get an API key)
+            if field_name == "api_key" and provider_type in _API_KEY_HINTS:
+                field_info["hint"] = _API_KEY_HINTS[provider_type]
+            # Expose model options list as {value, description} objects
             if field_name == "model":
                 models = getattr(cls, "models", None)
                 if models:
-                    field_info["options"] = list(models)
+                    field_info["options"] = [
+                        {"value": m[0], "description": m[1]} if isinstance(m, tuple) else {"value": m} for m in models
+                    ]
             fields.append(field_info)
 
-        providers.append({"type": str(name), "fields": fields})
+        entry: dict[str, Any] = {"type": provider_type, "fields": fields}
+        cls_description = getattr(cls, "description", None)
+        if cls_description:
+            entry["description"] = cls_description
+        providers.append(entry)
     return providers
 
 
@@ -89,12 +106,16 @@ async def _enrich_providers_meta() -> list[dict[str, Any]]:
         for field in provider["fields"]:
             if field["name"] != "model":
                 continue
-            static: list[str] = field.get("options", [])
+            static: list[dict[str, Any]] = field.get("options", [])
+            static_values = {opt["value"] for opt in static}
             # Merge: installed first, then static suggestions not already present
-            merged = list(installed)
-            for m in static:
-                if m not in merged:
-                    merged.append(m)
+            merged: list[dict[str, Any]] = [{"value": m, "description": "installed"} for m in installed]
+            for opt in static:
+                if opt["value"] not in {m["value"] for m in merged}:
+                    desc = opt.get("description", "")
+                    if opt["value"] in static_values:
+                        desc = f"{desc}, not installed" if desc else "not installed"
+                    merged.append({**opt, "description": desc})
             field["options"] = merged
         break
     return meta

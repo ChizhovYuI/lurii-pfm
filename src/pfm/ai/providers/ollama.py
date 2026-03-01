@@ -20,9 +20,13 @@ class OllamaProvider(LLMProvider):
     """Ollama local LLM provider using the native ``/api/chat`` endpoint."""
 
     name = "ollama"
+    description = "Ollama — local/private inference, no API key needed"
     default_model = "qwen3:14b"
     default_base_url = "http://localhost:11434"
-    models: tuple[str, ...] = ("qwen3:14b", "llama3.1:8b")
+    models: tuple[tuple[str, str], ...] = (
+        ("qwen3:14b", "best for 16+ GB RAM"),
+        ("llama3.1:8b", "best for 8 GB RAM"),
+    )
 
     def __init__(
         self,
