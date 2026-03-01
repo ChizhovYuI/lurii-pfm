@@ -49,7 +49,9 @@ async def test_portfolio_summary(client):
     data = await resp.json()
     assert data["date"] == "2024-01-07"
     assert data["net_worth"]["usd"] == "45000"
-    assert len(data["allocation"]) == 2
+    assert len(data["holdings"]) == 2
+    sources = {row["source"] for row in data["holdings"]}
+    assert sources == {"okx", "wise"}
 
 
 async def test_portfolio_summary_no_data(empty_client):

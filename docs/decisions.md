@@ -378,3 +378,38 @@ CREATE TABLE IF NOT EXISTS ai_providers (
 - AI commentary focuses on allocation and risk metrics (no misleading PnL data)
 - 13 files changed, ~300 lines removed
 - PnL will be re-added later with proper edge-case handling (missing data detection, minimum data requirements, confidence indicators)
+
+---
+
+## ADR-012: Return ungrouped holdings in portfolio summary (source per row)
+
+**Date:** 2026-03-01
+
+**Status:** Accepted
+
+**Context:** `GET /api/v1/portfolio/summary` returned an `allocation` array where rows were grouped by `(asset, asset_type)` with a `sources: list[str]` field. This grouping was done server-side via `compute_allocation_by_asset()`.
+
+**Problem:**
+- The SwiftUI app needs to display holdings grouped in different ways (by source, by asset, by category) depending on the view
+- Server-side grouping forced one specific aggregation, making other groupings require additional API calls or client-side re-computation
+- Per-source detail (e.g. BTC on OKX vs BTC on Binance) was lost in the grouped response
+
+**Decision:** Replace the grouped `allocation` array with an ungrouped `holdings` array. Each row represents a single `(source, asset)` snapshot with `source: str` instead of `sources: list[str]`. Grouping is delegated to the UI.
+
+**Response shape change:**
+```
+# Before
+"allocation": [{"asset": "BTC", "sources": ["okx", "binance"], "amount": "1.5", ...}]
+
+# After
+"holdings": [
+  {"source": "okx",     "asset": "BTC", "amount": "1.0", ...},
+  {"source": "binance", "asset": "BTC", "amount": "0.5", ...}
+]
+```
+
+**Consequences:**
+- UI can group/filter holdings by any dimension without additional API calls
+- `compute_allocation_by_asset()` is no longer called by this endpoint (still used by other analytics endpoints)
+- Per-source granularity preserved in the response
+- `asset_type` and `percentage` are computed per-snapshot row using existing `asset_type_for_snapshot()` helper

@@ -6,15 +6,15 @@ from datetime import date
 
 from aiohttp import web
 
-from pfm.server.serializers import _str_decimal, snapshot_to_dict
+from pfm.server.serializers import _str_decimal, asset_type_for_snapshot, snapshot_to_dict
 
 routes = web.RouteTableDef()
 
 
 @routes.get("/api/v1/portfolio/summary")
 async def portfolio_summary(request: web.Request) -> web.Response:
-    """Return live-computed net_worth + allocation for the latest snapshot date."""
-    from pfm.analytics import compute_allocation_by_asset, compute_net_worth
+    """Return live-computed net_worth + per-snapshot holdings for the latest date."""
+    from pfm.analytics import compute_net_worth
 
     repo = request.app["repo"]
     latest = await repo.get_latest_snapshots()
@@ -23,23 +23,25 @@ async def portfolio_summary(request: web.Request) -> web.Response:
 
     analysis_date = latest[0].date
     net_worth = await compute_net_worth(repo, analysis_date)
-    alloc_asset = await compute_allocation_by_asset(repo, analysis_date)
+    total_usd = sum(s.usd_value for s in latest)
 
     return web.json_response(
         {
             "date": analysis_date.isoformat(),
             "net_worth": {"usd": _str_decimal(net_worth)},
-            "allocation": [
+            "holdings": [
                 {
-                    "asset": row.asset,
-                    "asset_type": row.asset_type,
-                    "sources": list(row.sources),
-                    "amount": _str_decimal(row.amount),
-                    "usd_value": _str_decimal(row.usd_value),
-                    "price": _str_decimal(row.price),
-                    "percentage": _str_decimal(row.percentage),
+                    "source": snap.source,
+                    "asset": snap.asset,
+                    "asset_type": asset_type_for_snapshot(snap.source, snap.asset),
+                    "amount": _str_decimal(snap.amount),
+                    "usd_value": _str_decimal(snap.usd_value),
+                    "price": _str_decimal(snap.price),
+                    "percentage": _str_decimal(
+                        snap.usd_value * 100 / total_usd if total_usd else snap.usd_value,
+                    ),
                 }
-                for row in alloc_asset
+                for snap in latest
             ],
         }
     )
