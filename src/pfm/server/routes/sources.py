@@ -25,7 +25,10 @@ async def list_source_types(_request: web.Request) -> web.Response:
 
     return web.json_response(
         {
-            name: [{"name": f.name, "prompt": f.prompt, "required": f.required, "secret": f.secret} for f in fields]
+            name: [
+                {"name": f.name, "prompt": f.prompt, "required": f.required, "secret": f.secret, "tip": f.tip}
+                for f in fields
+            ]
             for name, fields in SOURCE_TYPES.items()
         }
     )

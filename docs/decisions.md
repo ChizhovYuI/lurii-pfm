@@ -608,3 +608,27 @@ This updates only `model` for Gemini; `api_key`, `base_url`, and `active` are pr
 - Revolut multi-currency balances (EUR, GBP, USD, etc.) included in portfolio analytics
 - Pattern is reusable for adding other EU banks via GoCardless in the future
 - 90-day re-auth adds a maintenance task that other API-key sources don't have
+
+---
+
+## ADR-017: Add `tip` field to credential field schemas for UI hints
+
+**Date:** 2026-03-02
+
+**Status:** Accepted
+
+**Context:** The SwiftUI app renders a source-add form with credential input fields. Users need guidance on where to obtain each credential value (e.g. which settings page, what permissions to set). This information exists in `docs/data-sources.md` but is not accessible to the UI.
+
+**Decision:** Add an optional `tip: str = ""` field to the `CredentialField` frozen dataclass. Populate a tip string on the **first** credential field of each source type only. The UI renders this as an info icon with a popover before the input fields.
+
+**Design choices:**
+- **Tip on first field only** — each source type gets one tip containing all setup steps, displayed before the inputs. Avoids per-field tip clutter
+- **Newline-separated steps** — tips use `\n`-delimited numbered steps (e.g. `"1. Log in to okx.com\n2. Go to API Management\n..."`) so the UI can render them as a list
+- **Empty string default** — non-first fields use `tip=""`, keeping the dataclass change backward-compatible
+- **Included in `/api/v1/source-types` response** — `"tip"` key added to each field dict alongside `name`, `prompt`, `required`, `secret`
+
+**Consequences:**
+- `CredentialField` gains one new field (`tip`), no schema migration needed (Python-only dataclass)
+- `/api/v1/source-types` response includes `tip` for all fields (empty string for non-first fields)
+- SwiftUI source-add form can display setup instructions without hardcoding them client-side
+- Tip content derived from `docs/data-sources.md` setup sections, kept in sync in one place (`source_types.py`)

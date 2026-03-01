@@ -64,6 +64,7 @@ async def test_list_source_types(client):
             assert "prompt" in field
             assert "required" in field
             assert "secret" in field
+            assert "tip" in field
             assert isinstance(field["required"], bool)
             assert isinstance(field["secret"], bool)
 
@@ -76,6 +77,7 @@ async def test_list_source_types_wise_fields(client):
     assert wise_fields[0]["name"] == "api_token"
     assert wise_fields[0]["required"] is True
     assert wise_fields[0]["secret"] is True
+    assert "wise.com" in wise_fields[0]["tip"]
 
 
 async def test_list_sources_empty(client):

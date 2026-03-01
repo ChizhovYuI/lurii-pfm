@@ -14,33 +14,88 @@ class CredentialField:
     required: bool = True
     default: str = ""
     secret: bool = True
+    tip: str = ""
 
 
 # Credential fields per source type.
 # Order matters — wizard prompts in this order.
 SOURCE_TYPES: dict[str, list[CredentialField]] = {
     "okx": [
-        CredentialField("api_key", "API Key"),
+        CredentialField(
+            "api_key",
+            "API Key",
+            tip=(
+                "1. Log in to okx.com\n"
+                "2. Go to API Management\n"
+                "3. Create API key with Read Only permission\n"
+                "4. Copy API Key, Secret, and Passphrase"
+            ),
+        ),
         CredentialField("api_secret", "API Secret"),
         CredentialField("passphrase", "Passphrase"),
     ],
     "binance": [
-        CredentialField("api_key", "API Key"),
+        CredentialField(
+            "api_key",
+            "API Key",
+            tip=(
+                "1. Log in to binance.com\n"
+                "2. Go to API Management\n"
+                "3. Create API with Read Only permissions\n"
+                "4. Copy API Key and Secret (shown once)"
+            ),
+        ),
         CredentialField("api_secret", "API Secret"),
     ],
     "binance_th": [
-        CredentialField("api_key", "API Key"),
+        CredentialField(
+            "api_key",
+            "API Key",
+            tip=(
+                "1. Log in to binance.th\n"
+                "2. Go to API Management\n"
+                "3. Create a read-only API key\n"
+                "4. Copy API Key and Secret (shown once)"
+            ),
+        ),
         CredentialField("api_secret", "API Secret"),
     ],
     "bybit": [
-        CredentialField("api_key", "API Key"),
+        CredentialField(
+            "api_key",
+            "API Key",
+            tip=(
+                "1. Log in to bybit.com\n"
+                "2. Go to API Management\n"
+                "3. Create API key with Read Only permissions\n"
+                "4. Copy API Key and Secret (shown once)"
+            ),
+        ),
         CredentialField("api_secret", "API Secret"),
     ],
     "lobstr": [
-        CredentialField("stellar_address", "Stellar public address (G...)", secret=False),
+        CredentialField(
+            "stellar_address",
+            "Stellar public address (G...)",
+            secret=False,
+            tip=(
+                "1. Open the Lobstr app\n"
+                "2. Tap Receive or your account icon\n"
+                "3. Copy your Stellar public address (starts with G)"
+            ),
+        ),
     ],
     "blend": [
-        CredentialField("stellar_address", "Stellar public address (G...)", secret=False),
+        CredentialField(
+            "stellar_address",
+            "Stellar public address (G...)",
+            secret=False,
+            tip=(
+                "1. Get your Stellar public address from your wallet"
+                " (starts with G)\n"
+                "2. Find pool contract ID at mainnet.blend.capital"
+            ),
+        ),
         CredentialField("pool_contract_id", "Blend pool contract ID", secret=False),
         CredentialField(
             "soroban_rpc_url",
@@ -51,10 +106,30 @@ SOURCE_TYPES: dict[str, list[CredentialField]] = {
         ),
     ],
     "wise": [
-        CredentialField("api_token", "Personal API token"),
+        CredentialField(
+            "api_token",
+            "Personal API token",
+            tip=(
+                "1. Log in to wise.com\n"
+                "2. Go to Settings → API tokens\n"
+                "3. Create a new personal token\n"
+                "4. Copy the token"
+            ),
+        ),
     ],
     "kbank": [
-        CredentialField("gmail_address", "Gmail address", secret=False),
+        CredentialField(
+            "gmail_address",
+            "Gmail address",
+            secret=False,
+            tip=(
+                "1. In K PLUS app, request e-statement"
+                " (sends PDF to your email)\n"
+                "2. Create Gmail App Password at"
+                " myaccount.google.com → Security → App Passwords\n"
+                "3. Requires 2-Step Verification enabled"
+            ),
+        ),
         CredentialField("gmail_app_password", "Gmail App Password"),
         CredentialField(
             "kbank_sender_email",
@@ -66,11 +141,32 @@ SOURCE_TYPES: dict[str, list[CredentialField]] = {
         CredentialField("pdf_password", "PDF password (DDMMYYYY)"),
     ],
     "ibkr": [
-        CredentialField("flex_token", "Flex Web Service token"),
+        CredentialField(
+            "flex_token",
+            "Flex Web Service token",
+            tip=(
+                "1. Log in to IBKR Client Portal\n"
+                "2. Go to Performance & Reports → Flex Queries\n"
+                "3. Create Activity Query and generate"
+                " Flex Web Service token\n"
+                "4. Copy both the token and Query ID"
+            ),
+        ),
         CredentialField("flex_query_id", "Flex Query ID", secret=False),
     ],
     "revolut": [
-        CredentialField("secret_id", "GoCardless Secret ID"),
+        CredentialField(
+            "secret_id",
+            "GoCardless Secret ID",
+            tip=(
+                "1. Register at bankaccountdata.gocardless.com\n"
+                "2. Create a secret (copy ID and Key)\n"
+                "3. Create requisition for Revolut"
+                " (REVOLUT_REVOGB21)\n"
+                "4. Authorize in Revolut app"
+                " and copy Requisition ID"
+            ),
+        ),
         CredentialField("secret_key", "GoCardless Secret Key"),
         CredentialField("requisition_id", "GoCardless Requisition ID", secret=False),
     ],
