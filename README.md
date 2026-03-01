@@ -1,18 +1,19 @@
 # Lurii Finance — Python Backend
 
-Personal finance aggregator: collects balances from 9 sources (OKX, Binance, Bybit, Lobstr, Blend, Wise, KBank, IBKR), computes analytics, and generates AI-powered weekly reports.
+Personal finance aggregator: collects balances from 10 sources (OKX, Binance, Bybit, Lobstr, Blend, Wise, KBank, IBKR, Revolut), computes analytics, and generates AI-powered weekly reports.
 
 ## Install
 
 ```sh
-brew tap ChizhovYuI/lurii
-brew install lurii-pfm
+brew install --cask ChizhovYuI/lurii/lurii-finance
 ```
 
-Or install with the macOS app (includes backend as dependency):
+This installs the macOS app and the `pfm` backend in one command.
+
+To install only the backend (without the desktop app):
 
 ```sh
-brew install --cask ChizhovYuI/lurii/lurii-finance
+brew install ChizhovYuI/lurii/lurii-pfm
 ```
 
 ## Usage
