@@ -61,7 +61,8 @@ class LobstrCollector(BaseCollector):
                 continue
 
             ticker = self._parse_ticker(bal)
-            usd_value = await self._pricing.convert_to_usd(amount, ticker)
+            price = await self._pricing.get_price_usd(ticker)
+            usd_value = amount * price
 
             snapshots.append(
                 Snapshot(
@@ -70,6 +71,7 @@ class LobstrCollector(BaseCollector):
                     asset=ticker,
                     amount=amount,
                     usd_value=usd_value,
+                    price=price,
                     raw_json=json.dumps(bal),
                 )
             )

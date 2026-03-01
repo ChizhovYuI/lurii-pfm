@@ -48,12 +48,13 @@ def connect_db(db_path: str | Path, *, key_hex: str | None = None) -> aiosqlite.
 
 async def init_encrypted_db(path: Path, key_hex: str) -> None:
     """Create an encrypted DB with the full application schema."""
-    from pfm.db.models import SCHEMA_SQL
+    from pfm.db.models import SCHEMA_SQL, _migrate_snapshots_price
 
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = connect_encrypted(path, key_hex)
     async with conn:
         await conn.executescript(SCHEMA_SQL)
+        await _migrate_snapshots_price(conn)
         await conn.commit()
     logger.info("Initialized encrypted database at %s", path)
 

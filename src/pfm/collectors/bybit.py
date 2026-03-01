@@ -137,10 +137,11 @@ class BybitCollector(BaseCollector):
             if amount == 0:
                 continue
             try:
-                usd_value = await self._pricing.convert_to_usd(amount, ticker)
+                price = await self._pricing.get_price_usd(ticker)
             except ValueError:
                 logger.warning("Bybit: cannot price %s, skipping", ticker)
                 continue
+            usd_value = amount * price
             snapshots.append(
                 Snapshot(
                     date=today,
@@ -148,6 +149,7 @@ class BybitCollector(BaseCollector):
                     asset=ticker,
                     amount=amount,
                     usd_value=usd_value,
+                    price=price,
                 )
             )
 

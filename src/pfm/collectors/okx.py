@@ -118,7 +118,8 @@ class OkxCollector(BaseCollector):
         today = self._pricing.today()
         snapshots: list[Snapshot] = []
         for ticker, amount in totals.items():
-            usd_value = await self._pricing.convert_to_usd(amount, ticker)
+            price = await self._pricing.get_price_usd(ticker)
+            usd_value = amount * price
             snapshots.append(
                 Snapshot(
                     date=today,
@@ -126,6 +127,7 @@ class OkxCollector(BaseCollector):
                     asset=ticker,
                     amount=amount,
                     usd_value=usd_value,
+                    price=price,
                 )
             )
 

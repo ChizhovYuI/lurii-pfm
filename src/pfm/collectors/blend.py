@@ -177,7 +177,8 @@ class BlendCollector(BaseCollector):
             amount = Decimal(underlying_raw) / Decimal(scalar)
 
             ticker = self._resolve_ticker(asset_addr)
-            usd_value = await self._pricing.convert_to_usd(amount, ticker)
+            price = await self._pricing.get_price_usd(ticker)
+            usd_value = amount * price
 
             snapshots.append(
                 Snapshot(
@@ -186,6 +187,7 @@ class BlendCollector(BaseCollector):
                     asset=ticker,
                     amount=amount,
                     usd_value=usd_value,
+                    price=price,
                 )
             )
 

@@ -94,7 +94,8 @@ class WiseCollector(BaseCollector):
             if amount == 0 or not currency:
                 continue
 
-            usd_value = await self._pricing.convert_to_usd(amount, currency)
+            price = await self._pricing.get_price_usd(currency)
+            usd_value = amount * price
 
             snapshots.append(
                 Snapshot(
@@ -103,6 +104,7 @@ class WiseCollector(BaseCollector):
                     asset=currency,
                     amount=amount,
                     usd_value=usd_value,
+                    price=price,
                     raw_json=json.dumps(bal),
                 )
             )

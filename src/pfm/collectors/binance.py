@@ -81,11 +81,12 @@ class BinanceCollector(BaseCollector):
                 continue
 
             try:
-                usd_value = await self._pricing.convert_to_usd(total, ticker)
+                price = await self._pricing.get_price_usd(ticker)
             except ValueError:
                 logger.warning("Binance: cannot price %s, skipping", ticker)
                 continue
 
+            usd_value = total * price
             snapshots.append(
                 Snapshot(
                     date=today,
@@ -93,6 +94,7 @@ class BinanceCollector(BaseCollector):
                     asset=ticker,
                     amount=total,
                     usd_value=usd_value,
+                    price=price,
                     raw_json=json.dumps(bal),
                 )
             )

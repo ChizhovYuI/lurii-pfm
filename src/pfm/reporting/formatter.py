@@ -80,10 +80,8 @@ def format_weekly_report(
         f"<b>PFM Weekly Report</b> — {analytics.as_of_date.isoformat()}",
         f"Net worth: <b>${_fmt_money(analytics.net_worth_usd)}</b>",
         "",
-        f"<b>PnL (Weekly)</b>: {_pnl_arrow(weekly_abs)} ${_fmt_money(weekly_abs)} "
-        f"({weekly_pct.quantize(Decimal('0.01'))}%)",
-        f"<b>PnL (Monthly)</b>: {_pnl_arrow(monthly_abs)} ${_fmt_money(monthly_abs)} "
-        f"({monthly_pct.quantize(Decimal('0.01'))}%)",
+        f"<b>PnL (Weekly)</b>: {_pnl_arrow(weekly_abs)} ${_fmt_money(weekly_abs)} ({weekly_pct}%)",
+        f"<b>PnL (Monthly)</b>: {_pnl_arrow(monthly_abs)} ${_fmt_money(monthly_abs)} ({monthly_pct}%)",
         "",
         "<b>All Holdings</b> (Total | 7d PnL)",
     ]
@@ -96,10 +94,10 @@ def format_weekly_report(
             if usd_value < HOLDING_MIN_DISPLAY_USD:
                 continue
             icon = _holding_icon(row)
-            percentage = _to_decimal(row.get("percentage", "0")).quantize(Decimal("0.01"))
+            percentage = _to_decimal(row.get("percentage", "0"))
             weekly_row = weekly_pnl_by_asset.get(str(row.get("asset", "")).upper(), {})
             weekly_abs_change = _to_decimal(weekly_row.get("absolute_change", "0"))
-            weekly_pct_change = _to_decimal(weekly_row.get("percentage_change", "0")).quantize(Decimal("0.01"))
+            weekly_pct_change = _to_decimal(weekly_row.get("percentage_change", "0"))
             lines.append(
                 f"{icon} {asset}: ${_fmt_money(usd_value)} ({percentage}%) | "
                 f"${_fmt_money(weekly_abs_change)} ({weekly_pct_change}%)"
@@ -189,7 +187,7 @@ def _to_decimal(value: object) -> Decimal:
 
 
 def _fmt_money(value: Decimal) -> str:
-    return f"{value.quantize(Decimal('0.01')):,}"
+    return f"{value:,}"
 
 
 def _pnl_arrow(change: Decimal) -> str:

@@ -64,11 +64,12 @@ class BinanceThCollector(BinanceCollector):
                 continue
 
             try:
-                usd_value = await self._pricing.convert_to_usd(total, ticker)
+                price = await self._pricing.get_price_usd(ticker)
             except ValueError:
                 logger.warning("Binance TH: cannot price %s, skipping", ticker)
                 continue
 
+            usd_value = total * price
             snapshots.append(
                 Snapshot(
                     date=today,
@@ -76,6 +77,7 @@ class BinanceThCollector(BinanceCollector):
                     asset=ticker,
                     amount=total,
                     usd_value=usd_value,
+                    price=price,
                     raw_json=json.dumps(bal),
                 )
             )

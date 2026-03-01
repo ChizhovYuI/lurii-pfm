@@ -175,6 +175,7 @@ class IbkrCollector(BaseCollector):
             if quantity == 0 or not symbol:
                 continue
 
+            price = market_value / quantity if quantity else Decimal(0)
             snapshots.append(
                 Snapshot(
                     date=today,
@@ -182,6 +183,7 @@ class IbkrCollector(BaseCollector):
                     asset=symbol,
                     amount=quantity,
                     usd_value=market_value,  # IBKR provides USD value directly
+                    price=price,
                     raw_json=json.dumps(pos),
                 )
             )
@@ -195,7 +197,8 @@ class IbkrCollector(BaseCollector):
             if ending_cash == 0 or not currency or currency == "BASE_SUMMARY":
                 continue
 
-            usd_value = await self._pricing.convert_to_usd(ending_cash, currency)
+            price = await self._pricing.get_price_usd(currency)
+            usd_value = ending_cash * price
             snapshots.append(
                 Snapshot(
                     date=today,
@@ -203,6 +206,7 @@ class IbkrCollector(BaseCollector):
                     asset=currency,
                     amount=ending_cash,
                     usd_value=usd_value,
+                    price=price,
                     raw_json=json.dumps(cash),
                 )
             )

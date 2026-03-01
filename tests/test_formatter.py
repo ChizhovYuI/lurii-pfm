@@ -30,7 +30,7 @@ def test_format_weekly_report_contains_required_sections():
     assert "<b>PnL (Weekly)</b>: ↑ $123.45 (1.23%)" in report.text
     assert "<b>PnL (Monthly)</b>: ↑ $456.78 (4.56%)" in report.text
     assert "<b>All Holdings</b> (Total | 7d PnL)" in report.text
-    assert "🪙 BTC: $7,000.00 (56.70%) | $80.00 (1.16%)" in report.text
+    assert "🪙 BTC: $7,000 (56.7%) | $80 (1.16%)" in report.text
     assert "<b>Warnings</b>" in report.text
     assert "• Data is partial" in report.text
     assert report.ai_summary_text is not None
@@ -53,8 +53,8 @@ def test_format_weekly_report_handles_missing_data_branches():
 
     report = format_weekly_report(analytics, "No major changes.")
 
-    assert "<b>PnL (Weekly)</b>: ↓ $-5.00 (-1.00%)" in report.text
-    assert "<b>PnL (Monthly)</b>: ↓ $-20.00 (-3.00%)" in report.text
+    assert "<b>PnL (Weekly)</b>: ↓ $-5 (-1.0%)" in report.text
+    assert "<b>PnL (Monthly)</b>: ↓ $-20 (-3.0%)" in report.text
     assert "• No holdings data available." in report.text
 
 
@@ -73,9 +73,9 @@ def test_format_weekly_report_tolerates_invalid_numeric_values():
     )
 
     report = format_weekly_report(analytics, "Still works.")
-    assert "<b>PnL (Weekly)</b>: → $0.00 (0.00%)" in report.text
-    assert "<b>PnL (Monthly)</b>: → $0.00 (0.00%)" in report.text
-    assert "• BTC: $0.00 (0.00%)" not in report.text
+    assert "<b>PnL (Weekly)</b>: → $0 (0%)" in report.text
+    assert "<b>PnL (Monthly)</b>: → $0 (0%)" in report.text
+    assert "BTC:" not in report.text  # below HOLDING_MIN_DISPLAY_USD threshold
     assert "• No holdings data available." in report.text
 
 
@@ -96,9 +96,9 @@ def test_format_weekly_report_includes_all_holdings_not_truncated():
     )
 
     report = format_weekly_report(analytics, "All holdings visible.")
-    assert "📈 A9: $9.00 (1.00%)" not in report.text
-    assert "📈 A10: $10.00 (1.00%) | $0.00 (0.00%)" in report.text
-    assert "📈 A11: $11.00 (1.00%) | $0.00 (0.00%)" in report.text
+    assert "📈 A9: $9 (1%)" not in report.text
+    assert "📈 A10: $10 (1%) | $0 (0%)" in report.text
+    assert "📈 A11: $11 (1%) | $0 (0%)" in report.text
 
 
 def test_format_ai_commentary_escapes_html_and_preserves_lines():

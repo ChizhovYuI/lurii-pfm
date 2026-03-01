@@ -90,9 +90,11 @@ class KbankCollector(BaseCollector):
         converted_snapshots: list[Snapshot] = []
         for snap in snapshots:
             usd_value = snap.usd_value
+            price = Decimal(0)
             if snap.asset:
                 try:
-                    usd_value = await self._pricing.convert_to_usd(snap.amount, snap.asset)
+                    price = await self._pricing.get_price_usd(snap.asset)
+                    usd_value = snap.amount * price
                 except Exception:
                     logger.exception("KBank: failed to convert %s %s to USD", snap.amount, snap.asset)
             converted_snapshots.append(
@@ -102,6 +104,7 @@ class KbankCollector(BaseCollector):
                     asset=snap.asset,
                     amount=snap.amount,
                     usd_value=usd_value,
+                    price=price,
                     raw_json=snap.raw_json,
                 )
             )

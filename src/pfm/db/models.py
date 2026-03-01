@@ -36,6 +36,7 @@ class Snapshot:
     asset: str
     amount: Decimal
     usd_value: Decimal
+    price: Decimal = Decimal(0)
     raw_json: str = ""
     id: int | None = None
     created_at: datetime | None = None
@@ -127,6 +128,7 @@ CREATE TABLE IF NOT EXISTS snapshots (
     asset TEXT NOT NULL,
     amount TEXT NOT NULL,
     usd_value TEXT NOT NULL,
+    price TEXT NOT NULL DEFAULT '0',
     raw_json TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -210,6 +212,20 @@ CREATE TABLE IF NOT EXISTS ai_providers (
 """
 
 
+async def _migrate_snapshots_price(db: aiosqlite.Connection) -> None:
+    """Add ``price`` column to snapshots table if missing and backfill."""
+    cursor = await db.execute("PRAGMA table_info(snapshots)")
+    columns = {row[1] for row in await cursor.fetchall()}
+    if "price" in columns:
+        return
+    await db.execute("ALTER TABLE snapshots ADD COLUMN price TEXT NOT NULL DEFAULT '0'")
+    await db.execute(
+        "UPDATE snapshots SET price = CASE"
+        " WHEN CAST(amount AS REAL) != 0 THEN CAST(CAST(usd_value AS REAL) / CAST(amount AS REAL) AS TEXT)"
+        " ELSE '0' END"
+    )
+
+
 async def init_db(path: Path, *, key_hex: str | None = None) -> None:
     """Create database and all tables if they don't exist.
 
@@ -223,4 +239,5 @@ async def init_db(path: Path, *, key_hex: str | None = None) -> None:
     else:
         async with aiosqlite.connect(str(path)) as db:
             await db.executescript(SCHEMA_SQL)
+            await _migrate_snapshots_price(db)
             await db.commit()

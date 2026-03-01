@@ -13,11 +13,8 @@ if TYPE_CHECKING:
     from pfm.db.repository import Repository
 
 from pfm.server.serializers import (
+    _str_decimal,
     collector_result_to_dict,
-    fmt_amount,
-    fmt_pct,
-    fmt_price,
-    fmt_usd,
     pnl_result_to_dict,
 )
 
@@ -189,7 +186,7 @@ async def _run_analyze(repo: Repository) -> None:
     await repo.save_analytics_metric(
         analysis_date,
         "net_worth",
-        json.dumps({"usd": fmt_usd(net_worth)}),
+        json.dumps({"usd": _str_decimal(net_worth)}),
     )
     await repo.save_analytics_metric(
         analysis_date,
@@ -200,10 +197,10 @@ async def _run_analyze(repo: Repository) -> None:
                     "asset": row.asset,
                     "asset_type": row.asset_type,
                     "sources": list(row.sources),
-                    "amount": fmt_amount(row.amount),
-                    "usd_value": fmt_usd(row.usd_value),
-                    "price": fmt_price(row.price),
-                    "percentage": fmt_pct(row.percentage),
+                    "amount": _str_decimal(row.amount),
+                    "usd_value": _str_decimal(row.usd_value),
+                    "price": _str_decimal(row.price),
+                    "percentage": _str_decimal(row.percentage),
                 }
                 for row in alloc_asset
             ]
@@ -214,7 +211,11 @@ async def _run_analyze(repo: Repository) -> None:
         "allocation_by_source",
         json.dumps(
             [
-                {"source": row.bucket, "usd_value": fmt_usd(row.usd_value), "percentage": fmt_pct(row.percentage)}
+                {
+                    "source": row.bucket,
+                    "usd_value": _str_decimal(row.usd_value),
+                    "percentage": _str_decimal(row.percentage),
+                }
                 for row in alloc_source
             ]
         ),
@@ -226,8 +227,8 @@ async def _run_analyze(repo: Repository) -> None:
             [
                 {
                     "category": row.bucket,
-                    "usd_value": fmt_usd(row.usd_value),
-                    "percentage": fmt_pct(row.percentage),
+                    "usd_value": _str_decimal(row.usd_value),
+                    "percentage": _str_decimal(row.percentage),
                 }
                 for row in alloc_category
             ]
@@ -240,8 +241,8 @@ async def _run_analyze(repo: Repository) -> None:
             [
                 {
                     "currency": row.currency,
-                    "usd_value": fmt_usd(row.usd_value),
-                    "percentage": fmt_pct(row.percentage),
+                    "usd_value": _str_decimal(row.usd_value),
+                    "percentage": _str_decimal(row.percentage),
                 }
                 for row in currency_exposure
             ]
@@ -252,15 +253,15 @@ async def _run_analyze(repo: Repository) -> None:
         "risk_metrics",
         json.dumps(
             {
-                "concentration_percentage": fmt_pct(risk.concentration_percentage),
-                "hhi_index": fmt_pct(risk.hhi_index),
+                "concentration_percentage": _str_decimal(risk.concentration_percentage),
+                "hhi_index": _str_decimal(risk.hhi_index),
                 "top_5_assets": [
                     {
                         "asset": row.asset,
                         "sources": list(row.sources),
-                        "usd_value": fmt_usd(row.usd_value),
-                        "price": fmt_price(row.price),
-                        "percentage": fmt_pct(row.percentage),
+                        "usd_value": _str_decimal(row.usd_value),
+                        "price": _str_decimal(row.price),
+                        "percentage": _str_decimal(row.percentage),
                     }
                     for row in risk.top_5_assets
                 ],
@@ -286,10 +287,10 @@ async def _run_analyze(repo: Repository) -> None:
             [
                 {
                     "asset": row.asset,
-                    "start_value": fmt_usd(row.start_value),
-                    "end_value": fmt_usd(row.end_value),
-                    "absolute_change": fmt_usd(row.absolute_change),
-                    "percentage_change": fmt_pct(row.percentage_change),
+                    "start_value": _str_decimal(row.start_value),
+                    "end_value": _str_decimal(row.end_value),
+                    "absolute_change": _str_decimal(row.absolute_change),
+                    "percentage_change": _str_decimal(row.percentage_change),
                 }
                 for row in pnl_weekly.by_asset
             ]
