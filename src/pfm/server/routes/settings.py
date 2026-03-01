@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import inspect
 from typing import Any
 
@@ -74,6 +75,31 @@ def _get_ai_providers_meta() -> list[dict[str, Any]]:
     return _AI_PROVIDERS_META
 
 
+async def _enrich_providers_meta() -> list[dict[str, Any]]:
+    """Return provider metadata with Ollama's installed models merged in."""
+    from pfm.ai.providers.ollama import list_installed_models
+
+    meta = copy.deepcopy(_get_ai_providers_meta())
+    for provider in meta:
+        if provider["type"] != "ollama":
+            continue
+        installed = await list_installed_models()
+        if not installed:
+            break
+        for field in provider["fields"]:
+            if field["name"] != "model":
+                continue
+            static: list[str] = field.get("options", [])
+            # Merge: installed first, then static suggestions not already present
+            merged = list(installed)
+            for m in static:
+                if m not in merged:
+                    merged.append(m)
+            field["options"] = merged
+        break
+    return meta
+
+
 @routes.get("/api/v1/settings")
 async def get_settings(request: web.Request) -> web.Response:
     """Read all settings including AI provider configurations."""
@@ -109,7 +135,8 @@ async def get_settings(request: web.Request) -> web.Response:
     settings_dict["ai_providers"] = providers_list
 
     # All available provider types (for the "add provider" combo box)
-    settings_dict["ai_providers_available"] = _get_ai_providers_meta()
+    # Enrich Ollama model options with installed models (dynamic, not cached)
+    settings_dict["ai_providers_available"] = await _enrich_providers_meta()
 
     return web.json_response(settings_dict)
 

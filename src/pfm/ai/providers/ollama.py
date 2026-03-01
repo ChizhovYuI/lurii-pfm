@@ -116,3 +116,19 @@ class OllamaProvider(LLMProvider):
         """Close the underlying HTTP client if owned."""
         if self._owns_client:
             await self._client.aclose()
+
+
+async def list_installed_models(base_url: str | None = None) -> list[str]:
+    """Fetch installed model names from Ollama's ``/api/tags`` endpoint."""
+    url = f"{(base_url or OllamaProvider.default_base_url).rstrip('/')}/api/tags"
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            body = resp.json()
+    except (httpx.HTTPError, OSError):
+        return []
+    models = body.get("models")
+    if not isinstance(models, list):
+        return []
+    return [str(m["name"]) for m in models if isinstance(m, dict) and "name" in m]
