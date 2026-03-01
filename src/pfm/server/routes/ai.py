@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 from typing import Any
@@ -103,20 +104,27 @@ async def get_ai_config(request: web.Request) -> web.Response:
 
 @routes.put("/api/v1/ai/config")
 async def update_ai_config(request: web.Request) -> web.Response:
-    """Update AI provider configuration (sets as active)."""
+    """Update AI provider configuration with merge semantics.
+
+    Only fields present in the request body are updated; existing fields
+    not included in the request are preserved.
+    """
     body: dict[str, Any] = await request.json()
     provider = body.get("provider")
     if not provider:
         return web.json_response({"error": "provider is required"}, status=400)
 
     store = AIProviderStore(request.app["db_path"])
-    config = await store.add(
-        provider,
-        api_key=body.get("api_key", ""),
-        model=body.get("model", ""),
-        base_url=body.get("base_url", ""),
-        activate=True,
-    )
+    existing = await store.get(provider)
+
+    kwargs: dict[str, Any] = {k: v for k, v in dataclasses.asdict(existing).items() if k != "type"} if existing else {}
+    for k, v in body.items():
+        if k == "provider":
+            continue
+        kwargs[k] = v
+    kwargs.setdefault("active", True)
+
+    config = await store.add(provider, **kwargs)
 
     return web.json_response(
         {
@@ -163,18 +171,17 @@ async def deactivate_provider(request: web.Request) -> web.Response:
 
 @routes.put("/api/v1/ai/providers/{type}")
 async def upsert_provider(request: web.Request) -> web.Response:
-    """Add or update a provider configuration."""
+    """Add or update a provider configuration with merge semantics."""
     provider_type = request.match_info["type"]
     body: dict[str, Any] = await request.json()
 
     store = AIProviderStore(request.app["db_path"])
-    config = await store.add(
-        provider_type,
-        api_key=body.get("api_key", ""),
-        model=body.get("model", ""),
-        base_url=body.get("base_url", ""),
-        activate=body.get("activate", False),
-    )
+    existing = await store.get(provider_type)
+
+    kwargs: dict[str, Any] = {k: v for k, v in dataclasses.asdict(existing).items() if k != "type"} if existing else {}
+    kwargs.update(body)
+
+    config = await store.add(provider_type, **kwargs)
 
     return web.json_response(
         {

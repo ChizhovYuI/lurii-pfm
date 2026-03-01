@@ -56,11 +56,11 @@ class AIProviderStore:
         api_key: str = "",
         model: str = "",
         base_url: str = "",
-        activate: bool = False,
+        active: bool = False,
     ) -> AIProvider:
         """Add or update a provider configuration.
 
-        When *activate* is True the provider is set as the active one
+        When *active* is True the provider is set as the active one
         (all others are deactivated first).
         """
         provider_type = provider_type.strip()
@@ -71,7 +71,7 @@ class AIProviderStore:
         await self._ensure_table()
 
         async with aiosqlite.connect(self._db_path) as db:
-            if activate:
+            if active:
                 await db.execute("UPDATE ai_providers SET active = 0")
             await db.execute(
                 "INSERT INTO ai_providers (type, api_key, model, base_url, active, updated_at) "
@@ -82,7 +82,7 @@ class AIProviderStore:
                 "base_url = excluded.base_url, "
                 "active = excluded.active, "
                 "updated_at = datetime('now')",
-                (provider_type, api_key.strip(), model.strip(), base_url.strip(), int(activate)),
+                (provider_type, api_key.strip(), model.strip(), base_url.strip(), int(active)),
             )
             await db.commit()
 
@@ -91,7 +91,7 @@ class AIProviderStore:
             api_key=api_key.strip(),
             model=model.strip(),
             base_url=base_url.strip(),
-            active=activate,
+            active=active,
         )
 
     async def get(self, provider_type: str) -> AIProvider | None:
@@ -231,7 +231,7 @@ class AIProviderStore:
                 api_key = values.get(_API_KEY_KEY, "").strip()
                 model = values.get(_MODEL_KEY, "").strip()
                 base_url = values.get(_BASE_URL_KEY, "").strip()
-                await self.add(provider, api_key=api_key, model=model, base_url=base_url, activate=True)
+                await self.add(provider, api_key=api_key, model=model, base_url=base_url, active=True)
                 logger.info("Migrated ai_provider settings to ai_providers table (provider=%s).", provider)
                 return True
 
@@ -249,7 +249,7 @@ class AIProviderStore:
         if not api_key:
             return False
 
-        await self.add("gemini", api_key=api_key, activate=True)
+        await self.add("gemini", api_key=api_key, active=True)
         logger.info("Migrated legacy gemini_api_key to ai_providers table.")
         return True
 

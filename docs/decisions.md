@@ -506,3 +506,42 @@ ORDER BY s.source, s.asset
 - Registered in `setup_routes()` alongside existing route modules
 - 3 new tests covering happy path, empty DB, and no-earning-positions cases
 - No changes to existing endpoints or DB schema
+
+---
+
+## ADR-015: Merge semantics for AI provider updates and `activate` → `active` rename
+
+**Date:** 2026-03-01
+
+**Status:** Accepted
+
+**Context:** `PUT /api/v1/ai/config` replaced all provider fields on every call — sending `{"provider": "gemini", "model": "gemini-2.5-flash"}` would erase the existing `api_key` because `store.add()` defaulted missing fields to empty strings.
+
+**Problem:**
+- The SwiftUI settings screen saves individual field changes (e.g. user picks a new model from a dropdown). Sending a partial update wiped other configured fields
+
+**Decision:** Add merge semantics to `PUT /api/v1/ai/config`. Only fields present in the request are updated; missing fields preserve their existing DB values. Also rename `AIProviderStore.add(activate=)` parameter to `active=` for consistency with the `AIProvider` dataclass and API response field name.
+
+**Design choices:**
+- **Merge via fetch-then-upsert** — fetch existing row with `store.get()`, build kwargs from existing fields via `dataclasses.asdict()`, overlay request fields, then call `store.add()`
+- **No hardcoded field names in merge logic** — existing fields are read dynamically from the `AIProvider` dataclass, so adding a new field to the dataclass automatically includes it in merges
+- **`activate` → `active` rename** — `AIProviderStore.add()` parameter renamed from `activate` to `active` to match the `AIProvider.active` field and the `active` key in API request/response JSON. Eliminates field name remapping in all callers
+- **`PUT /api/v1/settings` unchanged** — stays as plain `app_settings` key-value store; AI provider updates go through `PUT /api/v1/ai/config`
+
+**Callers updated for `activate` → `active`:**
+- `AIProviderStore.add()` signature and internals
+- `AIProviderStore.migrate_from_legacy()` (2 call sites)
+- `cli.py` `ai_set` command
+- `routes/ai.py` `update_ai_config` and `upsert_provider` endpoints
+- `tests/test_ai_store.py` (4 call sites)
+
+**Example request:**
+```json
+PUT /api/v1/ai/config
+{"provider": "gemini", "model": "gemini-2.5-flash"}
+```
+This updates only `model` for Gemini; `api_key`, `base_url`, and `active` are preserved.
+
+**Consequences:**
+- SwiftUI settings screen can save individual field changes without data loss
+- Consistent `active` naming across dataclass, DB column, API JSON, and store method parameter

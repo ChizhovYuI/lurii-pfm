@@ -465,7 +465,7 @@ def ai_set(provider_name: str, api_key: str | None, model: str, base_url: str) -
                 api_key=api_key or "",
                 model=model,
                 base_url=base_url or (existing.base_url if existing else ""),
-                activate=True,
+                active=True,
             )
         )
     except ValueError as exc:

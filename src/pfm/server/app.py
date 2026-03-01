@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 import os
 from typing import TYPE_CHECKING
 
 from aiohttp import web
 
-from pfm.server.middleware import db_locked_middleware, error_handling_middleware, local_only_middleware
+from pfm.server.middleware import (
+    api_logging_middleware,
+    db_locked_middleware,
+    error_handling_middleware,
+    local_only_middleware,
+)
 from pfm.server.routes import setup_routes
 from pfm.server.ws import EventBroadcaster
 
@@ -56,11 +63,22 @@ async def _on_startup(app: web.Application) -> None:
     app["pricing"] = pricing
     app["broadcaster"] = EventBroadcaster()
     app["collecting"] = False
+
+    from pfm.server.scheduler import run_daily_collector
+
+    app["_scheduler_task"] = asyncio.create_task(run_daily_collector(app))
+
     logger.info("Startup complete — DB unlocked, services ready")
 
 
 async def _on_cleanup(app: web.Application) -> None:
     """Close shared resources and clear sensitive state."""
+    scheduler: asyncio.Task[None] | None = app.get("_scheduler_task")
+    if scheduler is not None:
+        scheduler.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await scheduler
+
     repo = app.get("repo")
     if repo is not None:
         await repo.__aexit__(None, None, None)
@@ -80,7 +98,7 @@ async def _on_cleanup(app: web.Application) -> None:
 def create_app(db_path: Path) -> web.Application:
     """Create and configure the aiohttp application."""
     app = web.Application(
-        middlewares=[local_only_middleware, db_locked_middleware, error_handling_middleware],
+        middlewares=[local_only_middleware, db_locked_middleware, api_logging_middleware, error_handling_middleware],
     )
     app["db_path"] = db_path
     app["db_key"] = None

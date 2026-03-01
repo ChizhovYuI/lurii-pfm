@@ -104,7 +104,7 @@ async def test_activate(db_path):
 
 async def test_activate_switches(db_path):
     store = AIProviderStore(db_path)
-    await store.add("gemini", api_key="gk", activate=True)
+    await store.add("gemini", api_key="gk", active=True)
     await store.add("ollama", model="llama")
 
     await store.activate("ollama")
@@ -137,7 +137,7 @@ async def test_get_active_none_when_no_active(db_path):
 
 async def test_deactivate(db_path):
     store = AIProviderStore(db_path)
-    await store.add("gemini", api_key="gk", activate=True)
+    await store.add("gemini", api_key="gk", active=True)
 
     changed = await store.deactivate()
     assert changed is True
@@ -153,8 +153,8 @@ async def test_deactivate_when_none_active(db_path):
 
 async def test_add_with_activate(db_path):
     store = AIProviderStore(db_path)
-    await store.add("gemini", api_key="gk", activate=True)
-    await store.add("ollama", model="llama", activate=True)
+    await store.add("gemini", api_key="gk", active=True)
+    await store.add("ollama", model="llama", active=True)
 
     # ollama should be active, gemini deactivated
     gemini = await store.get("gemini")
