@@ -414,3 +414,50 @@ CREATE TABLE IF NOT EXISTS ai_providers (
 - Per-source granularity preserved in the response
 - `asset_type` is computed per-snapshot row using existing `asset_type_for_snapshot()` helper
 - `percentage` removed from response — UI computes it from `usd_value` / `net_worth`
+
+---
+
+## ADR-013: Per-source snapshot resolution and data warnings
+
+**Date:** 2026-03-01
+
+**Status:** Accepted
+
+**Context:** Portfolio analytics query snapshots for a single date (`MAX(date)` across all sources). Sources like KBank produce monthly PDF statements whose snapshot date lags behind daily API sources by days or weeks. When OKX/Bybit snapshots are dated March 3 but KBank's latest is March 1, `get_snapshots_by_date(March 3)` excludes KBank entirely — silently dropping fiat holdings from net worth, allocation, and reports.
+
+**Problem:**
+- KBank (and any infrequently-updated source) disappears from analytics whenever a fresher source exists
+- No visibility into which sources are missing or stale in API responses or AI commentary
+- `latest[0].date` assumed all resolved snapshots share the same date, which broke after introducing per-source resolution
+
+**Decision:** Replace exact-date snapshot queries in analytics with per-source date resolution. Add a `warnings` field to API responses and AI prompts for stale/missing source detection. Shift KBank snapshot date to statement period end + 1 day.
+
+**Design choices:**
+- **`get_snapshots_resolved(target_date)`** — new Repository method using a self-join: for each source, finds `MAX(date) WHERE date <= target_date`, then returns all rows for those source+date combos. Single SQL query, no N+1
+- **`get_latest_snapshots()` delegates to resolved** — finds `MAX(date)` globally, then calls `get_snapshots_resolved(max_date)`. All existing callers automatically get per-source resolution
+- **Analytics use resolved queries** — all 5 `compute_*` functions in `portfolio.py` switched from `get_snapshots_by_date` to `get_snapshots_resolved`
+- **`max(s.date for s in latest)` for analysis_date** — since resolved snapshots contain mixed dates, the analysis date is derived from the newest snapshot, not `latest[0].date`. Fixed in all 7 call sites (portfolio, analytics, report, ai, cli)
+- **`compute_data_warnings(snapshots, enabled_types, analysis_date)`** — pure function, two warning types:
+  1. Missing sources: enabled source types with zero snapshot rows → `"No snapshot data for source: X"`
+  2. Stale KBank: snapshot > 35 days behind analysis date → `"KBank statement is outdated (date, N days old)"`
+- **Warnings surfaced in 4 places:** `GET /portfolio/summary`, `GET /analytics/allocation`, `AnalyticsSummary.warnings` tuple (used by report and AI), and AI prompt template ("Data warnings:" section)
+- **KBank +1 day** — statement period "01/02 - 28/02" means the ending balance is effective March 1 (the day after the period closes), so `snapshot_date = statement_date + timedelta(days=1)`
+- **35-day threshold** — `_KBANK_STALE_DAYS = 35` accounts for months up to 31 days plus a few days of email/processing delay
+
+**SQL for resolved query:**
+```sql
+SELECT s.* FROM snapshots s
+INNER JOIN (
+  SELECT source, MAX(date) AS max_date
+  FROM snapshots WHERE date <= ?
+  GROUP BY source
+) latest ON s.source = latest.source AND s.date = latest.max_date
+ORDER BY s.source, s.asset
+```
+
+**Consequences:**
+- KBank fiat holdings are always included in analytics regardless of collection frequency
+- Missing/stale sources are visible to users and AI (actionable warnings)
+- `get_snapshots_by_date` still exists for exact-date queries (e.g. historical lookups)
+- No breaking API changes — `warnings` is a new additive field (empty array when no issues)
+- 14 files changed, 8 new tests (3 DB + 5 portfolio)
