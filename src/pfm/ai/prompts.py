@@ -34,12 +34,6 @@ Allocation by category:
 Risk metrics:
 {risk_metrics}
 
-PnL summary:
-{pnl_summary}
-
-Top weekly movers by asset:
-{weekly_pnl_by_asset}
-
 Write a compact report with these sections in plain text:
 1) Market context
 2) Portfolio health assessment
@@ -67,8 +61,6 @@ class AnalyticsSummary:
     allocation_by_category: str
     currency_exposure: str
     risk_metrics: str
-    pnl: str
-    weekly_pnl_by_asset: str
 
 
 def render_weekly_report_user_prompt(analytics: AnalyticsSummary) -> str:
@@ -76,16 +68,12 @@ def render_weekly_report_user_prompt(analytics: AnalyticsSummary) -> str:
     top_holdings = _compact_top_holdings(analytics.allocation_by_asset)
     allocation_by_category = _compact_allocation_by_category(analytics.allocation_by_category)
     risk_metrics = _compact_risk_metrics(analytics.risk_metrics)
-    pnl_summary = _compact_pnl_summary(analytics.pnl)
-    weekly_movers = _compact_weekly_movers(analytics.weekly_pnl_by_asset)
     return WEEKLY_REPORT_USER_PROMPT_TEMPLATE.format(
         as_of_date=analytics.as_of_date.isoformat(),
         net_worth_usd=_fmt_usd(analytics.net_worth_usd),
         top_holdings=_pretty_json(top_holdings),
         allocation_by_category=_pretty_json(allocation_by_category),
         risk_metrics=_pretty_json(risk_metrics),
-        pnl_summary=_pretty_json(pnl_summary),
-        weekly_pnl_by_asset=_pretty_json(weekly_movers),
     )
 
 
@@ -154,41 +142,6 @@ def _compact_risk_metrics(raw: str) -> dict[str, object]:
     }
 
 
-def _compact_pnl_summary(raw: str) -> dict[str, object]:
-    parsed = _parse_dict(raw)
-    weekly = parsed.get("weekly", {})
-    monthly = parsed.get("monthly", {})
-    all_time = parsed.get("all_time", {})
-    return {
-        "weekly": _compact_pnl_period(weekly),
-        "monthly": _compact_pnl_period(monthly),
-        "all_time": _compact_pnl_period(all_time),
-    }
-
-
-def _compact_pnl_period(value: object) -> dict[str, object]:
-    if not isinstance(value, dict):
-        return {"absolute_change": "$0.00", "percentage_change": "0.00%"}
-    return {
-        "absolute_change": _fmt_usd_signed(value.get("absolute_change", "0")),
-        "percentage_change": _fmt_pct(value.get("percentage_change", "0")),
-    }
-
-
-def _compact_weekly_movers(raw: str) -> list[dict[str, object]]:
-    rows = _parse_list(raw)
-    compact: list[dict[str, object]] = [
-        {
-            "asset": str(row.get("asset", "UNKNOWN")),
-            "absolute_change": _fmt_usd_signed(row.get("absolute_change", "0")),
-            "percentage_change": _fmt_pct(row.get("percentage_change", "0")),
-        }
-        for row in rows
-    ]
-    compact.sort(key=lambda row: abs(_to_decimal(str(row.get("absolute_change", "0")).replace("$", ""))), reverse=True)
-    return compact[:10]
-
-
 def _parse_list(raw: str) -> list[dict[str, object]]:
     try:
         parsed = json.loads(raw)
@@ -219,14 +172,6 @@ def _to_decimal(value: object) -> Decimal:
 def _fmt_usd(value: object) -> str:
     """Format USD value rounded to 2 decimals."""
     return str(_to_decimal(value).quantize(Decimal("0.01")))
-
-
-def _fmt_usd_signed(value: object) -> str:
-    """Format USD with sign before '$' (e.g. '-$5.05', '+$30.56')."""
-    d = _to_decimal(value).quantize(Decimal("0.01"))
-    if d < 0:
-        return f"-${abs(d)}"
-    return f"${d}"
 
 
 def _fmt_pct(value: object) -> str:

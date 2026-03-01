@@ -29,8 +29,6 @@ def _sample_analytics() -> AnalyticsSummary:
         allocation_by_category="[]",
         currency_exposure="[]",
         risk_metrics="{}",
-        pnl="{}",
-        weekly_pnl_by_asset="[]",
     )
 
 

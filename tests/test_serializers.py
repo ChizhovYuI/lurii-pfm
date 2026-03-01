@@ -18,7 +18,6 @@ from pfm.server.serializers import (
     parse_cached_ai_commentary,
     parse_cached_ai_commentary_model,
     parse_net_worth_usd,
-    pnl_result_to_dict,
     snapshot_to_dict,
     source_to_dict,
 )
@@ -82,37 +81,6 @@ class TestCollectorResultToDict:
         assert result["snapshots_count"] == 5
         assert result["snapshots_usd_total"] == "1000"
         assert result["errors"] == ["some error"]
-
-
-class TestPnlResultToDict:
-    def test_basic(self):
-        from pfm.analytics.pnl import AssetPnl, PnlResult
-
-        pnl = PnlResult(
-            start_date=date(2024, 1, 1),
-            end_date=date(2024, 1, 7),
-            start_value=Decimal(10000),
-            end_value=Decimal(10500),
-            absolute_change=Decimal(500),
-            percentage_change=Decimal(5),
-            by_asset=[
-                AssetPnl(
-                    asset="BTC",
-                    start_value=Decimal(8000),
-                    end_value=Decimal(8400),
-                    absolute_change=Decimal(400),
-                    percentage_change=Decimal(5),
-                ),
-            ],
-            top_gainers=[],
-            top_losers=[],
-            notes=["test note"],
-        )
-        result = pnl_result_to_dict(pnl)
-        assert result["start_date"] == "2024-01-01"
-        assert result["absolute_change"] == "500"
-        assert len(result["by_asset"]) == 1
-        assert result["notes"] == ["test note"]
 
 
 class TestAnalyticsToDict:

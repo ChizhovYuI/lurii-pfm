@@ -31,8 +31,6 @@ def test_render_weekly_report_user_prompt_formats_analytics():
         allocation_by_category='[{"category":"crypto","usd_value":"7000"}]',
         currency_exposure='[{"currency":"USD","usd_value":"5000"}]',
         risk_metrics='{"concentration_percentage":"56.7"}',
-        pnl='{"weekly":{"absolute_change":"120"}}',
-        weekly_pnl_by_asset='[{"asset":"BTC","absolute_change":"120","percentage_change":"1.8"}]',
     )
 
     prompt = render_weekly_report_user_prompt(analytics)
@@ -42,18 +40,17 @@ def test_render_weekly_report_user_prompt_formats_analytics():
     assert '"category": "crypto"' in prompt
     assert '"asset_type": "crypto"' in prompt
     assert '"concentration_percentage": "56.70%"' in prompt
-    assert '"absolute_change": "$120.00"' in prompt
     assert "Top holdings" in prompt
-    assert "Top weekly movers by asset" in prompt
+    assert "PnL summary" not in prompt
+    assert "Top weekly movers by asset" not in prompt
     assert "Allocation by source" not in prompt
     assert "Currency exposure" not in prompt
 
 
-def test_render_weekly_report_user_prompt_limits_holdings_and_movers():
+def test_render_weekly_report_user_prompt_limits_holdings():
     holdings = ",".join(
-        f'{{"asset":"A{i}","usd_value":"{100-i}","asset_type":"other","percentage":"1"}}' for i in range(1, 15)
+        f'{{"asset":"A{i}","usd_value":"{100 - i}","asset_type":"other","percentage":"1"}}' for i in range(1, 15)
     )
-    movers = ",".join(f'{{"asset":"M{i}","absolute_change":"{i}","percentage_change":"1"}}' for i in range(1, 15))
     analytics = AnalyticsSummary(
         as_of_date=date(2024, 1, 15),
         net_worth_usd=Decimal("12345.67"),
@@ -62,12 +59,8 @@ def test_render_weekly_report_user_prompt_limits_holdings_and_movers():
         allocation_by_category="[]",
         currency_exposure="[]",
         risk_metrics="{}",
-        pnl="{}",
-        weekly_pnl_by_asset=f"[{movers}]",
     )
 
     prompt = render_weekly_report_user_prompt(analytics)
     assert '"asset": "A10"' in prompt
     assert '"asset": "A11"' not in prompt
-    assert '"asset": "M14"' in prompt
-    assert '"asset": "M4"' not in prompt

@@ -44,19 +44,6 @@ async def empty_client(aiohttp_client, db_path):
     return await aiohttp_client(app)
 
 
-async def test_analytics_pnl_live(client):
-    resp = await client.get("/api/v1/analytics/pnl?period=weekly")
-    assert resp.status == 200
-    data = await resp.json()
-    assert data["period"] == "weekly"
-    assert "absolute_change" in data["pnl"]
-
-
-async def test_analytics_pnl_no_data(empty_client):
-    resp = await empty_client.get("/api/v1/analytics/pnl")
-    assert resp.status == 404
-
-
 async def test_analytics_allocation(client):
     resp = await client.get("/api/v1/analytics/allocation")
     assert resp.status == 200

@@ -81,15 +81,3 @@ async def proxy_portfolio_summary(port: int = DEFAULT_PORT) -> dict[str, Any]:
         resp.raise_for_status()
         result: dict[str, Any] = resp.json()
         return result
-
-
-async def proxy_analytics_pnl(
-    period: str = "weekly",
-    port: int = DEFAULT_PORT,
-) -> dict[str, Any]:
-    """Proxy: get PnL analytics."""
-    async with httpx.AsyncClient(base_url=get_base_url(port), timeout=10.0) as client:
-        resp = await client.get("/api/v1/analytics/pnl", params={"period": period})
-        resp.raise_for_status()
-        result: dict[str, Any] = resp.json()
-        return result

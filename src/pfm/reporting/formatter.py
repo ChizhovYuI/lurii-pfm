@@ -63,27 +63,12 @@ def format_weekly_report(
 ) -> WeeklyReport:
     """Build Telegram HTML report from analytics."""
     allocation_rows = _parse_list_json(analytics.allocation_by_asset)
-    pnl = _parse_dict_json(analytics.pnl)
-    weekly_asset_rows = _parse_list_json(analytics.weekly_pnl_by_asset)
-
-    weekly_pnl = _parse_dict_json(json.dumps(pnl.get("weekly", {})))
-    weekly_abs = _to_decimal(weekly_pnl.get("absolute_change", "0"))
-    weekly_pct = _to_decimal(weekly_pnl.get("percentage_change", "0"))
-    monthly_pnl = _parse_dict_json(json.dumps(pnl.get("monthly", {})))
-    monthly_abs = _to_decimal(monthly_pnl.get("absolute_change", "0"))
-    monthly_pct = _to_decimal(monthly_pnl.get("percentage_change", "0"))
-    weekly_pnl_by_asset = {
-        str(row.get("asset", "")).upper(): row for row in weekly_asset_rows if str(row.get("asset", "")).strip()
-    }
 
     lines = [
         f"<b>PFM Weekly Report</b> — {analytics.as_of_date.isoformat()}",
         f"Net worth: <b>${_fmt_money(analytics.net_worth_usd)}</b>",
         "",
-        f"<b>PnL (Weekly)</b>: {_pnl_arrow(weekly_abs)} ${_fmt_money(weekly_abs)} ({weekly_pct}%)",
-        f"<b>PnL (Monthly)</b>: {_pnl_arrow(monthly_abs)} ${_fmt_money(monthly_abs)} ({monthly_pct}%)",
-        "",
-        "<b>All Holdings</b> (Total | 7d PnL)",
+        "<b>All Holdings</b>",
     ]
 
     shown_holding = False
@@ -95,13 +80,7 @@ def format_weekly_report(
                 continue
             icon = _holding_icon(row)
             percentage = _to_decimal(row.get("percentage", "0"))
-            weekly_row = weekly_pnl_by_asset.get(str(row.get("asset", "")).upper(), {})
-            weekly_abs_change = _to_decimal(weekly_row.get("absolute_change", "0"))
-            weekly_pct_change = _to_decimal(weekly_row.get("percentage_change", "0"))
-            lines.append(
-                f"{icon} {asset}: ${_fmt_money(usd_value)} ({percentage}%) | "
-                f"${_fmt_money(weekly_abs_change)} ({weekly_pct_change}%)"
-            )
+            lines.append(f"{icon} {asset}: ${_fmt_money(usd_value)} ({percentage}%)")
             shown_holding = True
 
     if not shown_holding:
@@ -169,16 +148,6 @@ def _parse_list_json(raw_json: str) -> list[dict[str, object]]:
     return [item for item in parsed if isinstance(item, dict)]
 
 
-def _parse_dict_json(raw_json: str) -> dict[str, object]:
-    try:
-        parsed = json.loads(raw_json)
-    except json.JSONDecodeError:
-        return {}
-    if isinstance(parsed, dict):
-        return parsed
-    return {}
-
-
 def _to_decimal(value: object) -> Decimal:
     try:
         return Decimal(str(value))
@@ -188,14 +157,6 @@ def _to_decimal(value: object) -> Decimal:
 
 def _fmt_money(value: Decimal) -> str:
     return f"{value:,}"
-
-
-def _pnl_arrow(change: Decimal) -> str:
-    if change > 0:
-        return "↑"
-    if change < 0:
-        return "↓"
-    return "→"
 
 
 def _holding_icon(row: dict[str, object]) -> str:

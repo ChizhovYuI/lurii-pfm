@@ -18,19 +18,14 @@ def test_format_weekly_report_contains_required_sections():
         allocation_by_category="[]",
         currency_exposure="[]",
         risk_metrics="{}",
-        pnl='{"weekly":{"absolute_change":"123.45","percentage_change":"1.23"},'
-        '"monthly":{"absolute_change":"456.78","percentage_change":"4.56"}}',
-        weekly_pnl_by_asset='[{"asset":"BTC","absolute_change":"80","percentage_change":"1.16"}]',
     )
 
     report = format_weekly_report(analytics, "Watch <volatility>.\nRebalance slowly.", warnings=["Data is partial"])
 
     assert "<b>PFM Weekly Report</b>" in report.text
     assert "Net worth: <b>$12,345.67</b>" in report.text
-    assert "<b>PnL (Weekly)</b>: ↑ $123.45 (1.23%)" in report.text
-    assert "<b>PnL (Monthly)</b>: ↑ $456.78 (4.56%)" in report.text
-    assert "<b>All Holdings</b> (Total | 7d PnL)" in report.text
-    assert "🪙 BTC: $7,000 (56.7%) | $80 (1.16%)" in report.text
+    assert "<b>All Holdings</b>" in report.text
+    assert "🪙 BTC: $7,000 (56.7%)" in report.text
     assert "<b>Warnings</b>" in report.text
     assert "• Data is partial" in report.text
     assert report.ai_summary_text is not None
@@ -46,15 +41,10 @@ def test_format_weekly_report_handles_missing_data_branches():
         allocation_by_category="[]",
         currency_exposure="[]",
         risk_metrics="{}",
-        pnl='{"weekly":{"absolute_change":"-5","percentage_change":"-1.0"},'
-        '"monthly":{"absolute_change":"-20","percentage_change":"-3.0"}}',
-        weekly_pnl_by_asset="[]",
     )
 
     report = format_weekly_report(analytics, "No major changes.")
 
-    assert "<b>PnL (Weekly)</b>: ↓ $-5 (-1.0%)" in report.text
-    assert "<b>PnL (Monthly)</b>: ↓ $-20 (-3.0%)" in report.text
     assert "• No holdings data available." in report.text
 
 
@@ -67,14 +57,9 @@ def test_format_weekly_report_tolerates_invalid_numeric_values():
         allocation_by_category="[]",
         currency_exposure="[]",
         risk_metrics="{}",
-        pnl='{"weekly":{"absolute_change":"oops","percentage_change":"nan-ish"},'
-        '"monthly":{"absolute_change":"oops","percentage_change":"nan-ish"}}',
-        weekly_pnl_by_asset='[{"asset":"BTC","absolute_change":"oops","percentage_change":"bad"}]',
     )
 
     report = format_weekly_report(analytics, "Still works.")
-    assert "<b>PnL (Weekly)</b>: → $0 (0%)" in report.text
-    assert "<b>PnL (Monthly)</b>: → $0 (0%)" in report.text
     assert "BTC:" not in report.text  # below HOLDING_MIN_DISPLAY_USD threshold
     assert "• No holdings data available." in report.text
 
@@ -91,14 +76,12 @@ def test_format_weekly_report_includes_all_holdings_not_truncated():
         allocation_by_category="[]",
         currency_exposure="[]",
         risk_metrics="{}",
-        pnl='{"weekly":{"absolute_change":"0","percentage_change":"0"}}',
-        weekly_pnl_by_asset="[]",
     )
 
     report = format_weekly_report(analytics, "All holdings visible.")
     assert "📈 A9: $9 (1%)" not in report.text
-    assert "📈 A10: $10 (1%) | $0 (0%)" in report.text
-    assert "📈 A11: $11 (1%) | $0 (0%)" in report.text
+    assert "📈 A10: $10 (1%)" in report.text
+    assert "📈 A11: $11 (1%)" in report.text
 
 
 def test_format_ai_commentary_escapes_html_and_preserves_lines():
@@ -109,7 +92,7 @@ def test_format_ai_commentary_escapes_html_and_preserves_lines():
 
 def test_format_ai_commentary_normalizes_markdown():
     message = format_ai_commentary(
-        "### 1) Market Context\n" "* **Net Worth:** $60,922.81\n" "* Use `cash` buffer\n" "Plain line"
+        "### 1) Market Context\n* **Net Worth:** $60,922.81\n* Use `cash` buffer\nPlain line"
     )
     assert "###" not in message
     assert "• <b>Net Worth:</b> $60,922.81" in message

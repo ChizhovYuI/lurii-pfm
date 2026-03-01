@@ -8,7 +8,6 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from pfm.analytics.pnl import AssetPnl, PnlResult
     from pfm.db.models import CollectorResult, Snapshot, Source
 
 # ── Asset classification constants ──────────────────────────────────────
@@ -89,33 +88,6 @@ def collector_result_to_dict(result: CollectorResult) -> dict[str, Any]:
         "transactions_count": result.transactions_count,
         "errors": result.errors,
         "duration_seconds": result.duration_seconds,
-    }
-
-
-def pnl_result_to_dict(result: PnlResult) -> dict[str, object]:
-    """Serialize PnL dataclass to a JSON-safe dict."""
-
-    def _asset_pnl(row: AssetPnl) -> dict[str, object]:
-        return {
-            "asset": row.asset,
-            "start_value": _str_decimal(row.start_value),
-            "end_value": _str_decimal(row.end_value),
-            "absolute_change": _str_decimal(row.absolute_change),
-            "percentage_change": _str_decimal(row.percentage_change),
-            "cost_basis_value": _str_decimal(row.cost_basis_value) if row.cost_basis_value is not None else None,
-        }
-
-    return {
-        "start_date": result.start_date.isoformat() if result.start_date else None,
-        "end_date": result.end_date.isoformat() if result.end_date else None,
-        "start_value": _str_decimal(result.start_value),
-        "end_value": _str_decimal(result.end_value),
-        "absolute_change": _str_decimal(result.absolute_change),
-        "percentage_change": _str_decimal(result.percentage_change),
-        "by_asset": [_asset_pnl(row) for row in result.by_asset],
-        "top_gainers": [_asset_pnl(row) for row in result.top_gainers],
-        "top_losers": [_asset_pnl(row) for row in result.top_losers],
-        "notes": list(result.notes),
     }
 
 

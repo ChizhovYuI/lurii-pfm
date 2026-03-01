@@ -6,41 +6,9 @@ from datetime import date
 
 from aiohttp import web
 
-from pfm.server.serializers import _str_decimal, pnl_result_to_dict
+from pfm.server.serializers import _str_decimal
 
 routes = web.RouteTableDef()
-
-
-@routes.get("/api/v1/analytics/pnl")
-async def analytics_pnl(request: web.Request) -> web.Response:
-    """Return live-computed PnL data."""
-    from pfm.analytics import PnlPeriod, compute_pnl
-
-    repo = request.app["repo"]
-    period = request.query.get("period", "weekly")
-
-    latest = await repo.get_latest_snapshots()
-    if not latest:
-        return web.json_response({"error": "No snapshots available"}, status=404)
-
-    analysis_date = latest[0].date
-
-    try:
-        period_enum = PnlPeriod(period)
-    except ValueError:
-        return web.json_response(
-            {"error": f"Invalid period: {period!r}. Use daily/weekly/monthly/all_time"},
-            status=400,
-        )
-
-    result = await compute_pnl(repo, analysis_date, period_enum)
-    return web.json_response(
-        {
-            "date": analysis_date.isoformat(),
-            "period": period,
-            "pnl": pnl_result_to_dict(result),
-        }
-    )
 
 
 @routes.get("/api/v1/analytics/allocation")

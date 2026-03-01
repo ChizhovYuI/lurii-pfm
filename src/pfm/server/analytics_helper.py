@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
-from pfm.server.serializers import _str_decimal, pnl_result_to_dict
+from pfm.server.serializers import _str_decimal
 
 if TYPE_CHECKING:
     from datetime import date
@@ -18,13 +18,11 @@ async def build_analytics_summary(repo: Repository, snapshot_date: date) -> Anal
     """Compute all analytics metrics live and return an AnalyticsSummary."""
     from pfm.ai import AnalyticsSummary
     from pfm.analytics import (
-        PnlPeriod,
         compute_allocation_by_asset,
         compute_allocation_by_category,
         compute_allocation_by_source,
         compute_currency_exposure,
         compute_net_worth,
-        compute_pnl,
         compute_risk_metrics,
     )
 
@@ -34,11 +32,6 @@ async def build_analytics_summary(repo: Repository, snapshot_date: date) -> Anal
     alloc_category = await compute_allocation_by_category(repo, snapshot_date)
     currency_exposure = await compute_currency_exposure(repo, snapshot_date)
     risk = await compute_risk_metrics(repo, snapshot_date)
-
-    pnl_daily = await compute_pnl(repo, snapshot_date, PnlPeriod.DAILY)
-    pnl_weekly = await compute_pnl(repo, snapshot_date, PnlPeriod.WEEKLY)
-    pnl_monthly = await compute_pnl(repo, snapshot_date, PnlPeriod.MONTHLY)
-    pnl_all_time = await compute_pnl(repo, snapshot_date, PnlPeriod.ALL_TIME)
 
     return AnalyticsSummary(
         as_of_date=snapshot_date,
@@ -102,25 +95,5 @@ async def build_analytics_summary(repo: Repository, snapshot_date: date) -> Anal
                     for row in risk.top_5_assets
                 ],
             }
-        ),
-        pnl=json.dumps(
-            {
-                "daily": pnl_result_to_dict(pnl_daily),
-                "weekly": pnl_result_to_dict(pnl_weekly),
-                "monthly": pnl_result_to_dict(pnl_monthly),
-                "all_time": pnl_result_to_dict(pnl_all_time),
-            }
-        ),
-        weekly_pnl_by_asset=json.dumps(
-            [
-                {
-                    "asset": row.asset,
-                    "start_value": _str_decimal(row.start_value),
-                    "end_value": _str_decimal(row.end_value),
-                    "absolute_change": _str_decimal(row.absolute_change),
-                    "percentage_change": _str_decimal(row.percentage_change),
-                }
-                for row in pnl_weekly.by_asset
-            ]
         ),
     )

@@ -838,10 +838,8 @@ async def _analyze_async() -> None:
 
     # Late imports to avoid circular dependencies and keep startup fast
     from pfm.analytics import (
-        PnlPeriod,
         compute_allocation_by_asset,
         compute_net_worth,
-        compute_pnl,
     )
     from pfm.db.repository import Repository
 
@@ -855,11 +853,6 @@ async def _analyze_async() -> None:
         net_worth = await compute_net_worth(repo, analysis_date)
         alloc_asset = await compute_allocation_by_asset(repo, analysis_date)
 
-        pnl_daily = await compute_pnl(repo, analysis_date, PnlPeriod.DAILY)
-        pnl_weekly = await compute_pnl(repo, analysis_date, PnlPeriod.WEEKLY)
-        pnl_monthly = await compute_pnl(repo, analysis_date, PnlPeriod.MONTHLY)
-        pnl_all_time = await compute_pnl(repo, analysis_date, PnlPeriod.ALL_TIME)
-
     click.echo(f"Analytics date: {analysis_date.isoformat()}")
     click.echo(f"Net worth (USD): {_fmt_money(net_worth)}")
     click.echo("Top assets:")
@@ -867,21 +860,6 @@ async def _analyze_async() -> None:
         click.echo(
             f"  {asset_row.asset}: ${_fmt_money(asset_row.usd_value)} "
             f"({asset_row.percentage.quantize(Decimal('0.01'))}%)"
-        )
-    click.echo("PnL:")
-    for label, pnl in [
-        ("daily", pnl_daily),
-        ("weekly", pnl_weekly),
-        ("monthly", pnl_monthly),
-        ("all_time", pnl_all_time),
-    ]:
-        click.echo(
-            f"  {label}: ${_fmt_money(pnl.absolute_change)} ({pnl.percentage_change.quantize(Decimal('0.01'))}%)"
-        )
-    click.echo("Weekly PnL by asset:")
-    for row in pnl_weekly.by_asset:
-        click.echo(
-            f"  {row.asset}: ${_fmt_money(row.absolute_change)} ({row.percentage_change.quantize(Decimal('0.01'))}%)"
         )
     click.echo("Analytics computed (on-the-fly, no caching).")
 
