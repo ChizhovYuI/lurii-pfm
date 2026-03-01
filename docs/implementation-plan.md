@@ -558,9 +558,7 @@ Push-only using raw `httpx`:
 
 Format analytics + AI commentary into Telegram HTML:
 - Header: date, net worth
-- PnL: week-over-week with arrows
-- Allocation: top 10 holdings
-- Yield: Blend returns
+- All holdings over display threshold
 - AI commentary
 - Footer: errors/warnings
 

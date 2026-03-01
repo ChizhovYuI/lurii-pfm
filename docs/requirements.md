@@ -2,7 +2,7 @@
 
 ## Overview
 
-Personal Financial Management system that aggregates assets and statements from crypto exchanges, wallets, DeFi protocols, banks, and brokers. Produces a weekly Telegram report with total net worth, PnL, allocation breakdown, and AI-generated investment commentary.
+Personal Financial Management system that aggregates assets and statements from crypto exchanges, wallets, DeFi protocols, banks, and brokers. Produces a weekly Telegram report with total net worth, allocation breakdown, and AI-generated investment commentary.
 
 ## User Profile
 
@@ -84,7 +84,7 @@ Personal Financial Management system that aggregates assets and statements from 
 ### F3 — Portfolio Analytics
 
 - F3.1: **Total net worth** (sum of all assets in USD)
-- F3.2: **PnL** — daily, weekly, monthly, all-time
+- F3.2: **PnL** — daily, weekly, monthly, all-time *(temporarily removed; pnl.py kept for future re-addition)*
 - F3.3: **Asset allocation** — by (source, asset) with unit price, by source, by category (crypto/fiat/stocks/DeFi)
 - F3.4: **Yield tracking** — Blend fixed pool returns
 - F3.5: **Cost basis** — per asset (for tax/gain tracking)
@@ -112,9 +112,7 @@ Personal Financial Management system that aggregates assets and statements from 
 - F5.1: Push-only bot (no interactive commands)
 - F5.2: Weekly scheduled report containing:
   - Total net worth (USD)
-  - Week-over-week PnL (absolute + %)
-  - All holdings over display threshold with weekly PnL
-  - Monthly PnL summary
+  - All holdings over display threshold
   - AI commentary summary (second Telegram message)
 - F5.3: Configurable schedule (day of week, time)
 - F5.4: Error alerts (if a data source fails to fetch)
@@ -289,7 +287,7 @@ src/pfm/
 │       ├── health.py      # GET /api/v1/health
 │       ├── sources.py     # Sources CRUD
 │       ├── portfolio.py   # Portfolio summary/snapshots/holdings
-│       ├── analytics.py   # PnL/allocation/exposure/yield
+│       ├── analytics.py   # allocation/exposure/yield
 │       ├── ai.py          # AI commentary + provider config
 │       ├── collect.py     # Collection trigger (background task)
 │       ├── report.py      # Report trigger (Telegram notify)

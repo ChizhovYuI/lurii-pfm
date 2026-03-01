@@ -134,7 +134,7 @@ src/pfm/server/
     ├── health.py      # GET /api/v1/health
     ├── sources.py     # Sources CRUD (list/add/get/delete/update)
     ├── portfolio.py   # Summary, snapshots, holdings
-    ├── analytics.py   # PnL, allocation, exposure, yield
+    ├── analytics.py   # allocation, exposure, yield
     ├── ai.py          # Commentary read/generate, config get/update
     ├── collect.py     # Background collection task + concurrency guard
     ├── report.py      # Telegram report trigger
@@ -157,8 +157,7 @@ All endpoints prefixed with `/api/v1/`. JSON request/response.
 | POST | `/collect` | Trigger collection (all or specific source) |
 | GET | `/portfolio/summary` | Latest net worth + allocation |
 | GET | `/portfolio/snapshots` | Historical snapshots (date range) |
-| GET | `/portfolio/holdings` | Current holdings with PnL |
-| GET | `/analytics/pnl` | PnL data (daily/weekly/monthly) |
+| GET | `/portfolio/holdings` | Current holdings |
 | GET | `/analytics/allocation` | Asset allocation by (source, asset) with price |
 | GET | `/analytics/exposure` | Currency exposure |
 | GET | `/analytics/yield` | Blend yield tracking |

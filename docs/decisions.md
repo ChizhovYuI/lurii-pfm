@@ -341,3 +341,40 @@ CREATE TABLE IF NOT EXISTS ai_providers (
 - Adding a new provider class automatically makes it available in the UI (no endpoint changes)
 - Configured and available providers are separate arrays — UI can distinguish "add new" vs "edit existing"
 - Secret handling is driven by metadata (`secret` flag), not UI-side field name checks
+
+---
+
+## ADR-011: Temporarily remove PnL from analytics, reports, and AI prompts
+
+**Date:** 2026-03-01
+
+**Status:** Accepted
+
+**Context:** PnL computations (daily/weekly/monthly/all_time) compare two snapshot dates, but often there is no data for the earlier date — producing zero or misleading values. This was particularly common for newly added sources or when collection gaps existed.
+
+**Problem:**
+- PnL frequently showed $0 or incorrect values due to missing historical snapshots
+- Misleading PnL data was passed to the AI prompt, producing unreliable commentary
+- Telegram reports displayed PnL arrows and percentages based on incomplete data
+
+**Decision:** Remove all PnL from `AnalyticsSummary`, AI prompt templates, report formatter, analytics routes, CLI output, and client proxy. Keep `pnl.py` and `test_pnl.py` intact for future re-addition with proper edge-case handling.
+
+**What was removed:**
+- `pnl` and `weekly_pnl_by_asset` fields from `AnalyticsSummary` dataclass
+- "PnL summary" and "Top weekly movers by asset" sections from AI prompt template
+- PnL helper functions: `_compact_pnl_summary`, `_compact_pnl_period`, `_compact_weekly_movers`, `_fmt_usd_signed`
+- `GET /api/v1/analytics/pnl` route and `proxy_analytics_pnl()` client function
+- `pnl_result_to_dict()` serializer
+- PnL computation calls in `analytics_helper.py` and `cli.py`
+- PnL display in report formatter (weekly/monthly arrows, per-holding 7d PnL column)
+- `AssetPnl`, `PnlPeriod`, `PnlResult`, `compute_pnl` from `analytics/__init__.py` exports
+
+**What was kept:**
+- `src/pfm/analytics/pnl.py` — computation logic (will return with proper handling)
+- `tests/test_pnl.py` — unit tests for the computation logic
+
+**Consequences:**
+- Reports show holdings without PnL columns (simpler, more honest)
+- AI commentary focuses on allocation and risk metrics (no misleading PnL data)
+- 13 files changed, ~300 lines removed
+- PnL will be re-added later with proper edge-case handling (missing data detection, minimum data requirements, confidence indicators)
