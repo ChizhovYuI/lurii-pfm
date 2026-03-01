@@ -29,13 +29,7 @@ from pfm.db.source_store import (
 )
 from pfm.db.telegram_store import TelegramStore
 from pfm.server.serializers import (
-    _str_decimal as _fmt,
-)
-from pfm.server.serializers import (
     mask_secret as _mask,
-)
-from pfm.server.serializers import (
-    pnl_result_to_dict as _pnl_result_to_dict,
 )
 from pfm.source_types import SOURCE_TYPES
 
@@ -839,19 +833,15 @@ def _fmt_money(value: Decimal) -> str:
 
 
 async def _analyze_async() -> None:
-    """Compute analytics for the latest snapshot date and cache results."""
+    """Compute analytics for the latest snapshot date and display results."""
     settings = get_settings()
 
     # Late imports to avoid circular dependencies and keep startup fast
     from pfm.analytics import (
         PnlPeriod,
         compute_allocation_by_asset,
-        compute_allocation_by_category,
-        compute_allocation_by_source,
-        compute_currency_exposure,
         compute_net_worth,
         compute_pnl,
-        compute_risk_metrics,
     )
     from pfm.db.repository import Repository
 
@@ -864,126 +854,11 @@ async def _analyze_async() -> None:
         analysis_date = latest[0].date
         net_worth = await compute_net_worth(repo, analysis_date)
         alloc_asset = await compute_allocation_by_asset(repo, analysis_date)
-        alloc_source = await compute_allocation_by_source(repo, analysis_date)
-        alloc_category = await compute_allocation_by_category(repo, analysis_date)
-        currency_exposure = await compute_currency_exposure(repo, analysis_date)
-        risk = await compute_risk_metrics(repo, analysis_date)
 
         pnl_daily = await compute_pnl(repo, analysis_date, PnlPeriod.DAILY)
         pnl_weekly = await compute_pnl(repo, analysis_date, PnlPeriod.WEEKLY)
         pnl_monthly = await compute_pnl(repo, analysis_date, PnlPeriod.MONTHLY)
         pnl_all_time = await compute_pnl(repo, analysis_date, PnlPeriod.ALL_TIME)
-
-        # Cache computed metrics in analytics_cache table
-        await repo.save_analytics_metric(analysis_date, "net_worth", json.dumps({"usd": _fmt(net_worth)}))
-        await repo.save_analytics_metric(
-            analysis_date,
-            "allocation_by_asset",
-            json.dumps(
-                [
-                    {
-                        "asset": row.asset,
-                        "asset_type": row.asset_type,
-                        "sources": list(row.sources),
-                        "amount": _fmt(row.amount),
-                        "usd_value": _fmt(row.usd_value),
-                        "price": _fmt(row.price),
-                        "percentage": _fmt(row.percentage),
-                    }
-                    for row in alloc_asset
-                ]
-            ),
-        )
-        await repo.save_analytics_metric(
-            analysis_date,
-            "allocation_by_source",
-            json.dumps(
-                [
-                    {
-                        "source": row.bucket,
-                        "usd_value": _fmt(row.usd_value),
-                        "percentage": _fmt(row.percentage),
-                    }
-                    for row in alloc_source
-                ]
-            ),
-        )
-        await repo.save_analytics_metric(
-            analysis_date,
-            "allocation_by_category",
-            json.dumps(
-                [
-                    {
-                        "category": row.bucket,
-                        "usd_value": _fmt(row.usd_value),
-                        "percentage": _fmt(row.percentage),
-                    }
-                    for row in alloc_category
-                ]
-            ),
-        )
-        await repo.save_analytics_metric(
-            analysis_date,
-            "currency_exposure",
-            json.dumps(
-                [
-                    {
-                        "currency": row.currency,
-                        "usd_value": _fmt(row.usd_value),
-                        "percentage": _fmt(row.percentage),
-                    }
-                    for row in currency_exposure
-                ]
-            ),
-        )
-        await repo.save_analytics_metric(
-            analysis_date,
-            "risk_metrics",
-            json.dumps(
-                {
-                    "concentration_percentage": _fmt(risk.concentration_percentage),
-                    "hhi_index": _fmt(risk.hhi_index),
-                    "top_5_assets": [
-                        {
-                            "asset": row.asset,
-                            "sources": list(row.sources),
-                            "usd_value": _fmt(row.usd_value),
-                            "price": _fmt(row.price),
-                            "percentage": _fmt(row.percentage),
-                        }
-                        for row in risk.top_5_assets
-                    ],
-                }
-            ),
-        )
-        await repo.save_analytics_metric(
-            analysis_date,
-            "pnl",
-            json.dumps(
-                {
-                    "daily": _pnl_result_to_dict(pnl_daily),
-                    "weekly": _pnl_result_to_dict(pnl_weekly),
-                    "monthly": _pnl_result_to_dict(pnl_monthly),
-                    "all_time": _pnl_result_to_dict(pnl_all_time),
-                }
-            ),
-        )
-        await repo.save_analytics_metric(
-            analysis_date,
-            "weekly_pnl_by_asset",
-            json.dumps(
-                [
-                    {
-                        "asset": row.asset,
-                        "start_value": _fmt(row.start_value),
-                        "end_value": _fmt(row.end_value),
-                        "absolute_change": _fmt(row.absolute_change),
-                        "percentage_change": _fmt(row.percentage_change),
-                    }
-                    for row in pnl_weekly.by_asset
-                ]
-            ),
-        )
 
     click.echo(f"Analytics date: {analysis_date.isoformat()}")
     click.echo(f"Net worth (USD): {_fmt_money(net_worth)}")
@@ -1008,21 +883,7 @@ async def _analyze_async() -> None:
         click.echo(
             f"  {row.asset}: ${_fmt_money(row.absolute_change)} ({row.percentage_change.quantize(Decimal('0.01'))}%)"
         )
-    click.echo(
-        "Cached analytics metrics: net_worth, allocations, currency_exposure, risk_metrics, pnl, weekly_pnl_by_asset"
-    )
-
-
-_REQUIRED_ANALYTICS_METRICS = (
-    "net_worth",
-    "allocation_by_asset",
-    "allocation_by_source",
-    "allocation_by_category",
-    "currency_exposure",
-    "risk_metrics",
-    "pnl",
-    "weekly_pnl_by_asset",
-)
+    click.echo("Analytics computed (on-the-fly, no caching).")
 
 
 @cli.command("comment")
@@ -1202,52 +1063,15 @@ async def _run_pipeline_async() -> bool:
 
 
 async def _load_latest_analytics_summary(repo: Repository) -> AnalyticsSummary | None:
-    """Load analytics cache for the latest snapshot date."""
-    from pfm.ai import AnalyticsSummary
+    """Compute analytics live for the latest snapshot date."""
+    from pfm.server.analytics_helper import build_analytics_summary
 
     latest = await repo.get_latest_snapshots()
     if not latest:
-        click.echo("No snapshots found. Run 'pfm collect' and 'pfm analyze' first.")
+        click.echo("No snapshots found. Run 'pfm collect' first.")
         return None
 
-    report_date = latest[0].date
-    metrics = await repo.get_analytics_metrics_by_date(report_date)
-    missing = [metric for metric in _REQUIRED_ANALYTICS_METRICS if metric not in metrics]
-    if missing:
-        click.echo(
-            "Missing cached analytics metrics for latest snapshot date: "
-            + ", ".join(missing)
-            + ". Run 'pfm analyze' first.",
-        )
-        return None
-
-    return AnalyticsSummary(
-        as_of_date=report_date,
-        net_worth_usd=_parse_net_worth_usd(metrics["net_worth"]),
-        allocation_by_asset=metrics["allocation_by_asset"],
-        allocation_by_source=metrics["allocation_by_source"],
-        allocation_by_category=metrics["allocation_by_category"],
-        currency_exposure=metrics["currency_exposure"],
-        risk_metrics=metrics["risk_metrics"],
-        pnl=metrics["pnl"],
-        weekly_pnl_by_asset=metrics["weekly_pnl_by_asset"],
-    )
-
-
-def _parse_net_worth_usd(raw_json: str) -> Decimal:
-    """Extract net worth USD value from cached metric JSON."""
-    try:
-        parsed = json.loads(raw_json)
-    except json.JSONDecodeError:
-        return Decimal(0)
-
-    if not isinstance(parsed, dict):
-        return Decimal(0)
-    value = parsed.get("usd", "0")
-    try:
-        return Decimal(str(value))
-    except ArithmeticError:
-        return Decimal(0)
+    return await build_analytics_summary(repo, latest[0].date)
 
 
 def _parse_cached_ai_commentary(raw_json: str | None) -> str | None:

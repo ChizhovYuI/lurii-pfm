@@ -5,18 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from aiohttp import web
 
-if TYPE_CHECKING:
-    from pfm.db.repository import Repository
-
-from pfm.server.serializers import (
-    _str_decimal,
-    collector_result_to_dict,
-    pnl_result_to_dict,
-)
+from pfm.server.serializers import collector_result_to_dict
 
 logger = logging.getLogger(__name__)
 
@@ -153,146 +146,6 @@ async def _run_collection(app: web.Application, source_name: str | None) -> None
         app["collecting"] = False
 
 
-async def _run_analyze(repo: Repository) -> None:
-    """Compute all analytics and cache them (same as pfm analyze)."""
-    from pfm.analytics import (
-        PnlPeriod,
-        compute_allocation_by_asset,
-        compute_allocation_by_category,
-        compute_allocation_by_source,
-        compute_currency_exposure,
-        compute_net_worth,
-        compute_pnl,
-        compute_risk_metrics,
-    )
-
-    latest = await repo.get_latest_snapshots()
-    if not latest:
-        return
-
-    analysis_date = latest[0].date
-    net_worth = await compute_net_worth(repo, analysis_date)
-    alloc_asset = await compute_allocation_by_asset(repo, analysis_date)
-    alloc_source = await compute_allocation_by_source(repo, analysis_date)
-    alloc_category = await compute_allocation_by_category(repo, analysis_date)
-    currency_exposure = await compute_currency_exposure(repo, analysis_date)
-    risk = await compute_risk_metrics(repo, analysis_date)
-
-    pnl_daily = await compute_pnl(repo, analysis_date, PnlPeriod.DAILY)
-    pnl_weekly = await compute_pnl(repo, analysis_date, PnlPeriod.WEEKLY)
-    pnl_monthly = await compute_pnl(repo, analysis_date, PnlPeriod.MONTHLY)
-    pnl_all_time = await compute_pnl(repo, analysis_date, PnlPeriod.ALL_TIME)
-
-    await repo.save_analytics_metric(
-        analysis_date,
-        "net_worth",
-        json.dumps({"usd": _str_decimal(net_worth)}),
-    )
-    await repo.save_analytics_metric(
-        analysis_date,
-        "allocation_by_asset",
-        json.dumps(
-            [
-                {
-                    "asset": row.asset,
-                    "asset_type": row.asset_type,
-                    "sources": list(row.sources),
-                    "amount": _str_decimal(row.amount),
-                    "usd_value": _str_decimal(row.usd_value),
-                    "price": _str_decimal(row.price),
-                    "percentage": _str_decimal(row.percentage),
-                }
-                for row in alloc_asset
-            ]
-        ),
-    )
-    await repo.save_analytics_metric(
-        analysis_date,
-        "allocation_by_source",
-        json.dumps(
-            [
-                {
-                    "source": row.bucket,
-                    "usd_value": _str_decimal(row.usd_value),
-                    "percentage": _str_decimal(row.percentage),
-                }
-                for row in alloc_source
-            ]
-        ),
-    )
-    await repo.save_analytics_metric(
-        analysis_date,
-        "allocation_by_category",
-        json.dumps(
-            [
-                {
-                    "category": row.bucket,
-                    "usd_value": _str_decimal(row.usd_value),
-                    "percentage": _str_decimal(row.percentage),
-                }
-                for row in alloc_category
-            ]
-        ),
-    )
-    await repo.save_analytics_metric(
-        analysis_date,
-        "currency_exposure",
-        json.dumps(
-            [
-                {
-                    "currency": row.currency,
-                    "usd_value": _str_decimal(row.usd_value),
-                    "percentage": _str_decimal(row.percentage),
-                }
-                for row in currency_exposure
-            ]
-        ),
-    )
-    await repo.save_analytics_metric(
-        analysis_date,
-        "risk_metrics",
-        json.dumps(
-            {
-                "concentration_percentage": _str_decimal(risk.concentration_percentage),
-                "hhi_index": _str_decimal(risk.hhi_index),
-                "top_5_assets": [
-                    {
-                        "asset": row.asset,
-                        "sources": list(row.sources),
-                        "usd_value": _str_decimal(row.usd_value),
-                        "price": _str_decimal(row.price),
-                        "percentage": _str_decimal(row.percentage),
-                    }
-                    for row in risk.top_5_assets
-                ],
-            }
-        ),
-    )
-    await repo.save_analytics_metric(
-        analysis_date,
-        "pnl",
-        json.dumps(
-            {
-                "daily": pnl_result_to_dict(pnl_daily),
-                "weekly": pnl_result_to_dict(pnl_weekly),
-                "monthly": pnl_result_to_dict(pnl_monthly),
-                "all_time": pnl_result_to_dict(pnl_all_time),
-            }
-        ),
-    )
-    await repo.save_analytics_metric(
-        analysis_date,
-        "weekly_pnl_by_asset",
-        json.dumps(
-            [
-                {
-                    "asset": row.asset,
-                    "start_value": _str_decimal(row.start_value),
-                    "end_value": _str_decimal(row.end_value),
-                    "absolute_change": _str_decimal(row.absolute_change),
-                    "percentage_change": _str_decimal(row.percentage_change),
-                }
-                for row in pnl_weekly.by_asset
-            ]
-        ),
-    )
+async def _run_analyze(repo: object) -> None:
+    """No-op — analytics are now computed on-the-fly from snapshots."""
+    del repo

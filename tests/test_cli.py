@@ -513,7 +513,7 @@ def test_analyze_no_snapshots(runner):
 
 
 @pytest.mark.usefixtures("_patched_settings")
-def test_analyze_computes_and_caches_metrics(runner, db_path):
+def test_analyze_computes_and_displays_metrics(runner, db_path):
     async def _seed_data() -> None:
         async with Repository(db_path) as repo:
             await repo.save_snapshots(
@@ -548,30 +548,15 @@ def test_analyze_computes_and_caches_metrics(runner, db_path):
     assert result.exit_code == 0
     assert "Analytics date: 2024-01-15" in result.output
     assert "Net worth (USD): 570.00" in result.output
-    assert "Cached analytics metrics" in result.output
+    assert "Analytics computed (on-the-fly, no caching)." in result.output
 
+    # Verify nothing was cached
     async def _load_metrics() -> dict[str, str]:
         async with Repository(db_path) as repo:
             return await repo.get_analytics_metrics_by_date(date(2024, 1, 15))
 
     metrics = asyncio.run(_load_metrics())
-    assert set(metrics) == {
-        "allocation_by_asset",
-        "allocation_by_category",
-        "allocation_by_source",
-        "currency_exposure",
-        "net_worth",
-        "pnl",
-        "risk_metrics",
-        "weekly_pnl_by_asset",
-    }
-    assert json.loads(metrics["net_worth"]) == {"usd": "570.0"}
-    weekly_rows = json.loads(metrics["weekly_pnl_by_asset"])
-    assert len(weekly_rows) >= 1
-    assert any(row["asset"] == "BTC" for row in weekly_rows)
-    pnl = json.loads(metrics["pnl"])
-    assert pnl["daily"]["start_date"] == "2024-01-14"
-    assert pnl["daily"]["end_date"] == "2024-01-15"
+    assert metrics == {}
 
 
 @pytest.mark.usefixtures("_patched_settings")
@@ -582,7 +567,7 @@ def test_report_no_snapshots(runner):
 
 
 @pytest.mark.usefixtures("_patched_settings")
-def test_report_missing_cached_metrics(runner, db_path):
+def test_report_telegram_not_configured_with_snapshots(runner, db_path):
     async def _seed_snapshot() -> None:
         async with Repository(db_path) as repo:
             await repo.save_snapshot(
@@ -604,7 +589,7 @@ def test_report_missing_cached_metrics(runner, db_path):
 
 @pytest.mark.usefixtures("_patched_settings")
 def test_report_success(runner, db_path):
-    async def _seed_analytics() -> None:
+    async def _seed() -> None:
         async with Repository(db_path) as repo:
             snapshot_date = date(2024, 1, 15)
             await repo.save_snapshot(
@@ -616,21 +601,9 @@ def test_report_success(runner, db_path):
                     usd_value=Decimal("100.0"),
                 )
             )
-            await repo.save_analytics_metric(snapshot_date, "net_worth", '{"usd":"100.0"}')
-            await repo.save_analytics_metric(snapshot_date, "allocation_by_asset", "[]")
-            await repo.save_analytics_metric(snapshot_date, "allocation_by_source", "[]")
-            await repo.save_analytics_metric(snapshot_date, "allocation_by_category", "[]")
-            await repo.save_analytics_metric(snapshot_date, "currency_exposure", "[]")
-            await repo.save_analytics_metric(snapshot_date, "risk_metrics", "{}")
-            await repo.save_analytics_metric(
-                snapshot_date,
-                "pnl",
-                '{"weekly":{"absolute_change":"1.5","percentage_change":"1.0"}}',
-            )
-            await repo.save_analytics_metric(snapshot_date, "weekly_pnl_by_asset", "[]")
             await repo.save_analytics_metric(snapshot_date, "ai_commentary", '{"text":"All good."}')
 
-    asyncio.run(_seed_analytics())
+    asyncio.run(_seed())
 
     with (
         patch("pfm.reporting.is_telegram_configured", AsyncMock(return_value=True)),
@@ -645,7 +618,7 @@ def test_report_success(runner, db_path):
 
 @pytest.mark.usefixtures("_patched_settings")
 def test_report_uses_cached_ai_commentary(runner, db_path):
-    async def _seed_analytics() -> None:
+    async def _seed() -> None:
         async with Repository(db_path) as repo:
             snapshot_date = date(2024, 1, 15)
             await repo.save_snapshot(
@@ -657,25 +630,13 @@ def test_report_uses_cached_ai_commentary(runner, db_path):
                     usd_value=Decimal("100.0"),
                 )
             )
-            await repo.save_analytics_metric(snapshot_date, "net_worth", '{"usd":"100.0"}')
-            await repo.save_analytics_metric(snapshot_date, "allocation_by_asset", "[]")
-            await repo.save_analytics_metric(snapshot_date, "allocation_by_source", "[]")
-            await repo.save_analytics_metric(snapshot_date, "allocation_by_category", "[]")
-            await repo.save_analytics_metric(snapshot_date, "currency_exposure", "[]")
-            await repo.save_analytics_metric(snapshot_date, "risk_metrics", "{}")
-            await repo.save_analytics_metric(
-                snapshot_date,
-                "pnl",
-                '{"weekly":{"absolute_change":"1.5","percentage_change":"1.0"}}',
-            )
-            await repo.save_analytics_metric(snapshot_date, "weekly_pnl_by_asset", "[]")
             await repo.save_analytics_metric(
                 snapshot_date,
                 "ai_commentary",
                 '{"text":"Cached comment","model":"gemini-2.5-flash"}',
             )
 
-    asyncio.run(_seed_analytics())
+    asyncio.run(_seed())
 
     with (
         patch("pfm.reporting.is_telegram_configured", AsyncMock(return_value=True)),
@@ -691,32 +652,19 @@ def test_report_uses_cached_ai_commentary(runner, db_path):
 
 @pytest.mark.usefixtures("_patched_settings")
 def test_report_without_cached_ai_commentary_uses_fallback_text(runner, db_path):
-    async def _seed_analytics() -> None:
+    async def _seed() -> None:
         async with Repository(db_path) as repo:
-            snapshot_date = date(2024, 1, 15)
             await repo.save_snapshot(
                 Snapshot(
-                    date=snapshot_date,
+                    date=date(2024, 1, 15),
                     source="wise",
                     asset="USD",
                     amount=Decimal("100.0"),
                     usd_value=Decimal("100.0"),
                 )
             )
-            await repo.save_analytics_metric(snapshot_date, "net_worth", '{"usd":"100.0"}')
-            await repo.save_analytics_metric(snapshot_date, "allocation_by_asset", "[]")
-            await repo.save_analytics_metric(snapshot_date, "allocation_by_source", "[]")
-            await repo.save_analytics_metric(snapshot_date, "allocation_by_category", "[]")
-            await repo.save_analytics_metric(snapshot_date, "currency_exposure", "[]")
-            await repo.save_analytics_metric(snapshot_date, "risk_metrics", "{}")
-            await repo.save_analytics_metric(
-                snapshot_date,
-                "pnl",
-                '{"weekly":{"absolute_change":"1.5","percentage_change":"1.0"}}',
-            )
-            await repo.save_analytics_metric(snapshot_date, "weekly_pnl_by_asset", "[]")
 
-    asyncio.run(_seed_analytics())
+    asyncio.run(_seed())
 
     with (
         patch("pfm.reporting.is_telegram_configured", AsyncMock(return_value=True)),
@@ -732,32 +680,19 @@ def test_report_without_cached_ai_commentary_uses_fallback_text(runner, db_path)
 
 @pytest.mark.usefixtures("_patched_settings")
 def test_comment_command_generates_prints_and_caches(runner, db_path):
-    async def _seed_analytics() -> None:
+    async def _seed() -> None:
         async with Repository(db_path) as repo:
-            snapshot_date = date(2024, 1, 15)
             await repo.save_snapshot(
                 Snapshot(
-                    date=snapshot_date,
+                    date=date(2024, 1, 15),
                     source="wise",
                     asset="USD",
                     amount=Decimal("100.0"),
                     usd_value=Decimal("100.0"),
                 )
             )
-            await repo.save_analytics_metric(snapshot_date, "net_worth", '{"usd":"100.0"}')
-            await repo.save_analytics_metric(snapshot_date, "allocation_by_asset", "[]")
-            await repo.save_analytics_metric(snapshot_date, "allocation_by_source", "[]")
-            await repo.save_analytics_metric(snapshot_date, "allocation_by_category", "[]")
-            await repo.save_analytics_metric(snapshot_date, "currency_exposure", "[]")
-            await repo.save_analytics_metric(snapshot_date, "risk_metrics", "{}")
-            await repo.save_analytics_metric(
-                snapshot_date,
-                "pnl",
-                '{"weekly":{"absolute_change":"1.5","percentage_change":"1.0"}}',
-            )
-            await repo.save_analytics_metric(snapshot_date, "weekly_pnl_by_asset", "[]")
 
-    asyncio.run(_seed_analytics())
+    asyncio.run(_seed())
 
     with patch(
         "pfm.ai.generate_commentary_with_model",
@@ -784,32 +719,19 @@ def test_comment_command_generates_prints_and_caches(runner, db_path):
 
 @pytest.mark.usefixtures("_patched_settings")
 def test_report_handles_internal_exception(runner, db_path):
-    async def _seed_analytics() -> None:
+    async def _seed() -> None:
         async with Repository(db_path) as repo:
-            snapshot_date = date(2024, 1, 15)
             await repo.save_snapshot(
                 Snapshot(
-                    date=snapshot_date,
+                    date=date(2024, 1, 15),
                     source="wise",
                     asset="USD",
                     amount=Decimal("100.0"),
                     usd_value=Decimal("100.0"),
                 )
             )
-            await repo.save_analytics_metric(snapshot_date, "net_worth", '{"usd":"100.0"}')
-            await repo.save_analytics_metric(snapshot_date, "allocation_by_asset", "[]")
-            await repo.save_analytics_metric(snapshot_date, "allocation_by_source", "[]")
-            await repo.save_analytics_metric(snapshot_date, "allocation_by_category", "[]")
-            await repo.save_analytics_metric(snapshot_date, "currency_exposure", "[]")
-            await repo.save_analytics_metric(snapshot_date, "risk_metrics", "{}")
-            await repo.save_analytics_metric(
-                snapshot_date,
-                "pnl",
-                '{"weekly":{"absolute_change":"1.5","percentage_change":"1.0"}}',
-            )
-            await repo.save_analytics_metric(snapshot_date, "weekly_pnl_by_asset", "[]")
 
-    asyncio.run(_seed_analytics())
+    asyncio.run(_seed())
 
     with (
         patch("pfm.reporting.is_telegram_configured", AsyncMock(return_value=True)),

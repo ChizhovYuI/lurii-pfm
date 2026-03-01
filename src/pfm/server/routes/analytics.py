@@ -2,19 +2,20 @@
 
 from __future__ import annotations
 
-import json
 from datetime import date
 
 from aiohttp import web
 
-from pfm.server.serializers import pnl_result_to_dict
+from pfm.server.serializers import _str_decimal, pnl_result_to_dict
 
 routes = web.RouteTableDef()
 
 
 @routes.get("/api/v1/analytics/pnl")
 async def analytics_pnl(request: web.Request) -> web.Response:
-    """Return PnL data — from cache or live-computed."""
+    """Return live-computed PnL data."""
+    from pfm.analytics import PnlPeriod, compute_pnl
+
     repo = request.app["repo"]
     period = request.query.get("period", "weekly")
 
@@ -23,21 +24,6 @@ async def analytics_pnl(request: web.Request) -> web.Response:
         return web.json_response({"error": "No snapshots available"}, status=404)
 
     analysis_date = latest[0].date
-    metrics = await repo.get_analytics_metrics_by_date(analysis_date)
-
-    if "pnl" in metrics:
-        pnl_data = json.loads(metrics["pnl"])
-        if period in pnl_data:
-            return web.json_response(
-                {
-                    "date": analysis_date.isoformat(),
-                    "period": period,
-                    "pnl": pnl_data[period],
-                }
-            )
-
-    # Live compute fallback
-    from pfm.analytics import PnlPeriod, compute_pnl
 
     try:
         period_enum = PnlPeriod(period)
@@ -59,52 +45,83 @@ async def analytics_pnl(request: web.Request) -> web.Response:
 
 @routes.get("/api/v1/analytics/allocation")
 async def analytics_allocation(request: web.Request) -> web.Response:
-    """Return cached allocation breakdowns."""
+    """Return live-computed allocation breakdowns."""
+    from pfm.analytics import (
+        compute_allocation_by_asset,
+        compute_allocation_by_category,
+        compute_allocation_by_source,
+    )
+
     repo = request.app["repo"]
     latest = await repo.get_latest_snapshots()
     if not latest:
         return web.json_response({"error": "No snapshots available"}, status=404)
 
     analysis_date = latest[0].date
-    metrics = await repo.get_analytics_metrics_by_date(analysis_date)
 
-    if "allocation_by_asset" not in metrics:
-        return web.json_response(
-            {"error": "Analytics not computed. Run 'pfm analyze' first."},
-            status=404,
-        )
+    alloc_asset = await compute_allocation_by_asset(repo, analysis_date)
+    alloc_source = await compute_allocation_by_source(repo, analysis_date)
+    alloc_category = await compute_allocation_by_category(repo, analysis_date)
 
     return web.json_response(
         {
             "date": analysis_date.isoformat(),
-            "by_asset": json.loads(metrics["allocation_by_asset"]),
-            "by_source": json.loads(metrics.get("allocation_by_source", "[]")),
-            "by_category": json.loads(metrics.get("allocation_by_category", "[]")),
+            "by_asset": [
+                {
+                    "asset": row.asset,
+                    "asset_type": row.asset_type,
+                    "sources": list(row.sources),
+                    "amount": _str_decimal(row.amount),
+                    "usd_value": _str_decimal(row.usd_value),
+                    "price": _str_decimal(row.price),
+                    "percentage": _str_decimal(row.percentage),
+                }
+                for row in alloc_asset
+            ],
+            "by_source": [
+                {
+                    "source": row.bucket,
+                    "usd_value": _str_decimal(row.usd_value),
+                    "percentage": _str_decimal(row.percentage),
+                }
+                for row in alloc_source
+            ],
+            "by_category": [
+                {
+                    "category": row.bucket,
+                    "usd_value": _str_decimal(row.usd_value),
+                    "percentage": _str_decimal(row.percentage),
+                }
+                for row in alloc_category
+            ],
         }
     )
 
 
 @routes.get("/api/v1/analytics/exposure")
 async def analytics_exposure(request: web.Request) -> web.Response:
-    """Return cached currency exposure."""
+    """Return live-computed currency exposure."""
+    from pfm.analytics import compute_currency_exposure
+
     repo = request.app["repo"]
     latest = await repo.get_latest_snapshots()
     if not latest:
         return web.json_response({"error": "No snapshots available"}, status=404)
 
     analysis_date = latest[0].date
-    metrics = await repo.get_analytics_metrics_by_date(analysis_date)
-
-    if "currency_exposure" not in metrics:
-        return web.json_response(
-            {"error": "Analytics not computed. Run 'pfm analyze' first."},
-            status=404,
-        )
+    exposure = await compute_currency_exposure(repo, analysis_date)
 
     return web.json_response(
         {
             "date": analysis_date.isoformat(),
-            "exposure": json.loads(metrics["currency_exposure"]),
+            "exposure": [
+                {
+                    "currency": row.currency,
+                    "usd_value": _str_decimal(row.usd_value),
+                    "percentage": _str_decimal(row.percentage),
+                }
+                for row in exposure
+            ],
         }
     )
 

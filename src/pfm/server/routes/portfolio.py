@@ -2,35 +2,45 @@
 
 from __future__ import annotations
 
-import json
 from datetime import date
 
 from aiohttp import web
 
-from pfm.server.serializers import snapshot_to_dict
+from pfm.server.serializers import _str_decimal, snapshot_to_dict
 
 routes = web.RouteTableDef()
 
 
 @routes.get("/api/v1/portfolio/summary")
 async def portfolio_summary(request: web.Request) -> web.Response:
-    """Return cached net_worth + allocation for the latest snapshot date."""
+    """Return live-computed net_worth + allocation for the latest snapshot date."""
+    from pfm.analytics import compute_allocation_by_asset, compute_net_worth
+
     repo = request.app["repo"]
     latest = await repo.get_latest_snapshots()
     if not latest:
         return web.json_response({"error": "No snapshots available"}, status=404)
 
     analysis_date = latest[0].date
-    metrics = await repo.get_analytics_metrics_by_date(analysis_date)
-
-    net_worth = json.loads(metrics["net_worth"]) if "net_worth" in metrics else None
-    allocation = json.loads(metrics["allocation_by_asset"]) if "allocation_by_asset" in metrics else []
+    net_worth = await compute_net_worth(repo, analysis_date)
+    alloc_asset = await compute_allocation_by_asset(repo, analysis_date)
 
     return web.json_response(
         {
             "date": analysis_date.isoformat(),
-            "net_worth": net_worth,
-            "allocation": allocation,
+            "net_worth": {"usd": _str_decimal(net_worth)},
+            "allocation": [
+                {
+                    "asset": row.asset,
+                    "asset_type": row.asset_type,
+                    "sources": list(row.sources),
+                    "amount": _str_decimal(row.amount),
+                    "usd_value": _str_decimal(row.usd_value),
+                    "price": _str_decimal(row.price),
+                    "percentage": _str_decimal(row.percentage),
+                }
+                for row in alloc_asset
+            ],
         }
     )
 

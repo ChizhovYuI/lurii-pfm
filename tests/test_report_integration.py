@@ -15,7 +15,7 @@ from pfm.db.repository import Repository
 from pfm.db.telegram_store import TelegramStore
 
 
-async def test_report_async_loads_cache_formats_and_sends(tmp_path):
+async def test_report_async_loads_live_analytics_formats_and_sends(tmp_path):
     db_path = tmp_path / "report.db"
     await init_db(db_path)
     await TelegramStore(db_path).set(bot_token="token", chat_id="chat")
@@ -30,18 +30,6 @@ async def test_report_async_loads_cache_formats_and_sends(tmp_path):
                 usd_value=Decimal("100.0"),
             )
         )
-        await repo.save_analytics_metric(snapshot_date, "net_worth", '{"usd":"100.0"}')
-        await repo.save_analytics_metric(snapshot_date, "allocation_by_asset", "[]")
-        await repo.save_analytics_metric(snapshot_date, "allocation_by_source", "[]")
-        await repo.save_analytics_metric(snapshot_date, "allocation_by_category", "[]")
-        await repo.save_analytics_metric(snapshot_date, "currency_exposure", "[]")
-        await repo.save_analytics_metric(snapshot_date, "risk_metrics", "{}")
-        await repo.save_analytics_metric(
-            snapshot_date,
-            "pnl",
-            '{"weekly":{"absolute_change":"0","percentage_change":"0"}}',
-        )
-        await repo.save_analytics_metric(snapshot_date, "weekly_pnl_by_asset", "[]")
 
     settings = SimpleNamespace(
         database_path=db_path,

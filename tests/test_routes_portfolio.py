@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from datetime import date
 from decimal import Decimal
 
@@ -22,28 +21,13 @@ async def db_path(tmp_path):
 
 @pytest.fixture
 async def db_with_data(db_path):
-    """Seed snapshots and analytics cache."""
+    """Seed snapshots (analytics computed live)."""
     async with Repository(db_path) as repo:
         snaps = [
             Snapshot(date=date(2024, 1, 7), source="okx", asset="BTC", amount=Decimal(1), usd_value=Decimal(40000)),
             Snapshot(date=date(2024, 1, 7), source="wise", asset="USD", amount=Decimal(5000), usd_value=Decimal(5000)),
         ]
         await repo.save_snapshots(snaps)
-        await repo.save_analytics_metric(
-            date(2024, 1, 7),
-            "net_worth",
-            json.dumps({"usd": "45000"}),
-        )
-        await repo.save_analytics_metric(
-            date(2024, 1, 7),
-            "allocation_by_asset",
-            json.dumps(
-                [
-                    {"asset": "BTC", "usd_value": "40000", "percentage": "88.89"},
-                    {"asset": "USD", "usd_value": "5000", "percentage": "11.11"},
-                ]
-            ),
-        )
     return db_path
 
 

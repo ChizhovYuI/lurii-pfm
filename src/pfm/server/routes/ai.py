@@ -42,8 +42,9 @@ async def get_commentary(request: web.Request) -> web.Response:
 
 @routes.post("/api/v1/ai/commentary")
 async def generate_commentary(request: web.Request) -> web.Response:
-    """Generate AI commentary from latest analytics and cache it."""
-    from pfm.ai import AnalyticsSummary, generate_commentary_with_model
+    """Generate AI commentary from live-computed analytics and cache it."""
+    from pfm.ai import generate_commentary_with_model
+    from pfm.server.analytics_helper import build_analytics_summary
 
     repo = request.app["repo"]
     db_path = request.app["db_path"]
@@ -53,38 +54,7 @@ async def generate_commentary(request: web.Request) -> web.Response:
         return web.json_response({"error": "No snapshots available"}, status=404)
 
     report_date = latest[0].date
-    metrics = await repo.get_analytics_metrics_by_date(report_date)
-
-    required = (
-        "net_worth",
-        "allocation_by_asset",
-        "allocation_by_source",
-        "allocation_by_category",
-        "currency_exposure",
-        "risk_metrics",
-        "pnl",
-        "weekly_pnl_by_asset",
-    )
-    missing = [m for m in required if m not in metrics]
-    if missing:
-        return web.json_response(
-            {"error": f"Missing analytics metrics: {', '.join(missing)}. Run analyze first."},
-            status=400,
-        )
-
-    from pfm.server.serializers import parse_net_worth_usd
-
-    analytics = AnalyticsSummary(
-        as_of_date=report_date,
-        net_worth_usd=parse_net_worth_usd(metrics["net_worth"]),
-        allocation_by_asset=metrics["allocation_by_asset"],
-        allocation_by_source=metrics["allocation_by_source"],
-        allocation_by_category=metrics["allocation_by_category"],
-        currency_exposure=metrics["currency_exposure"],
-        risk_metrics=metrics["risk_metrics"],
-        pnl=metrics["pnl"],
-        weekly_pnl_by_asset=metrics["weekly_pnl_by_asset"],
-    )
+    analytics = await build_analytics_summary(repo, report_date)
 
     result = await generate_commentary_with_model(analytics, db_path=db_path)
 
