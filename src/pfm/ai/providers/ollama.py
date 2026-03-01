@@ -22,6 +22,7 @@ class OllamaProvider(LLMProvider):
     name = "ollama"
     default_model = "qwen3:14b"
     default_base_url = "http://localhost:11434"
+    models: tuple[str, ...] = ("qwen3:14b", "llama3.1:8b")
 
     def __init__(
         self,

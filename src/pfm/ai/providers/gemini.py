@@ -34,6 +34,8 @@ class GeminiProvider(LLMProvider):
     """Gemini provider with model failover chain and rate limiting."""
 
     name = "gemini"
+    default_model = "gemini-2.5-pro"
+    models: tuple[str, ...] = GEMINI_MODELS
 
     def __init__(
         self,

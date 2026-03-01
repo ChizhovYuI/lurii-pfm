@@ -13,3 +13,4 @@ class GrokProvider(OpenAICompatibleProvider):
     name = "grok"
     default_model = "grok-3-mini"
     default_base_url = "https://api.x.ai"
+    models: tuple[str, ...] = ("grok-3-mini", "grok-3")

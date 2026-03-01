@@ -52,6 +52,11 @@ def _build_ai_providers_meta() -> list[dict[str, Any]]:
             cls_default = getattr(cls, default_attr, None)
             if cls_default:
                 field_info["default"] = cls_default
+            # Expose model options list if available
+            if field_name == "model":
+                models = getattr(cls, "models", None)
+                if models:
+                    field_info["options"] = list(models)
             fields.append(field_info)
 
         providers.append({"type": str(name), "fields": fields})
