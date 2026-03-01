@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 import click
 import httpx
 
+from pfm import __version__
 from pfm.ai.providers.ollama import OllamaProvider
 from pfm.ai.providers.registry import get_provider_names
 from pfm.collectors import COLLECTOR_REGISTRY
@@ -106,6 +107,7 @@ def _print_source_table(sources: list[Source]) -> None:
 
 
 @click.group()
+@click.version_option(version=__version__, prog_name="pfm")
 def cli() -> None:
     """pfm — Personal Financial Management."""
 
