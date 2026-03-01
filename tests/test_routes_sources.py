@@ -40,8 +40,8 @@ async def test_list_source_types(client):
     resp = await client.get("/api/v1/source-types")
     assert resp.status == 200
     data = await resp.json()
-    # Should return all 9 source types
-    assert len(data) == 9
+    # Should return all 10 source types
+    assert len(data) == 10
     expected_types = {
         "okx",
         "binance",
@@ -52,6 +52,7 @@ async def test_list_source_types(client):
         "wise",
         "kbank",
         "ibkr",
+        "revolut",
     }
     assert set(data.keys()) == expected_types
     # Each type has a list of field dicts with correct shape

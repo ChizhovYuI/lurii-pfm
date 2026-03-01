@@ -31,8 +31,8 @@ async def store(tmp_path: Path) -> SourceStore:
 # ── Source types / credential validation ──────────────────────────────
 
 
-def test_all_nine_source_types_defined():
-    assert len(SOURCE_TYPES) == 9
+def test_all_source_types_defined():
+    assert len(SOURCE_TYPES) == 10
     expected = {
         "okx",
         "binance",
@@ -43,6 +43,7 @@ def test_all_nine_source_types_defined():
         "wise",
         "kbank",
         "ibkr",
+        "revolut",
     }
     assert set(SOURCE_TYPES.keys()) == expected
 

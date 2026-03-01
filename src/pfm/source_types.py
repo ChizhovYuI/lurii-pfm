@@ -69,6 +69,11 @@ SOURCE_TYPES: dict[str, list[CredentialField]] = {
         CredentialField("flex_token", "Flex Web Service token"),
         CredentialField("flex_query_id", "Flex Query ID", secret=False),
     ],
+    "revolut": [
+        CredentialField("secret_id", "GoCardless Secret ID"),
+        CredentialField("secret_key", "GoCardless Secret Key"),
+        CredentialField("requisition_id", "GoCardless Requisition ID", secret=False),
+    ],
 }
 
 

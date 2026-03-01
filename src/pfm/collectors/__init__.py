@@ -26,6 +26,7 @@ from pfm.collectors import (  # noqa: E402
     kbank,
     lobstr,
     okx,
+    revolut,
     wise,
 )
 
@@ -41,5 +42,6 @@ __all__ = [
     "lobstr",
     "okx",
     "register_collector",
+    "revolut",
     "wise",
 ]

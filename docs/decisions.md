@@ -545,3 +545,66 @@ This updates only `model` for Gemini; `api_key`, `base_url`, and `active` are pr
 **Consequences:**
 - SwiftUI settings screen can save individual field changes without data loss
 - Consistent `active` naming across dataclass, DB column, API JSON, and store method parameter
+
+---
+
+## ADR-016: Add Revolut as data source via GoCardless Bank Account Data API
+
+**Date:** 2026-03-02
+
+**Status:** Proposed
+
+**Context:** Revolut is widely used for multi-currency personal banking in Europe but has no self-service API for individuals. Revolut's own Open Banking API requires TPP (Third Party Provider) registration with eIDAS/OBIE certificates — designed for regulated financial institutions, not personal finance tools.
+
+**Problem:**
+- No direct Revolut API access for individual developers
+- Ponto (Isabel Group/Ibanity) was evaluated as an intermediary but rejected (see alternatives below)
+- Need a way to read Revolut account balances and transaction history programmatically
+
+**Alternatives evaluated:**
+
+1. **Revolut Open Banking API (direct)** — requires TPP registration with eIDAS or OBIE certificate. Not accessible to individual developers. Rejected.
+
+2. **Ponto (Isabel Group)** — PSD2-regulated AISP connecting 2,000+ EU banks. Rejected because:
+   - Enterprise pricing (pay-per-linked-account, no free tier, ~€2,400/yr for Ibanity platform)
+   - Complex auth stack (mTLS + HTTP Signatures + OAuth2)
+   - Python SDK (`ibanity-python`) is 7 years unmaintained, not on PyPI
+   - Revolut not explicitly confirmed in their supported bank list
+   - Targeted at B2B platform integrators, not individual developers
+
+3. **GoCardless Bank Account Data (formerly Nordigen)** — free open banking API for developers. Selected because:
+   - Free tier (50 connections/month) sufficient for personal use
+   - Revolut explicitly supported (institution ID: `REVOLUT_REVOGB21`)
+   - Python SDK (`nordigen`) on PyPI, Python >= 3.8
+   - Simple auth (secret_id + secret_key, no certificates)
+   - Up to 730 days transaction history for Revolut
+   - 2,500+ banks across UK/EU (potential for adding more sources later)
+
+**Decision:** Add Revolut as source #10 using GoCardless Bank Account Data API (Nordigen) as the open banking intermediary.
+
+**Design choices:**
+- **GoCardless over Ponto** — free, simpler auth, confirmed Revolut support, maintained Python SDK
+- **`nordigen` PyPI package** — official SDK, though no longer actively maintained by GoCardless (still functional). Alternative: raw HTTP calls to the REST API if SDK breaks
+- **Browser-based initial auth** — GoCardless requires a one-time redirect flow where the user authorizes bank access in a browser. `pfm source add revolut` opens the authorization link via `webbrowser.open()`, user completes consent, callback provides requisition ID
+- **Credentials in SQLite** — store `secret_id`, `secret_key`, and `requisition_id` in the `sources` table (same pattern as other sources, ADR-002)
+- **90-day re-authorization** — PSD2 SCA requires re-consent every 90 days. The collector detects expired access and prompts re-auth. Store `authorized_at` timestamp to proactively warn before expiry
+- **Data collected** — account balances (multi-currency), transaction history with date range filtering. Balances converted to USD via existing CoinGecko/PricingService for fiat pairs
+- **Source type name** — `revolut` (not `gocardless` or `nordigen`) since the source identity is the bank, not the intermediary
+
+**API flow:**
+```
+1. Register at bankaccountdata.gocardless.com → get secret_id, secret_key
+2. pfm source add revolut → prompts for credentials
+3. CLI calls GoCardless API to create requisition → returns auth link
+4. User opens link, authorizes in Revolut app → callback with account IDs
+5. pfm collect → fetches balances + transactions via GoCardless API
+6. Every 90 days → re-authorize via browser flow
+```
+
+**Consequences:**
+- Source count increases from 9 to 10
+- New `src/pfm/collectors/revolut.py` module
+- New dependency: `nordigen` (or raw `aiohttp` calls to GoCardless REST API)
+- Revolut multi-currency balances (EUR, GBP, USD, etc.) included in portfolio analytics
+- Pattern is reusable for adding other EU banks via GoCardless in the future
+- 90-day re-auth adds a maintenance task that other API-key sources don't have
