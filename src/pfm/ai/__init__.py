@@ -8,6 +8,7 @@ from pfm.ai.analyst import (
 from pfm.ai.base import (
     FALLBACK_COMMENTARY,
     CommentaryResult,
+    CommentarySection,
     LLMProvider,
     ProviderName,
 )
@@ -25,6 +26,7 @@ __all__ = [
     "WEEKLY_REPORT_USER_PROMPT_TEMPLATE",
     "AnalyticsSummary",
     "CommentaryResult",
+    "CommentarySection",
     "LLMProvider",
     "ProviderName",
     "generate_commentary",

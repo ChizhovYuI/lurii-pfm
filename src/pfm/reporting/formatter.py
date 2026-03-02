@@ -97,7 +97,10 @@ def format_weekly_report(
 
 
 def format_ai_commentary(commentary: str) -> str:
-    """Build a separate Telegram HTML message for AI commentary."""
+    """Build a separate Telegram HTML message for AI commentary.
+
+    Handles both plain text and flattened sections (title + markdown body).
+    """
     normalized = commentary.replace("\r\n", "\n").replace("\r", "\n")
     cleaned = _normalize_ai_commentary(normalized)
     return f"<b>AI Commentary</b>\n{cleaned}"

@@ -14,11 +14,17 @@ WEEKLY_REPORT_SYSTEM_PROMPT = """
 You are a personal financial advisor. Analyze portfolio analytics and produce concise, practical guidance.
 Prioritize risk-aware recommendations and explicitly call out data limitations when confidence is low.
 Keep advice specific to the provided portfolio data and avoid generic education content.
-Output plain text only for Telegram:
-- no markdown syntax (`#`, `*`, `**`, backticks)
-- keep all five requested sections complete
-- include concrete numbers from the provided data
-- give enough detail to explain reasoning and actions
+
+Output format: respond ONLY with a valid JSON array of objects, no text before or after.
+Each object has two keys:
+  "title" — short section heading (plain text, no markdown)
+  "description" — section body in GitHub-flavored Markdown (use **bold**, bullet lists, numbers from data)
+
+Rules:
+- Ground every claim in provided data.
+- If data is missing or noisy, state that clearly.
+- Include concrete numbers and percentages from the provided data.
+- Give enough detail to explain reasoning and actions.
 """.strip()
 
 WEEKLY_REPORT_USER_PROMPT_TEMPLATE = """
@@ -37,19 +43,19 @@ Risk metrics:
 Data warnings:
 {warnings}
 
-Write a compact report with these sections in plain text:
-1) Market context
-2) Portfolio health assessment
-3) Rebalancing opportunities
-4) Risk alerts
-5) Actionable recommendations for next 7 days
+Write a compact report with exactly these 5 sections:
+1) Market Context
+2) Portfolio Health Assessment
+3) Rebalancing Opportunities
+4) Risk Alerts
+5) Actionable Recommendations for Next 7 Days
 
-Rules:
-- Ground every claim in provided data.
-- If data is missing or noisy, state that clearly.
-- Use concise but complete lines and include concrete numbers.
-- Do not use markdown symbols.
-- End every line with proper punctuation.
+Respond with a JSON array of 5 objects, each with "title" and "description" keys.
+Example format:
+[
+  {{"title": "Market Context", "description": "Bitcoin is trading at **$95,432**..."}},
+  ...
+]
 """.strip()
 
 

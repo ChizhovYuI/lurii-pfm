@@ -11,9 +11,11 @@ from pydantic import SecretStr
 from pfm.ai.analyst import (
     GEMINI_MAX_OUTPUT_TOKENS,
     _finalize_commentary_text,
+    _flatten_sections,
+    _parse_sections,
     generate_commentary,
 )
-from pfm.ai.base import FALLBACK_COMMENTARY, CommentaryResult
+from pfm.ai.base import FALLBACK_COMMENTARY, CommentaryResult, CommentarySection
 from pfm.ai.prompts import AnalyticsSummary
 from pfm.db.ai_store import AIProviderStore
 from pfm.db.gemini_store import GeminiStore
@@ -36,7 +38,7 @@ async def test_generate_commentary_uses_provider(tmp_path):
     db_path = tmp_path / "test.db"
     await init_db(db_path)
     store = AIProviderStore(db_path)
-    await store.add("gemini", api_key="test-key", activate=True)
+    await store.add("gemini", api_key="test-key", active=True)
 
     mock_provider = MagicMock()
     mock_provider.generate_commentary = AsyncMock(
@@ -123,7 +125,7 @@ async def test_generate_commentary_fallback_on_empty_provider_text(tmp_path):
     db_path = tmp_path / "empty_text.db"
     await init_db(db_path)
     store = AIProviderStore(db_path)
-    await store.add("gemini", api_key="key", activate=True)
+    await store.add("gemini", api_key="key", active=True)
 
     mock_provider = MagicMock()
     mock_provider.generate_commentary = AsyncMock(return_value=CommentaryResult(text="", model=None))
@@ -160,3 +162,83 @@ def test_finalize_commentary_text_preserves_section_header_tail():
 
 def test_gemini_max_output_tokens_constant():
     assert GEMINI_MAX_OUTPUT_TOKENS == 4096
+
+
+def test_parse_sections_valid_json():
+    raw = '[{"title": "Market Context", "description": "BTC at **$95k**."}]'
+    sections = _parse_sections(raw)
+    assert len(sections) == 1
+    assert sections[0] == CommentarySection(title="Market Context", description="BTC at **$95k**.")
+
+
+def test_parse_sections_with_code_fence():
+    raw = '```json\n[{"title": "Risk Alerts", "description": "High concentration."}]\n```'
+    sections = _parse_sections(raw)
+    assert len(sections) == 1
+    assert sections[0].title == "Risk Alerts"
+
+
+def test_parse_sections_plain_text_returns_empty():
+    raw = "This is just plain text commentary."
+    sections = _parse_sections(raw)
+    assert sections == ()
+
+
+def test_parse_sections_skips_missing_fields():
+    raw = '[{"title": "Good", "description": "OK"}, {"title": "", "description": "no title"}, {"other": 1}]'
+    sections = _parse_sections(raw)
+    assert len(sections) == 1
+    assert sections[0].title == "Good"
+
+
+def test_flatten_sections():
+    sections = (
+        CommentarySection(title="Market Context", description="BTC is up."),
+        CommentarySection(title="Risk Alerts", description="Low diversification."),
+    )
+    flat = _flatten_sections(sections)
+    assert "Market Context" in flat
+    assert "BTC is up." in flat
+    assert "Risk Alerts" in flat
+    assert "Low diversification." in flat
+
+
+async def test_generate_commentary_with_model_parses_sections(tmp_path):
+    """When LLM returns valid JSON sections, result includes parsed sections."""
+    import json
+
+    db_path = tmp_path / "sections.db"
+    await init_db(db_path)
+    store = AIProviderStore(db_path)
+    await store.add("gemini", api_key="key", active=True)
+
+    sections_json = json.dumps(
+        [
+            {"title": "Market Context", "description": "BTC at **$95k**."},
+            {"title": "Risk Alerts", "description": "High HHI."},
+        ]
+    )
+
+    mock_provider = MagicMock()
+    mock_provider.generate_commentary = AsyncMock(
+        return_value=CommentaryResult(text=sections_json, model="gemini-2.5-flash")
+    )
+    mock_provider.close = AsyncMock()
+
+    settings = MagicMock()
+    settings.database_path = db_path
+    settings.gemini_api_key = SecretStr("")
+
+    from pfm.ai.analyst import generate_commentary_with_model
+
+    with (
+        patch("pfm.ai.analyst.get_settings", return_value=settings),
+        patch("pfm.ai.analyst._build_provider", return_value=mock_provider),
+    ):
+        result = await generate_commentary_with_model(_sample_analytics(), db_path=db_path)
+
+    assert len(result.sections) == 2
+    assert result.sections[0].title == "Market Context"
+    assert result.sections[1].description == "High HHI."
+    assert "Market Context" in result.text
+    assert "BTC at **$95k**." in result.text

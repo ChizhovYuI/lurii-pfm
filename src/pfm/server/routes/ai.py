@@ -37,6 +37,7 @@ async def get_commentary(request: web.Request) -> web.Response:
             "date": analysis_date.isoformat(),
             "text": parsed.get("text", ""),
             "model": parsed.get("model"),
+            "sections": parsed.get("sections", []),
         }
     )
 
@@ -59,9 +60,13 @@ async def generate_commentary(request: web.Request) -> web.Response:
 
     result = await generate_commentary_with_model(analytics, db_path=db_path)
 
-    metric_payload: dict[str, str] = {"text": result.text}
+    sections_dicts = [{"title": s.title, "description": s.description} for s in result.sections]
+
+    metric_payload: dict[str, Any] = {"text": result.text}
     if result.model:
         metric_payload["model"] = result.model
+    if sections_dicts:
+        metric_payload["sections"] = sections_dicts
 
     await repo.save_analytics_metric(
         report_date,
@@ -73,6 +78,7 @@ async def generate_commentary(request: web.Request) -> web.Response:
         "date": report_date.isoformat(),
         "text": result.text,
         "model": result.model,
+        "sections": sections_dicts,
     }
     if result.error:
         response_data["error"] = result.error

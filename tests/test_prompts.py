@@ -15,11 +15,12 @@ from pfm.ai.prompts import (
 
 def test_prompt_templates_have_required_sections():
     assert "personal financial advisor" in WEEKLY_REPORT_SYSTEM_PROMPT
-    assert "Market context" in WEEKLY_REPORT_USER_PROMPT_TEMPLATE
-    assert "Portfolio health assessment" in WEEKLY_REPORT_USER_PROMPT_TEMPLATE
-    assert "Rebalancing opportunities" in WEEKLY_REPORT_USER_PROMPT_TEMPLATE
-    assert "Risk alerts" in WEEKLY_REPORT_USER_PROMPT_TEMPLATE
-    assert "Actionable recommendations for next 7 days" in WEEKLY_REPORT_USER_PROMPT_TEMPLATE
+    assert "Market Context" in WEEKLY_REPORT_USER_PROMPT_TEMPLATE
+    assert "Portfolio Health Assessment" in WEEKLY_REPORT_USER_PROMPT_TEMPLATE
+    assert "Rebalancing Opportunities" in WEEKLY_REPORT_USER_PROMPT_TEMPLATE
+    assert "Risk Alerts" in WEEKLY_REPORT_USER_PROMPT_TEMPLATE
+    assert "Actionable Recommendations for Next 7 Days" in WEEKLY_REPORT_USER_PROMPT_TEMPLATE
+    assert "JSON array" in WEEKLY_REPORT_USER_PROMPT_TEMPLATE
 
 
 def test_render_weekly_report_user_prompt_formats_analytics():

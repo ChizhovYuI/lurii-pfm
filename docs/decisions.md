@@ -632,3 +632,60 @@ This updates only `model` for Gemini; `api_key`, `base_url`, and `active` are pr
 - `/api/v1/source-types` response includes `tip` for all fields (empty string for non-first fields)
 - SwiftUI source-add form can display setup instructions without hardcoding them client-side
 - Tip content derived from `docs/data-sources.md` setup sections, kept in sync in one place (`source_types.py`)
+
+---
+
+## ADR-018: Structured JSON sections for AI commentary
+
+**Date:** 2026-03-02
+
+**Status:** Accepted
+
+**Context:** The AI commentary was generated as plain text (no markdown) optimized for Telegram delivery. The SwiftUI app needs to render the commentary as distinct titled blocks with rich formatting (bold, bullet lists, numbers).
+
+**Problem:**
+- Plain text output cannot be rendered as structured UI cards in SwiftUI
+- Telegram-only formatting constraints (no markdown) limited the richness of AI output
+- The UI had no way to separate the 5 report sections for independent rendering
+
+**Decision:** Change the AI prompt to request a JSON array of `{"title", "description"}` objects where `description` uses GitHub-flavored Markdown. Parse the JSON response in the analyst layer and expose structured `sections` alongside the flattened `text` in the API response.
+
+**Design choices:**
+- **JSON array output format** — the LLM returns `[{"title": "Market Context", "description": "BTC at **$95k**..."}]` instead of free-form text. System prompt explicitly says "respond ONLY with a valid JSON array"
+- **`CommentarySection` dataclass** — frozen `(title: str, description: str)` in `base.py`, stored as a tuple on `CommentaryResult.sections`
+- **`_parse_sections()` with code fence handling** — LLMs sometimes wrap JSON in ` ```json ``` ` fences; the parser strips these before `json.loads()`. Returns empty tuple on parse failure (graceful fallback to plain text)
+- **`_flatten_sections()` for Telegram** — converts sections back to `"Title\nDescription\n\n"` plain text for the existing Telegram formatter, preserving backward compatibility
+- **`text` field preserved** — `CommentaryResult.text` always contains a flat string (either flattened sections or raw LLM output if JSON parsing fails). Telegram and any other plain-text consumer works unchanged
+- **`sections` in API and cache** — both `GET` and `POST /api/v1/ai/commentary` return `sections: [{"title", "description"}]`. Cached to `analytics_metrics` alongside `text` and `model`
+- **Markdown in `description`** — GitHub-flavored Markdown (bold, bullets, numbered lists) gives the SwiftUI app rich rendering while remaining human-readable as fallback
+
+**API response shape:**
+```json
+{
+  "date": "2026-03-02",
+  "text": "Market Context\nBTC at $95k...",
+  "model": "gemini-2.5-flash",
+  "sections": [
+    {"title": "Market Context", "description": "BTC is trading at **$95,432**...\n\n- Portfolio exposure: 45%"},
+    {"title": "Portfolio Health Assessment", "description": "..."},
+    {"title": "Rebalancing Opportunities", "description": "..."},
+    {"title": "Risk Alerts", "description": "..."},
+    {"title": "Actionable Recommendations for Next 7 Days", "description": "..."}
+  ]
+}
+```
+
+**Files changed:**
+- `src/pfm/ai/prompts.py` — system and user prompts request JSON array with markdown descriptions
+- `src/pfm/ai/base.py` — added `CommentarySection` dataclass, `sections` tuple field on `CommentaryResult`
+- `src/pfm/ai/analyst.py` — added `_parse_sections()`, `_flatten_sections()`, wired into generation flow
+- `src/pfm/server/routes/ai.py` — GET and POST return `sections` array, cached to DB
+- `src/pfm/ai/__init__.py` — exported `CommentarySection`
+- `tests/test_analyst.py` — 6 new tests for parsing/flattening, fixed pre-existing `activate→active` bug
+- `tests/test_prompts.py` — updated assertions for new prompt wording
+
+**Consequences:**
+- SwiftUI app can render 5 distinct cards with titles and markdown-formatted descriptions
+- Telegram delivery continues to work via flattened `text` field (no breaking change)
+- If the LLM returns non-JSON output (e.g. plain text), the system falls back gracefully — `sections` will be empty and `text` contains the raw output
+- Cached commentary in `analytics_metrics` includes `sections` for future reads without re-generation

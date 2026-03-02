@@ -22,11 +22,20 @@ FALLBACK_COMMENTARY = (
 
 
 @dataclass(frozen=True, slots=True)
+class CommentarySection:
+    """A single section of AI commentary."""
+
+    title: str
+    description: str
+
+
+@dataclass(frozen=True, slots=True)
 class CommentaryResult:
     """Result of LLM commentary generation."""
 
     text: str
     model: str | None
+    sections: tuple[CommentarySection, ...] = ()
     error: str | None = None
 
 

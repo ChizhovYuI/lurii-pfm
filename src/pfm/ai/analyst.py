@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import inspect
+import json
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pfm.ai.base import FALLBACK_COMMENTARY, CommentaryResult, ProviderName
+from pfm.ai.base import FALLBACK_COMMENTARY, CommentaryResult, CommentarySection, ProviderName
 from pfm.ai.prompts import WEEKLY_REPORT_SYSTEM_PROMPT, render_weekly_report_user_prompt
 from pfm.ai.providers.registry import PROVIDER_REGISTRY
 from pfm.config import get_settings
@@ -55,7 +56,12 @@ async def generate_commentary_with_model(
         await provider.close()
 
     if result.text and result.text != FALLBACK_COMMENTARY:
-        return CommentaryResult(text=_finalize_commentary_text(result.text), model=result.model, error=result.error)
+        finalized = _finalize_commentary_text(result.text)
+        sections = _parse_sections(finalized)
+        if sections:
+            flat_text = _flatten_sections(sections)
+            return CommentaryResult(text=flat_text, model=result.model, sections=sections, error=result.error)
+        return CommentaryResult(text=finalized, model=result.model, error=result.error)
 
     logger.warning("Provider returned empty text; using fallback commentary.")
     error = result.error or "Provider returned empty response"
@@ -150,3 +156,44 @@ def _resolve_db_path(db_path: str | Path | None) -> str | Path:
 def _finalize_commentary_text(text: str) -> str:
     """Normalize line endings and strip whitespace."""
     return text.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def _parse_sections(text: str) -> tuple[CommentarySection, ...]:
+    """Try to parse LLM output as a JSON array of {title, description} objects."""
+    # Strip markdown code fences if the LLM wrapped the JSON
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        lines = stripped.split("\n")
+        # Remove first line (```json) and last line (```)
+        lines = [ln for ln in lines[1:] if not ln.strip().startswith("```")]
+        stripped = "\n".join(lines)
+
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        logger.debug("AI response is not valid JSON; treating as plain text.")
+        return ()
+
+    if not isinstance(parsed, list):
+        return ()
+
+    sections: list[CommentarySection] = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title", "")).strip()
+        description = str(item.get("description", "")).strip()
+        if title and description:
+            sections.append(CommentarySection(title=title, description=description))
+
+    return tuple(sections)
+
+
+def _flatten_sections(sections: tuple[CommentarySection, ...]) -> str:
+    """Convert structured sections into plain text for Telegram."""
+    parts: list[str] = []
+    for section in sections:
+        parts.append(section.title)
+        parts.append(section.description)
+        parts.append("")
+    return "\n".join(parts).strip()
