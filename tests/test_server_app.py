@@ -29,7 +29,7 @@ async def test_health_returns_200(client):
     assert resp.status == 200
     data = await resp.json()
     assert data["status"] == "ok"
-    assert data["version"] == "0.8.0"
+    assert data["version"] == "0.9.0"
     assert data["collecting"] is False
 
 
