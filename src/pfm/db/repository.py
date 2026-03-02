@@ -143,7 +143,8 @@ class Repository:
 
     @staticmethod
     def _row_to_snapshot(row: aiosqlite.Row) -> Snapshot:
-        source_name = row["source_name"] if "source_name" in row else row["source"]
+        columns = row.keys()
+        source_name = row["source_name"] if "source_name" in columns else row["source"]
         if not source_name:
             source_name = row["source"]
         return Snapshot(
