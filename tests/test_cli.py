@@ -13,6 +13,7 @@ import pytest
 from click.testing import CliRunner
 
 from pfm.ai import CommentaryResult
+from pfm.ai.base import CommentarySection
 from pfm.cli import cli
 from pfm.db.ai_store import AIProviderStore
 from pfm.db.gemini_store import GeminiStore
@@ -715,6 +716,55 @@ def test_comment_command_generates_prints_and_caches(runner, db_path):
         "text": "AI says hold steady.",
         "model": "gemini-2.5-flash",
     }
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_comment_command_stores_sections(runner, db_path):
+    """When commentary has sections, they are included in the cached metric."""
+
+    async def _seed() -> None:
+        async with Repository(db_path) as repo:
+            await repo.save_snapshot(
+                Snapshot(
+                    date=date(2024, 1, 15),
+                    source="wise",
+                    asset="USD",
+                    amount=Decimal("100.0"),
+                    usd_value=Decimal("100.0"),
+                )
+            )
+
+    asyncio.run(_seed())
+
+    sections = (
+        CommentarySection(title="Market", description="BTC up."),
+        CommentarySection(title="Risk", description="Low."),
+    )
+    with patch(
+        "pfm.ai.generate_commentary_with_model",
+        AsyncMock(
+            return_value=CommentaryResult(
+                text="Market\nBTC up.\n\nRisk\nLow.",
+                model="llama3.1:8b",
+                sections=sections,
+            )
+        ),
+    ):
+        result = runner.invoke(cli, ["comment"])
+
+    assert result.exit_code == 0
+
+    async def _load_metrics() -> dict[str, str]:
+        async with Repository(db_path) as repo:
+            return await repo.get_analytics_metrics_by_date(date(2024, 1, 15))
+
+    metrics = asyncio.run(_load_metrics())
+    cached = json.loads(metrics["ai_commentary"])
+    assert cached["model"] == "llama3.1:8b"
+    assert cached["sections"] == [
+        {"title": "Market", "description": "BTC up."},
+        {"title": "Risk", "description": "Low."},
+    ]
 
 
 @pytest.mark.usefixtures("_patched_settings")

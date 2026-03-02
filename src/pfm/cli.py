@@ -960,9 +960,11 @@ async def _comment_async() -> bool:
         click.echo(f"Failed to generate AI commentary: {exc}", err=True)
         return False
 
-    metric_payload: dict[str, str] = {"text": result.text}
+    metric_payload: dict[str, object] = {"text": result.text}
     if result.model:
         metric_payload["model"] = result.model
+    if result.sections:
+        metric_payload["sections"] = [{"title": s.title, "description": s.description} for s in result.sections]
 
     async with Repository(settings.database_path) as repo:
         await repo.save_analytics_metric(

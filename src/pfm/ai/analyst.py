@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 import json
 import logging
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -154,8 +155,54 @@ def _resolve_db_path(db_path: str | Path | None) -> str | Path:
 
 
 def _finalize_commentary_text(text: str) -> str:
-    """Normalize line endings and strip whitespace."""
-    return text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    """Normalize line endings, strip ``<think>`` blocks, and trim whitespace."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    # Remove <think>...</think> blocks (Qwen3, DeepSeek, etc.)
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    return text.strip()
+
+
+def _escape_newlines_in_json_strings(text: str) -> str:
+    """Escape literal newlines inside JSON string values.
+
+    LLMs sometimes emit actual newline characters within JSON strings (e.g.
+    numbered lists in description fields).  ``json.loads`` rejects these, so
+    we walk the text tracking open/close quotes and replace bare newlines
+    inside strings with the ``\\n`` escape sequence.
+    """
+    result: list[str] = []
+    in_string = False
+    escape_next = False
+    for ch in text:
+        if escape_next:
+            result.append(ch)
+            escape_next = False
+            continue
+        if ch == "\\" and in_string:
+            result.append(ch)
+            escape_next = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            result.append(ch)
+            continue
+        if ch == "\n" and in_string:
+            result.append("\\n")
+            continue
+        result.append(ch)
+    return "".join(result)
+
+
+def _try_json_loads(text: str) -> list[object] | None:
+    """Attempt ``json.loads``, repairing unescaped newlines on first failure."""
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        try:
+            parsed = json.loads(_escape_newlines_in_json_strings(text))
+        except json.JSONDecodeError:
+            return None
+    return parsed if isinstance(parsed, list) else None
 
 
 def _parse_sections(text: str) -> tuple[CommentarySection, ...]:
@@ -168,13 +215,16 @@ def _parse_sections(text: str) -> tuple[CommentarySection, ...]:
         lines = [ln for ln in lines[1:] if not ln.strip().startswith("```")]
         stripped = "\n".join(lines)
 
-    try:
-        parsed = json.loads(stripped)
-    except json.JSONDecodeError:
-        logger.debug("AI response is not valid JSON; treating as plain text.")
-        return ()
+    parsed = _try_json_loads(stripped)
+    if parsed is None:
+        # Fallback: scan for a JSON array embedded in preamble text
+        start = stripped.find("[")
+        end = stripped.rfind("]")
+        if start != -1 and end > start:
+            parsed = _try_json_loads(stripped[start : end + 1])
 
-    if not isinstance(parsed, list):
+    if parsed is None:
+        logger.debug("AI response is not valid JSON; treating as plain text.")
         return ()
 
     sections: list[CommentarySection] = []

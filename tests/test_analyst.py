@@ -10,6 +10,7 @@ from pydantic import SecretStr
 
 from pfm.ai.analyst import (
     GEMINI_MAX_OUTPUT_TOKENS,
+    _escape_newlines_in_json_strings,
     _finalize_commentary_text,
     _flatten_sections,
     _parse_sections,
@@ -201,6 +202,73 @@ def test_flatten_sections():
     assert "BTC is up." in flat
     assert "Risk Alerts" in flat
     assert "Low diversification." in flat
+
+
+def test_finalize_strips_think_blocks():
+    text = '<think>\nLet me analyze the portfolio...\n</think>\n[{"title": "A", "description": "B"}]'
+    result = _finalize_commentary_text(text)
+    assert "<think>" not in result
+    assert result == '[{"title": "A", "description": "B"}]'
+
+
+def test_finalize_strips_multiple_think_blocks():
+    text = "<think>first</think>Hello<think>second</think> world"
+    result = _finalize_commentary_text(text)
+    assert result == "Hello world"
+
+
+def test_parse_sections_with_preamble():
+    raw = 'Here is my analysis:\n[{"title": "Market", "description": "BTC up."}]'
+    sections = _parse_sections(raw)
+    assert len(sections) == 1
+    assert sections[0].title == "Market"
+
+
+def test_parse_sections_think_block_then_json():
+    """Combined scenario: <think> block + preamble + JSON array."""
+    raw = '<think>\nreasoning here\n</think>\nSure, here is the analysis:\n[{"title": "Risk", "description": "Low."}]'
+    finalized = _finalize_commentary_text(raw)
+    sections = _parse_sections(finalized)
+    assert len(sections) == 1
+    assert sections[0] == CommentarySection(title="Risk", description="Low.")
+
+
+def test_parse_sections_preamble_no_json_array():
+    """Preamble text with no JSON array still returns empty."""
+    raw = "Here is my analysis of the portfolio. It looks good overall."
+    sections = _parse_sections(raw)
+    assert sections == ()
+
+
+def test_escape_newlines_in_json_strings_fixes_bare_newlines():
+    raw = '{"description": "line1\nline2"}'
+    fixed = _escape_newlines_in_json_strings(raw)
+    assert fixed == '{"description": "line1\\nline2"}'
+
+
+def test_escape_newlines_preserves_already_escaped():
+    raw = '{"description": "line1\\nline2"}'
+    fixed = _escape_newlines_in_json_strings(raw)
+    assert fixed == raw
+
+
+def test_parse_sections_with_newlines_in_strings():
+    """Gemini-style JSON with actual newlines inside description values."""
+    raw = (
+        "```json\n"
+        "[\n"
+        "  {\n"
+        '    "title": "Recommendations",\n'
+        '    "description": "1. Buy BTC.\n    2. Hold ETH.\n    3. Sell DOGE."\n'
+        "  }\n"
+        "]\n"
+        "```"
+    )
+    sections = _parse_sections(raw)
+    assert len(sections) == 1
+    assert sections[0].title == "Recommendations"
+    assert "1. Buy BTC." in sections[0].description
+    assert "2. Hold ETH." in sections[0].description
 
 
 async def test_generate_commentary_with_model_parses_sections(tmp_path):
