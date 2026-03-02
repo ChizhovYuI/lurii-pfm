@@ -37,3 +37,9 @@ async def repo(tmp_path: Path) -> AsyncGenerator[Repository]:
 def pricing() -> PricingService:
     """Pricing service for testing (uses cache, no real API calls)."""
     return PricingService()
+
+
+@pytest.fixture(autouse=True)
+def _no_daemon(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent tests from proxying to a running daemon."""
+    monkeypatch.setattr("pfm.server.client.is_daemon_reachable", lambda *_a, **_kw: False)
