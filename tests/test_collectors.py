@@ -862,11 +862,16 @@ async def test_ibkr_parse_positions_from_xml():
 
 async def test_ibkr_parse_cash_from_xml():
     collector = IbkrCollector(PricingService(), flex_token="tok", flex_query_id="qid")
-    xml = '<CashReport currency="USD" endingCash="5000.00"/>'
+    xml = (
+        '<CashReport currency="USD" endingCash="5000.00"/>'
+        '<CashReportCurrency currency="EUR" endingSettledCash="1200.25"/>'
+    )
     cash = collector._parse_cash_from_xml(xml)
-    assert len(cash) == 1
+    assert len(cash) == 2
     assert cash[0]["currency"] == "USD"
     assert cash[0]["endingCash"] == "5000.00"
+    assert cash[1]["currency"] == "EUR"
+    assert cash[1]["endingSettledCash"] == "1200.25"
 
 
 async def test_ibkr_parse_trades_from_xml():
@@ -964,6 +969,7 @@ async def test_ibkr_fetch_statement_unexpected_response(pricing):
 async def test_ibkr_fetch_balances(pricing):
     collector = IbkrCollector(pricing, flex_token="tok", flex_query_id="qid")
     pricing._set_cache("USD", Decimal(1))
+    pricing._set_cache("EUR", Decimal("1.10"))
 
     request_resp = MagicMock(spec=httpx.Response)
     request_resp.text = (
@@ -975,6 +981,7 @@ async def test_ibkr_fetch_balances(pricing):
 <FlexStatements>
 <OpenPosition symbol="AAPL" position="10" markMarketValue="1500.00"/>
 <CashReport currency="USD" endingCash="5000.00"/>
+<CashReportCurrency currency="EUR" endingSettledCash="1000.00"/>
 <CashReport currency="BASE_SUMMARY" endingCash="5000.00"/>
 </FlexStatements>
 </FlexQueryResponse>"""
@@ -995,7 +1002,41 @@ async def test_ibkr_fetch_balances(pricing):
     collector._client.get = mock_get  # type: ignore[assignment]
 
     snapshots = await collector.fetch_balances()
-    assert len(snapshots) == 2  # AAPL + USD cash (BASE_SUMMARY excluded)
+    assert len(snapshots) == 3  # AAPL + USD cash + EUR cash (BASE_SUMMARY excluded)
+
+
+async def test_ibkr_fetch_balances_aggregates_duplicate_cash_rows(pricing):
+    collector = IbkrCollector(pricing, flex_token="tok", flex_query_id="qid")
+    pricing._set_cache("USD", Decimal(1))
+
+    request_resp = MagicMock(spec=httpx.Response)
+    request_resp.text = (
+        "<FlexStatementResponse><Status>Success</Status>" "<ReferenceCode>REF1</ReferenceCode></FlexStatementResponse>"
+    )
+    request_resp.raise_for_status = MagicMock()
+
+    statement_xml = """<FlexQueryResponse>
+<FlexStatements>
+<CashReport currency="USD" endingCash="1,500.00"/>
+<CashReportCurrency currency="USD" endingSettledCash="250.00"/>
+</FlexStatements>
+</FlexQueryResponse>"""
+    statement_resp = MagicMock(spec=httpx.Response)
+    statement_resp.text = statement_xml
+    statement_resp.raise_for_status = MagicMock()
+
+    async def mock_get(url, **kwargs):
+        if "SendRequest" in str(url):
+            return request_resp
+        return statement_resp
+
+    collector._client.get = mock_get  # type: ignore[assignment]
+
+    snapshots = await collector.fetch_balances()
+    assert len(snapshots) == 1
+    assert snapshots[0].asset == "USD"
+    assert snapshots[0].amount == Decimal("1750.00")
+    assert snapshots[0].usd_value == Decimal("1750.00")
 
 
 async def test_ibkr_reuses_statement_between_balances_and_transactions(pricing):
@@ -1200,7 +1241,7 @@ async def test_kbank_converts_thb_to_usd(pricing):
         date=date(2024, 1, 15),
         source="kbank",
         asset="THB",
-        amount=Decimal("1000"),
+        amount=Decimal(1000),
         usd_value=Decimal(0),
         raw_json="{}",
     )
@@ -1476,7 +1517,7 @@ async def test_kbank_tracks_last_statement_date(pricing):
         date=date(2026, 2, 27),
         source="kbank",
         asset="THB",
-        amount=Decimal("1000"),
+        amount=Decimal(1000),
         usd_value=Decimal(0),
         raw_json="{}",
     )
@@ -1486,7 +1527,7 @@ async def test_kbank_tracks_last_statement_date(pricing):
             source="kbank",
             tx_type=TransactionType.DEPOSIT,
             asset="THB",
-            amount=Decimal("100"),
+            amount=Decimal(100),
             usd_value=Decimal(0),
         ),
         Transaction(
@@ -1494,7 +1535,7 @@ async def test_kbank_tracks_last_statement_date(pricing):
             source="kbank",
             tx_type=TransactionType.WITHDRAWAL,
             asset="THB",
-            amount=Decimal("50"),
+            amount=Decimal(50),
             usd_value=Decimal(0),
         ),
     ]

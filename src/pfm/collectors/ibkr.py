@@ -28,6 +28,13 @@ _MAX_POLL_ATTEMPTS = 10
 _POLL_DELAY_SECONDS = 5
 _SEND_REQUEST_MIN_INTERVAL_SECONDS = 15.0
 _STATEMENT_CACHE_TTL_SECONDS = 60.0
+_CASH_TAGS: tuple[str, ...] = ("CashReport", "CashReportCurrency")
+_CASH_AMOUNT_FIELDS: tuple[str, ...] = (
+    "endingCash",
+    "endingSettledCash",
+    "settledCash",
+    "totalCashValue",
+)
 
 
 @register_collector
@@ -132,13 +139,14 @@ class IbkrCollector(BaseCollector):
     def _parse_cash_from_xml(self, xml_text: str) -> list[dict[str, str]]:
         """Parse CashReport elements from Flex XML."""
         cash_items: list[dict[str, str]] = []
-        for match in re.finditer(r"<CashReport\s+(.*?)/>", xml_text, re.DOTALL):
-            attrs_str = match.group(1)
-            attrs: dict[str, str] = {}
-            for attr_match in re.finditer(r'(\w+)="([^"]*)"', attrs_str):
-                attrs[attr_match.group(1)] = attr_match.group(2)
-            if attrs:
-                cash_items.append(attrs)
+        for tag in _CASH_TAGS:
+            for match in re.finditer(rf"<{tag}\s+([^>]*?)\s*/?>", xml_text, re.DOTALL):
+                attrs_str = match.group(1)
+                attrs: dict[str, str] = {}
+                for attr_match in re.finditer(r'(\w+)="([^"]*)"', attrs_str):
+                    attrs[attr_match.group(1)] = attr_match.group(2)
+                if attrs:
+                    cash_items.append(attrs)
         return cash_items
 
     def _parse_trades_from_xml(self, xml_text: str) -> list[dict[str, str]]:
@@ -188,26 +196,30 @@ class IbkrCollector(BaseCollector):
                 )
             )
 
-        # Cash balances
+        # Cash balances, grouped by currency to avoid duplicate rows from multiple cash tags.
         cash_items = self._parse_cash_from_xml(xml_text)
+        cash_by_currency: dict[str, Decimal] = {}
         for cash in cash_items:
             currency = cash.get("currency", "").upper()
-            ending_cash = Decimal(cash.get("endingCash", "0"))
+            ending_cash = _parse_cash_amount(cash)
 
             if ending_cash == 0 or not currency or currency == "BASE_SUMMARY":
                 continue
 
+            cash_by_currency[currency] = cash_by_currency.get(currency, Decimal(0)) + ending_cash
+
+        for currency, amount in cash_by_currency.items():
             price = await self._pricing.get_price_usd(currency)
-            usd_value = ending_cash * price
+            usd_value = amount * price
             snapshots.append(
                 Snapshot(
                     date=today,
                     source=self.source_name,
                     asset=currency,
-                    amount=ending_cash,
+                    amount=amount,
                     usd_value=usd_value,
                     price=price,
-                    raw_json=json.dumps(cash),
+                    raw_json=json.dumps({"currency": currency, "endingCash": str(amount)}),
                 )
             )
 
@@ -257,3 +269,26 @@ class IbkrCollector(BaseCollector):
             tx_id=str(trade.get("tradeID", "")),
             raw_json=json.dumps(trade),
         )
+
+
+def _parse_cash_amount(cash: dict[str, str]) -> Decimal:
+    """Parse the first available IBKR cash amount field."""
+    for field in _CASH_AMOUNT_FIELDS:
+        value = cash.get(field, "")
+        if not value:
+            continue
+        amount = _to_decimal(value)
+        if amount != 0:
+            return amount
+    return Decimal(0)
+
+
+def _to_decimal(value: str) -> Decimal:
+    """Parse IBKR numeric strings (commas, parentheses negatives)."""
+    normalized = value.strip().replace(",", "")
+    if normalized.startswith("(") and normalized.endswith(")"):
+        normalized = f"-{normalized[1:-1]}"
+    try:
+        return Decimal(normalized)
+    except ArithmeticError:
+        return Decimal(0)
