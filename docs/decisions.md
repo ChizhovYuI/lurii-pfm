@@ -262,7 +262,7 @@ CREATE TABLE IF NOT EXISTS ai_providers (
 **Decision:** Use `sqlcipher3` (coleifer, v0.6.2) for transparent database encryption, with an opt-in locked/unlocked daemon state machine and a `/api/v1/unlock` endpoint.
 
 **Design choices:**
-- **`sqlcipher3` over `pysqlcipher3` / Rotki fork** — `sqlcipher3` ships pre-built wheels for Python 3.13 with a self-contained SQLCipher build (no system-level library dependency). It is DB-API 2.0 compatible and maintained by the `peewee` author. `pysqlcipher3` requires linking against a separately-installed `libsqlcipher`, and the Rotki fork adds custom patches we don't need.
+- **`sqlcipher3` over `pysqlcipher3` — `sqlcipher3` ships pre-built wheels for Python 3.13 with a self-contained SQLCipher build (no system-level library dependency). It is DB-API 2.0 compatible and maintained by the `peewee` author. `pysqlcipher3` requires linking against a separately-installed `libsqlcipher`
 - **Connector injection for aiosqlite** — `aiosqlite.Connection` accepts any `Callable[[], sqlite3.Connection]` as its connector. We inject a factory that calls `sqlcipher3.connect()` + `PRAGMA key` instead of monkey-patching or subclassing. This keeps the encryption layer contained in `db/encryption.py`.
 - **`connect_db()` helper** — returns either encrypted or plain `aiosqlite.Connection` based on whether a key is supplied, so `Repository`, `init_db`, and stores don't need to know the encryption state.
 - **Opt-in encryption** — DB starts plain. Encryption is enabled via a future `pfm db encrypt` CLI command or SwiftUI settings. Once encrypted, the daemon requires a key on startup.

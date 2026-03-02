@@ -5,7 +5,6 @@
 Transform Lurii Finance from a Python CLI batch tool into a native macOS application with a SwiftUI frontend, persistent Python backend, encrypted storage, multi-LLM support, DeFi yield optimization, and natural-language search over financial data.
 
 **Brand:** Lurii Finance (formerly PFM)
-**UI reference:** [Rotki](https://github.com/rotki/rotki) — open-source portfolio tracker with privacy focus.
 
 ---
 
@@ -218,7 +217,7 @@ All existing CLI commands (`pfm collect`, `pfm source list`, etc.) continue to w
 
 ### Goal
 
-Native macOS application providing visual dashboards, source management, and AI chat. Inspired by Rotki's layout.
+Native macOS application providing visual dashboards, source management, and AI chat.
 
 ### Tech Stack
 
@@ -250,7 +249,7 @@ LuriiFinance/
 │   └── DaemonManager.swift    # Start/stop/monitor Python daemon
 ├── Views/
 │   ├── Sidebar/
-│   │   └── SidebarView.swift  # Navigation sidebar (Rotki-style)
+│   │   └── SidebarView.swift  # Navigation sidebar
 │   ├── Dashboard/
 │   │   ├── DashboardView.swift    # Main overview
 │   │   ├── NetWorthCard.swift     # Total net worth + trend
@@ -281,7 +280,7 @@ LuriiFinance/
     └── Theme.swift            # Colors, fonts, spacing constants
 ```
 
-### Navigation (Rotki-inspired sidebar)
+### Navigation
 
 ```
 ┌──────────────────────────────────────────────────────┐
