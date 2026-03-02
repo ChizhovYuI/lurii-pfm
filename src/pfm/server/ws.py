@@ -13,6 +13,7 @@ from aiohttp import WSMsgType, web
 logger = logging.getLogger(__name__)
 
 _WS_CLOSE_TIMEOUT = 2.0
+_WS_SEND_TIMEOUT = 5.0
 
 
 class EventBroadcaster:
@@ -35,8 +36,9 @@ class EventBroadcaster:
         closed: list[web.WebSocketResponse] = []
         for ws in self._clients:
             try:
-                await ws.send_str(payload)
-            except ConnectionResetError:
+                async with asyncio.timeout(_WS_SEND_TIMEOUT):
+                    await ws.send_str(payload)
+            except (TimeoutError, ConnectionResetError):
                 closed.append(ws)
             except Exception:
                 logger.exception("Error sending to WebSocket client")
