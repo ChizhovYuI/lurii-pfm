@@ -713,6 +713,7 @@ async def _collect_async(source_name: str | None) -> list[CollectorResult]:
 
                 creds = json.loads(src.credentials)
                 collector = collector_cls(pricing, **creds)
+                collector.instance_name = src.name
                 click.echo(f"Collecting: {src.name} ({src.type})...")
                 try:
                     result = await collector.collect(repo)

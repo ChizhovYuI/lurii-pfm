@@ -60,6 +60,7 @@ class TestSnapshotToDict:
         result = snapshot_to_dict(snap)
         assert result["date"] == "2024-01-01"
         assert result["source"] == "okx"
+        assert result["source_name"] == "okx"
         assert result["asset"] == "BTC"
         assert result["amount"] == "1.5"
         assert result["usd_value"] == "45000"

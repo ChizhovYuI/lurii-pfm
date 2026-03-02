@@ -161,11 +161,11 @@ SOURCE_TYPES: dict[str, list[CredentialField]] = {
             secret=False,
             tip=(
                 "1. Open Rabby and copy your main wallet address (0x...)\n"
-                "2. Create a DeBank Cloud access key at cloud.debank.com\n"
-                "3. Keep key read-only and private"
+                "2. Add it as source in PFM\n"
+                "3. Access key is optional and only for legacy DeBank Pro setups"
             ),
         ),
-        CredentialField("access_key", "DeBank AccessKey"),
+        CredentialField("access_key", "DeBank AccessKey (optional)", required=False),
     ],
     "revolut": [
         CredentialField(

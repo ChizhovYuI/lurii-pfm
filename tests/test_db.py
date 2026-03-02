@@ -3,6 +3,7 @@
 from datetime import date
 from decimal import Decimal
 
+import aiosqlite
 import pytest
 
 from pfm.db.models import Price, Snapshot, Transaction, TransactionType, init_db
@@ -34,6 +35,7 @@ async def test_save_and_get_snapshot(repo):
     results = await repo.get_snapshots_by_date(date(2024, 1, 15))
     assert len(results) == 1
     assert results[0].source == "test"
+    assert results[0].source_name == "test"
     assert results[0].asset == "BTC"
     assert results[0].amount == Decimal("1.5")
     assert results[0].usd_value == Decimal("67500.00")
@@ -64,6 +66,7 @@ async def test_save_snapshots_replaces_same_source_and_date(repo):
     results = await repo.get_snapshots_by_date(date(2024, 1, 15))
     assert len(results) == 1
     assert results[0].source == "wise"
+    assert results[0].source_name == "wise"
     assert results[0].asset == "GBP"
     assert results[0].amount == Decimal(120)
     assert results[0].usd_value == Decimal(150)
@@ -98,6 +101,71 @@ async def test_get_latest_snapshots_resolves_per_source(repo):
     assert len(results) == 2
     sources = {r.source for r in results}
     assert sources == {"kbank", "okx"}
+
+
+async def test_save_snapshots_keeps_same_type_with_different_source_names(repo):
+    target_date = date(2024, 1, 15)
+    await repo.save_snapshots(
+        [
+            Snapshot(
+                date=target_date,
+                source="blend",
+                source_name="blend-main",
+                asset="USDC",
+                amount=Decimal(100),
+                usd_value=Decimal(100),
+            )
+        ]
+    )
+    await repo.save_snapshots(
+        [
+            Snapshot(
+                date=target_date,
+                source="blend",
+                source_name="blend-alt",
+                asset="USDC",
+                amount=Decimal(200),
+                usd_value=Decimal(200),
+            )
+        ]
+    )
+
+    results = await repo.get_snapshots_by_date(target_date)
+    assert len(results) == 2
+    assert {(r.source, r.source_name, r.amount) for r in results} == {
+        ("blend", "blend-main", Decimal(100)),
+        ("blend", "blend-alt", Decimal(200)),
+    }
+
+
+async def test_get_snapshots_resolved_resolves_per_source_name(repo):
+    target_date = date(2024, 1, 15)
+    await repo.save_snapshots(
+        [
+            Snapshot(
+                date=target_date,
+                source="wise",
+                source_name="wise-main",
+                asset="USD",
+                amount=Decimal(100),
+                usd_value=Decimal(100),
+            ),
+            Snapshot(
+                date=date(2024, 1, 14),
+                source="wise",
+                source_name="wise-alt",
+                asset="USD",
+                amount=Decimal(50),
+                usd_value=Decimal(50),
+            ),
+        ]
+    )
+
+    results = await repo.get_snapshots_resolved(target_date)
+    assert {(r.source, r.source_name, r.date) for r in results} == {
+        ("wise", "wise-main", target_date),
+        ("wise", "wise-alt", date(2024, 1, 14)),
+    }
 
 
 async def test_get_snapshots_resolved(repo):
@@ -210,3 +278,47 @@ async def test_save_analytics_metric_replaces_existing(repo):
 
     metrics = await repo.get_analytics_metrics_by_date(metric_date)
     assert metrics["net_worth"] == '{"usd":"200"}'
+
+
+async def test_init_db_migrates_legacy_snapshots_with_source_name(tmp_path):
+    db_path = tmp_path / "legacy.db"
+    async with aiosqlite.connect(db_path) as db:
+        await db.executescript(
+            """
+            CREATE TABLE snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                source TEXT NOT NULL,
+                asset TEXT NOT NULL,
+                amount TEXT NOT NULL,
+                usd_value TEXT NOT NULL,
+                raw_json TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE sources (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                type TEXT NOT NULL,
+                credentials TEXT NOT NULL DEFAULT '{}',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            """
+        )
+        await db.execute(
+            "INSERT INTO sources (name, type, credentials, enabled) VALUES (?, ?, ?, ?)",
+            ("wise-main", "wise", "{}", 1),
+        )
+        await db.execute(
+            "INSERT INTO snapshots (date, source, asset, amount, usd_value) VALUES (?, ?, ?, ?, ?)",
+            ("2024-01-15", "wise", "USD", "100", "100"),
+        )
+        await db.commit()
+
+    await init_db(db_path)
+
+    async with Repository(db_path) as migrated_repo:
+        rows = await migrated_repo.get_snapshots_by_date(date(2024, 1, 15))
+    assert len(rows) == 1
+    assert rows[0].source == "wise"
+    assert rows[0].source_name == "wise-main"

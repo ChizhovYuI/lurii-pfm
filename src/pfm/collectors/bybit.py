@@ -78,6 +78,14 @@ class BybitCollector(BaseCollector):
         if amount != 0 and ticker:
             totals[ticker] = totals.get(ticker, Decimal(0)) + amount
 
+    @staticmethod
+    def _to_decimal(value: object) -> Decimal:
+        """Parse decimal-like values from API payloads, falling back to 0."""
+        try:
+            return Decimal(str(value))
+        except (ArithmeticError, TypeError, ValueError):
+            return Decimal(0)
+
     async def _fetch_unified(self, totals: dict[str, Decimal]) -> None:
         """Fetch unified trading account balances."""
         try:
@@ -92,7 +100,7 @@ class BybitCollector(BaseCollector):
         for account in data.get("result", {}).get("list", []):
             for coin in account.get("coin", []):
                 ticker = str(coin.get("coin", "")).upper()
-                self._accumulate(totals, ticker, Decimal(str(coin.get("walletBalance", "0"))))
+                self._accumulate(totals, ticker, self._to_decimal(coin.get("walletBalance", "0")))
 
     async def _fetch_funding(self, totals: dict[str, Decimal]) -> None:
         """Fetch funding account balances."""
@@ -107,7 +115,7 @@ class BybitCollector(BaseCollector):
 
         for item in data.get("result", {}).get("balance", []):
             ticker = str(item.get("coin", "")).upper()
-            self._accumulate(totals, ticker, Decimal(str(item.get("walletBalance", "0"))))
+            self._accumulate(totals, ticker, self._to_decimal(item.get("walletBalance", "0")))
 
     async def _fetch_earn(self, today: date) -> list[Snapshot]:
         """Fetch Bybit Earn positions with APY as separate snapshots."""
@@ -124,22 +132,20 @@ class BybitCollector(BaseCollector):
 
             for item in data.get("result", {}).get("list", []):
                 ticker = str(item.get("coin", "")).upper()
-                amount = Decimal(str(item.get("amount", "0")))
+                amount = self._to_decimal(item.get("amount", "0"))
                 if not ticker or amount == 0:
                     continue
 
                 # Primary: yesterdayYield → APR
-                yesterday_yield = Decimal(str(item.get("yesterdayYield", "0")))
+                yesterday_yield = self._to_decimal(item.get("yesterdayYield", "0"))
                 if yesterday_yield > 0 and amount > 0:
                     apr = yesterday_yield * 365 / amount
                 else:
                     # Fallback: estimateApr string from position
                     est_apr_str = str(item.get("estimateApr", "0"))
                     est_apr_str = est_apr_str.rstrip("%")
-                    try:
-                        apr = Decimal(est_apr_str) / 100 if Decimal(est_apr_str) > 1 else Decimal(est_apr_str)
-                    except ArithmeticError:
-                        apr = Decimal(0)
+                    est_apr = self._to_decimal(est_apr_str)
+                    apr = est_apr / 100 if est_apr > 1 else est_apr
 
                 apy = apr_to_apy(apr)
                 try:
@@ -216,7 +222,7 @@ class BybitCollector(BaseCollector):
     def _parse_transaction(item: dict[str, Any]) -> Transaction | None:
         """Parse a Bybit transaction log entry."""
         ticker = str(item.get("currency", "")).upper()
-        change = Decimal(str(item.get("cashFlow", "0")))
+        change = BybitCollector._to_decimal(item.get("cashFlow", "0"))
         if not ticker:
             return None
 

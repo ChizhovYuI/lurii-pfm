@@ -36,6 +36,7 @@ async def portfolio_summary(request: web.Request) -> web.Response:
             "holdings": [
                 {
                     "source": snap.source,
+                    "source_name": snap.source_name or snap.source,
                     "asset": snap.asset,
                     "asset_type": asset_type_for_snapshot(snap.source, snap.asset),
                     "amount": _str_decimal(snap.amount),

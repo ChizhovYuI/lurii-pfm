@@ -15,6 +15,7 @@ from click.testing import CliRunner
 from pfm.ai import CommentaryResult
 from pfm.ai.base import CommentarySection
 from pfm.cli import cli
+from pfm.collectors.base import BaseCollector
 from pfm.db.ai_store import AIProviderStore
 from pfm.db.gemini_store import GeminiStore
 from pfm.db.models import CollectorResult, Snapshot, init_db
@@ -353,6 +354,53 @@ def test_collect_all_enabled(runner, store):
     assert "Collecting: wise-main" in result.output
     assert "TOTAL" in result.output
     assert "550.00" in result.output
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_collect_keeps_snapshots_for_two_sources_of_same_type(runner, store, db_path):
+    asyncio.run(store.add("wise-main", "wise", {"api_token": "t-main"}))
+    asyncio.run(store.add("wise-alt", "wise", {"api_token": "t-alt"}))
+
+    class _FakeWiseCollector(BaseCollector):
+        source_name = "wise"
+
+        def __init__(self, pricing, *, api_token):
+            super().__init__(pricing)
+            self._api_token = api_token
+
+        async def fetch_balances(self) -> list[Snapshot]:
+            return [
+                Snapshot(
+                    date=self._pricing.today(),
+                    source=self.source_name,
+                    asset="USD",
+                    amount=Decimal(1),
+                    usd_value=Decimal(1),
+                )
+            ]
+
+        async def fetch_transactions(self, since: date | None = None):
+            return []
+
+    mock_pricing = MagicMock()
+    mock_pricing.today.return_value = date(2026, 2, 27)
+    mock_pricing.close = AsyncMock()
+
+    with (
+        patch("pfm.server.client.is_daemon_reachable", return_value=False),
+        patch("pfm.pricing.PricingService", return_value=mock_pricing),
+        patch("pfm.cli.COLLECTOR_REGISTRY", {"wise": _FakeWiseCollector}),
+    ):
+        result = runner.invoke(cli, ["collect"])
+
+    assert result.exit_code == 0
+
+    async def _load_sources() -> set[tuple[str, str]]:
+        async with Repository(db_path) as repo:
+            snaps = await repo.get_snapshots_by_date(date(2026, 2, 27))
+        return {(s.source, s.source_name) for s in snaps}
+
+    assert asyncio.run(_load_sources()) == {("wise", "wise-alt"), ("wise", "wise-main")}
 
 
 @pytest.mark.usefixtures("_patched_settings")

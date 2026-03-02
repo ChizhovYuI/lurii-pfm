@@ -105,6 +105,7 @@ async def _run_collection(app: web.Application, source_name: str | None) -> None
 
             creds = json.loads(src.credentials)
             collector = collector_cls(pricing, **creds)
+            collector.instance_name = src.name
             try:
                 result = await collector.collect(repo)
                 results.append(result)

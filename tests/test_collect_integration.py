@@ -103,6 +103,10 @@ async def test_collect_async_runs_all_enabled_sources(tmp_path):
         snapshots = await repo.get_latest_snapshots()
         transactions = await repo.get_transactions()
     assert len(snapshots) == 2
+    assert {(s.source, s.source_name) for s in snapshots} == {
+        ("wise", "wise-main"),
+        ("lobstr", "lobstr-main"),
+    }
     assert len(transactions) == 2
 
 
@@ -125,6 +129,7 @@ async def test_collect_async_source_filter_runs_one_source(tmp_path):
         snapshots = await repo.get_latest_snapshots()
     assert len(snapshots) == 1
     assert snapshots[0].source == "wise"
+    assert snapshots[0].source_name == "wise-main"
 
 
 async def test_collect_async_runs_sources_sequentially(tmp_path):

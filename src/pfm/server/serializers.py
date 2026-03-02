@@ -69,9 +69,11 @@ def source_to_dict(source: Source, *, mask_secrets: bool = True) -> dict[str, An
 
 def snapshot_to_dict(snapshot: Snapshot) -> dict[str, Any]:
     """Convert a Snapshot dataclass to a JSON-safe dict."""
+    source_name = snapshot.source_name or snapshot.source
     return {
         "date": snapshot.date.isoformat(),
         "source": snapshot.source,
+        "source_name": source_name,
         "asset": snapshot.asset,
         "amount": _str_decimal(snapshot.amount),
         "usd_value": _str_decimal(snapshot.usd_value),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 from typing import TYPE_CHECKING, Self
@@ -57,23 +58,38 @@ class Repository:
         await self.save_snapshots([snapshot])
 
     async def save_snapshots(self, snapshots: list[Snapshot]) -> None:
-        """Save multiple snapshots atomically, replacing same source/date rows."""
+        """Save multiple snapshots atomically, replacing same source/source_name/date rows."""
         if not snapshots:
             return
 
-        source_dates = {(str(s.date), s.source) for s in snapshots}
-        for snapshot_date, source in source_dates:
+        normalized: list[Snapshot] = []
+        for snap in snapshots:
+            source_name = snap.source_name or snap.source
+            normalized.append(snap if snap.source_name == source_name else replace(snap, source_name=source_name))
+
+        source_dates = {(str(s.date), s.source, s.source_name) for s in normalized}
+        for snapshot_date, source, source_name in source_dates:
             await self._db.execute(
-                "DELETE FROM snapshots WHERE date = ? AND source = ?",
-                (snapshot_date, source),
+                "DELETE FROM snapshots WHERE date = ? AND source = ? AND source_name = ?",
+                (snapshot_date, source, source_name),
             )
 
         await self._db.executemany(
-            "INSERT INTO snapshots (date, source, asset, amount, usd_value, price, apy, raw_json)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO snapshots (date, source, source_name, asset, amount, usd_value, price, apy, raw_json)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
-                (str(s.date), s.source, s.asset, str(s.amount), str(s.usd_value), str(s.price), str(s.apy), s.raw_json)
-                for s in snapshots
+                (
+                    str(s.date),
+                    s.source,
+                    s.source_name,
+                    s.asset,
+                    str(s.amount),
+                    str(s.usd_value),
+                    str(s.price),
+                    str(s.apy),
+                    s.raw_json,
+                )
+                for s in normalized
             ],
         )
         await self._db.commit()
@@ -81,7 +97,7 @@ class Repository:
     async def get_snapshots_by_date(self, d: date) -> list[Snapshot]:
         """Get all snapshots for a specific date."""
         cursor = await self._db.execute(
-            "SELECT * FROM snapshots WHERE date = ? ORDER BY source, asset",
+            "SELECT * FROM snapshots WHERE date = ? ORDER BY source, source_name, asset",
             (str(d),),
         )
         rows = await cursor.fetchall()
@@ -106,11 +122,11 @@ class Repository:
         cursor = await self._db.execute(
             "SELECT s.* FROM snapshots s"
             " INNER JOIN ("
-            "   SELECT source, MAX(date) AS max_date"
+            "   SELECT source, source_name, MAX(date) AS max_date"
             "   FROM snapshots WHERE date <= ?"
-            "   GROUP BY source"
-            " ) latest ON s.source = latest.source AND s.date = latest.max_date"
-            " ORDER BY s.source, s.asset",
+            "   GROUP BY source, source_name"
+            " ) latest ON s.source = latest.source AND s.source_name = latest.source_name AND s.date = latest.max_date"
+            " ORDER BY s.source, s.source_name, s.asset",
             (str(target_date),),
         )
         rows = await cursor.fetchall()
@@ -119,7 +135,7 @@ class Repository:
     async def get_snapshots_for_range(self, start: date, end: date) -> list[Snapshot]:
         """Get all snapshots between two dates (inclusive)."""
         cursor = await self._db.execute(
-            "SELECT * FROM snapshots WHERE date >= ? AND date <= ? ORDER BY date, source, asset",
+            "SELECT * FROM snapshots WHERE date >= ? AND date <= ? ORDER BY date, source, source_name, asset",
             (str(start), str(end)),
         )
         rows = await cursor.fetchall()
@@ -127,10 +143,14 @@ class Repository:
 
     @staticmethod
     def _row_to_snapshot(row: aiosqlite.Row) -> Snapshot:
+        source_name = row["source_name"] if "source_name" in row else row["source"]
+        if not source_name:
+            source_name = row["source"]
         return Snapshot(
             id=row["id"],
             date=date.fromisoformat(row["date"]),
             source=row["source"],
+            source_name=source_name,
             asset=row["asset"],
             amount=Decimal(row["amount"]),
             usd_value=Decimal(row["usd_value"]),

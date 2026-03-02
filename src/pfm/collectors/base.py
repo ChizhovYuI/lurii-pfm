@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from abc import ABC, abstractmethod
+from dataclasses import replace
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -39,6 +40,9 @@ class BaseCollector(ABC):
 
     def __init__(self, pricing: PricingService) -> None:
         self._pricing = pricing
+        # Configured source instance name from sources table (e.g., "blend-main").
+        # Defaults to the collector type name for backwards compatibility.
+        self.instance_name = self.source_name
 
     @abstractmethod
     async def fetch_balances(self) -> list[Snapshot]:
@@ -61,6 +65,11 @@ class BaseCollector(ABC):
         try:
             snapshots = await self.fetch_balances()
             if snapshots:
+                instance_name = self.instance_name or self.source_name
+                snapshots = [
+                    snap if snap.source_name else replace(snap, source_name=instance_name or snap.source)
+                    for snap in snapshots
+                ]
                 await repo.save_snapshots(snapshots)
                 result.snapshots_count = len(snapshots)
                 result.snapshots_usd_total = sum((snapshot.usd_value for snapshot in snapshots), start=Decimal(0))

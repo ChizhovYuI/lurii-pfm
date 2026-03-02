@@ -39,6 +39,7 @@ class Snapshot:
     price: Decimal = Decimal(0)
     apy: Decimal = Decimal(0)
     raw_json: str = ""
+    source_name: str = ""
     id: int | None = None
     created_at: datetime | None = None
 
@@ -114,6 +115,7 @@ CREATE TABLE IF NOT EXISTS snapshots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     date TEXT NOT NULL,
     source TEXT NOT NULL,
+    source_name TEXT NOT NULL DEFAULT '',
     asset TEXT NOT NULL,
     amount TEXT NOT NULL,
     usd_value TEXT NOT NULL,
@@ -216,6 +218,26 @@ async def _migrate_snapshots_apy(db: aiosqlite.Connection) -> None:
     await db.execute("ALTER TABLE snapshots ADD COLUMN apy TEXT NOT NULL DEFAULT '0'")
 
 
+async def _migrate_snapshots_source_name(db: aiosqlite.Connection) -> None:
+    """Add ``source_name`` column and backfill from sources table when possible."""
+    cursor = await db.execute("PRAGMA table_info(snapshots)")
+    columns = {row[1] for row in await cursor.fetchall()}
+    if "source_name" not in columns:
+        await db.execute("ALTER TABLE snapshots ADD COLUMN source_name TEXT NOT NULL DEFAULT ''")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_source_name ON snapshots(source_name)")
+
+    # Baseline fallback for legacy rows.
+    await db.execute("UPDATE snapshots SET source_name = source WHERE source_name = '' OR source_name IS NULL")
+
+    # If there is exactly one configured source for a type, align legacy rows to that instance name.
+    await db.execute(
+        "UPDATE snapshots "
+        "SET source_name = (SELECT MIN(name) FROM sources WHERE type = snapshots.source) "
+        "WHERE (source_name = source OR source_name = '' OR source_name IS NULL) "
+        "  AND (SELECT COUNT(*) FROM sources WHERE type = snapshots.source) = 1"
+    )
+
+
 async def init_db(path: Path, *, key_hex: str | None = None) -> None:
     """Create database and all tables if they don't exist.
 
@@ -231,5 +253,6 @@ async def init_db(path: Path, *, key_hex: str | None = None) -> None:
             await db.executescript(SCHEMA_SQL)
             await _migrate_snapshots_price(db)
             await _migrate_snapshots_apy(db)
+            await _migrate_snapshots_source_name(db)
             await db.execute("DROP TABLE IF EXISTS raw_responses")
             await db.commit()
