@@ -55,10 +55,7 @@ class YoCollector(BaseCollector):
         return {}
 
     async def _get_vault(self) -> dict[str, Any]:
-        payload = await self._get(
-            f"/api/v1/vault/{self._network}/{self._vault_address}",
-            params={"userAddress": self._user_address},
-        )
+        payload = await self._get(f"/api/v1/vault/{self._network}/{self._vault_address}")
         data = payload.get("data")
         if isinstance(data, dict):
             return data
@@ -78,7 +75,10 @@ class YoCollector(BaseCollector):
         """Fetch current vault position balances for a user."""
         today = self._pricing.today()
         vault = await self._get_vault()
-        holdings = _extract_holdings(vault)
+        history_rows = await self._get_history(limit=200)
+        derived_holding = _derive_share_holding_from_history(vault, history_rows)
+        holdings = [derived_holding] if derived_holding is not None else []
+        apy = _extract_vault_apy(vault)
 
         if not holdings:
             logger.info("yo: no balances found for network=%s vault=%s", self._network, self._vault_address)
@@ -107,6 +107,7 @@ class YoCollector(BaseCollector):
                     amount=amount,
                     usd_value=amount * price,
                     price=price,
+                    apy=apy,
                     raw_json=json.dumps(holding.raw),
                 )
             )
@@ -116,10 +117,17 @@ class YoCollector(BaseCollector):
 
     async def fetch_transactions(self, since: date | None = None) -> list[Transaction]:
         """Fetch user vault history and map it to normalized transaction rows."""
+        vault = await self._get_vault()
+        asset_symbol = str(_as_dict(vault.get("asset")).get("symbol", "")).upper()
+        share_symbol = str(_as_dict(vault.get("shareAsset")).get("symbol", "")).upper()
         rows = await self._get_history(limit=100)
         txs: list[Transaction] = []
         for row in rows:
-            tx = _parse_history_row(row)
+            tx = _parse_history_row(
+                row,
+                fallback_asset_symbol=asset_symbol,
+                fallback_share_symbol=share_symbol,
+            )
             if tx is None:
                 continue
             if since and tx.date < since:
@@ -138,68 +146,43 @@ class _Holding:
         self.raw = raw
 
 
-def _extract_holdings(vault: dict[str, Any]) -> list[_Holding]:
-    asset = _as_dict(vault.get("asset"))
+def _derive_share_holding_from_history(vault: dict[str, Any], rows: list[dict[str, Any]]) -> _Holding | None:
     share_asset = _as_dict(vault.get("shareAsset"))
-    stats = _as_dict(vault.get("stats"))
-
-    base_symbol = str(asset.get("symbol", "")).upper()
     share_symbol = str(share_asset.get("symbol", "")).upper()
+    if not share_symbol:
+        return None
 
-    rows: list[_Holding] = []
-    seen: set[str] = set()
+    stats = _as_dict(vault.get("stats"))
+    share_price = _read_amount(_as_dict(stats.get("sharePrice")))
 
-    # Preferred direct user balances if present.
-    input_balance = _read_amount(_as_dict(vault.get("inputTokenBalance")))
-    if base_symbol and input_balance > 0:
-        rows.append(
-            _Holding(
-                base_symbol,
-                input_balance,
-                Decimal(0),
-                {"inputTokenBalance": vault.get("inputTokenBalance")},
-            )
-        )
-        seen.add(base_symbol)
+    share_balance = Decimal(0)
+    for row in rows:
+        history_type = str(row.get("type", "")).lower()
+        _, shares_amount = _first_symbol_amount(row.get("shares"), share_symbol)
+        if shares_amount <= 0:
+            continue
+        if "deposit" in history_type:
+            share_balance += shares_amount
+        elif "redeem" in history_type or "withdraw" in history_type:
+            share_balance -= shares_amount
 
-    output_rows = vault.get("outputTokenBalances")
-    if isinstance(output_rows, list):
-        for entry in output_rows:
-            if not isinstance(entry, dict):
-                continue
-            token = _as_dict(entry.get("token"))
-            symbol = str(entry.get("symbol") or token.get("symbol") or "").upper()
-            amount = _read_amount(entry)
-            if not symbol or amount <= 0:
-                continue
-            if symbol in seen:
-                continue
-            price = _to_decimal(entry.get("priceUsd") or entry.get("price"))
-            rows.append(_Holding(symbol, amount, price, entry))
-            seen.add(symbol)
+    if share_balance <= 0:
+        return None
 
-    share_balance = _read_amount(_as_dict(vault.get("shareBalance")))
-    if share_symbol and share_balance > 0 and share_symbol not in seen:
-        rows.append(
-            _Holding(
-                share_symbol,
-                share_balance,
-                Decimal(0),  # resolved later with share_price/base asset fallback
-                {"shareBalance": vault.get("shareBalance"), "sharePrice": stats.get("sharePrice")},
-            )
-        )
-        seen.add(share_symbol)
-
-    # Fallback: derive a position from history if user-specific balance keys are missing.
-    if not rows and base_symbol:
-        implied_balance = _read_amount(_as_dict(vault.get("balance")))
-        if implied_balance > 0:
-            rows.append(_Holding(base_symbol, implied_balance, Decimal(0), {"balance": vault.get("balance")}))
-
-    return rows
+    return _Holding(
+        share_symbol,
+        share_balance,
+        share_price,
+        {"derivedFrom": "history", "sharePrice": stats.get("sharePrice")},
+    )
 
 
-def _parse_history_row(row: dict[str, Any]) -> Transaction | None:
+def _parse_history_row(
+    row: dict[str, Any],
+    *,
+    fallback_asset_symbol: str = "",
+    fallback_share_symbol: str = "",
+) -> Transaction | None:
     history_type = str(row.get("type", "")).lower()
     timestamp = row.get("timestamp")
     tx_date = _parse_timestamp(timestamp)
@@ -207,8 +190,8 @@ def _parse_history_row(row: dict[str, Any]) -> Transaction | None:
 
     assets = row.get("assets")
     shares = row.get("shares")
-    asset_symbol, asset_amount = _first_symbol_amount(assets)
-    share_symbol, share_amount = _first_symbol_amount(shares)
+    asset_symbol, asset_amount = _first_symbol_amount(assets, fallback_asset_symbol)
+    share_symbol, share_amount = _first_symbol_amount(shares, fallback_share_symbol)
 
     if "deposit" in history_type:
         symbol = share_symbol or asset_symbol
@@ -242,7 +225,14 @@ def _parse_history_row(row: dict[str, Any]) -> Transaction | None:
     )
 
 
-def _first_symbol_amount(value: object) -> tuple[str, Decimal]:
+def _first_symbol_amount(value: object, fallback_symbol: str = "") -> tuple[str, Decimal]:
+    fallback = fallback_symbol.upper()
+    if isinstance(value, dict):
+        symbol = str(value.get("symbol", "")).upper() or fallback
+        amount = _read_amount(value)
+        if symbol and amount > 0:
+            return symbol, amount
+        return "", Decimal(0)
     if not isinstance(value, list):
         return "", Decimal(0)
     for row in value:
@@ -287,3 +277,15 @@ def _to_decimal(value: object) -> Decimal:
         return Decimal(str(value))
     except ArithmeticError:
         return Decimal(0)
+
+
+def _extract_vault_apy(vault: dict[str, Any]) -> Decimal:
+    stats = _as_dict(vault.get("stats"))
+    yield_obj = _as_dict(stats.get("yield"))
+    # Prefer smoother period first; API values are percentages.
+    for key in ("7d", "30d", "1d"):
+        value = _to_decimal(yield_obj.get(key))
+        if value == 0:
+            continue
+        return value / Decimal(100) if value > 1 else value
+    return Decimal(0)

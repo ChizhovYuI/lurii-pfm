@@ -10,7 +10,7 @@ import httpx
 
 from pfm.collectors.yo import (
     YoCollector,
-    _extract_holdings,
+    _extract_vault_apy,
     _first_symbol_amount,
     _parse_history_row,
     _parse_timestamp,
@@ -27,7 +27,6 @@ def _mock_response(payload: object) -> MagicMock:
 
 
 async def test_yo_collect_balances_and_transactions(repo, pricing):
-    pricing._set_cache("WETH", Decimal(3000))
     pricing.today = lambda: date(2024, 6, 15)  # type: ignore[assignment]
 
     collector = YoCollector(
@@ -46,8 +45,7 @@ async def test_yo_collect_balances_and_transactions(repo, pricing):
                     "data": {
                         "asset": {"symbol": "WETH"},
                         "shareAsset": {"symbol": "yoETH"},
-                        "stats": {"sharePrice": {"formatted": "1.05"}},
-                        "inputTokenBalance": {"formatted": "2.5"},
+                        "stats": {"sharePrice": {"formatted": "1.05"}, "yield": {"7d": "5.57"}},
                     },
                 }
             )
@@ -85,9 +83,10 @@ async def test_yo_collect_balances_and_transactions(repo, pricing):
 
     snapshots = await repo.get_latest_snapshots()
     assert len(snapshots) == 1
-    assert snapshots[0].asset == "WETH"
-    assert snapshots[0].amount == Decimal("2.5")
-    assert snapshots[0].usd_value == Decimal("7500.0")
+    assert snapshots[0].asset == "YOETH"
+    assert snapshots[0].amount == Decimal("0.75")
+    assert snapshots[0].usd_value == Decimal("0.7875")
+    assert snapshots[0].apy == Decimal("0.0557")
 
     txs = await repo.get_transactions(source="yo")
     assert len(txs) == 2
@@ -117,6 +116,62 @@ async def test_yo_returns_empty_balances_for_missing_user_position(pricing):
 
     snapshots = await collector.fetch_balances()
     assert snapshots == []
+
+
+async def test_yo_parses_transactions_from_history_dict_shapes_without_derived_balances(pricing):
+    collector = YoCollector(
+        pricing,  # type: ignore[arg-type]
+        network="base",
+        vault_address="0xvault",
+        user_address="0xuser",
+    )
+
+    async def mock_get(path: str, **kwargs: object) -> MagicMock:
+        if path == "/api/v1/vault/base/0xvault":
+            return _mock_response(
+                {
+                    "statusCode": 200,
+                    "message": "SUCCESS",
+                    "data": {
+                        "asset": {"symbol": "USDC"},
+                        "shareAsset": {"symbol": "yoUSD"},
+                        "stats": {"sharePrice": {"formatted": "1.069306"}, "yield": {"7d": "5.57"}},
+                    },
+                }
+            )
+        if path == "/api/v1/history/user/base/0xvault/0xuser":
+            return _mock_response(
+                {
+                    "statusCode": 200,
+                    "data": [
+                        {
+                            "type": "Deposit",
+                            "network": "base",
+                            "transactionHash": "0xdep",
+                            "blockTimestamp": 1772456315,
+                            "assets": {"formatted": "1323.217396", "raw": "1323217396"},
+                            "shares": {"formatted": "1237.496044", "raw": "1237496044"},
+                        }
+                    ],
+                }
+            )
+        return _mock_response({})
+
+    collector._client.get = mock_get  # type: ignore[assignment]
+
+    snapshots = await collector.fetch_balances()
+    assert len(snapshots) == 1
+    assert snapshots[0].asset == "YOUSD"
+    assert snapshots[0].amount == Decimal("1237.496044")
+    assert snapshots[0].price == Decimal("1.069306")
+    assert snapshots[0].usd_value == Decimal("1323.261944825464")
+    assert snapshots[0].apy == Decimal("0.0557")
+
+    txs = await collector.fetch_transactions()
+    assert len(txs) == 1
+    assert txs[0].tx_type.value == "deposit"
+    assert txs[0].asset == "YOUSD"
+    assert txs[0].amount == Decimal("1237.496044")
 
 
 async def test_yo_history_since_filter(pricing):
@@ -182,24 +237,6 @@ async def test_yo_get_payload_shapes(pricing):
 
 
 def test_yo_helper_paths_and_parsers():
-    holdings = _extract_holdings(
-        {
-            "asset": {"symbol": "WETH"},
-            "shareAsset": {"symbol": "yoETH"},
-            "outputTokenBalances": [
-                {"symbol": "WETH", "formatted": "0.2", "priceUsd": "3000"},
-                {"token": {"symbol": "USDC"}, "amount": "50", "price": "1"},
-                {"symbol": "", "formatted": "1"},
-            ],
-            "shareBalance": {"formatted": "1.0"},
-        }
-    )
-    assert [h.symbol for h in holdings] == ["WETH", "USDC", "YOETH"]
-
-    fallback_holdings = _extract_holdings({"asset": {"symbol": "ETH"}, "balance": {"formatted": "2"}})
-    assert len(fallback_holdings) == 1
-    assert fallback_holdings[0].symbol == "ETH"
-
     dep = _parse_history_row(
         {
             "type": "deposit",
@@ -239,7 +276,15 @@ def test_yo_helper_paths_and_parsers():
     assert _parse_history_row({"type": "deposit", "assets": [], "shares": []}) is None
     assert _first_symbol_amount("bad") == ("", Decimal(0))
     assert _first_symbol_amount([{"symbol": "WETH", "formatted": "0.5"}]) == ("WETH", Decimal("0.5"))
+    assert _first_symbol_amount({"formatted": "1.25"}, "YOUSD") == ("YOUSD", Decimal("1.25"))
     assert isinstance(_parse_timestamp("bad"), date)
     assert _read_amount({}) == Decimal(0)
     assert _read_amount({"raw": "12"}) == Decimal(12)
     assert _to_decimal("bad") == Decimal(0)
+
+
+def test_yo_extract_vault_apy():
+    assert _extract_vault_apy({"stats": {"yield": {"7d": "5.57"}}}) == Decimal("0.0557")
+    assert _extract_vault_apy({"stats": {"yield": {"30d": "0.042"}}}) == Decimal("0.042")
+    assert _extract_vault_apy({"stats": {"yield": {"7d": "0", "1d": "4.2"}}}) == Decimal("0.042")
+    assert _extract_vault_apy({"stats": {"yield": {}}}) == Decimal(0)
