@@ -9,7 +9,6 @@ def test_grok_defaults():
     assert "api.x.ai" in GrokProvider.default_base_url
 
 
-def test_grok_auth_header():
+def test_grok_stores_api_key():
     provider = GrokProvider(api_key="xai-key-456")
-    headers = provider._build_headers()
-    assert headers["Authorization"] == "Bearer xai-key-456"
+    assert provider._api_key == "xai-key-456"

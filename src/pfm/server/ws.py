@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import logging
 from typing import Any
@@ -9,6 +11,8 @@ from typing import Any
 from aiohttp import WSMsgType, web
 
 logger = logging.getLogger(__name__)
+
+_WS_CLOSE_TIMEOUT = 2.0
 
 
 class EventBroadcaster:
@@ -41,9 +45,11 @@ class EventBroadcaster:
             self._clients.discard(ws)
 
     async def close(self) -> None:
-        """Close all connected WebSocket clients."""
+        """Close all WebSocket clients with a per-connection timeout."""
         for ws in list(self._clients):
-            await ws.close()
+            with contextlib.suppress(asyncio.TimeoutError):
+                async with asyncio.timeout(_WS_CLOSE_TIMEOUT):
+                    await ws.close()
         self._clients.clear()
 
     @property
@@ -54,7 +60,7 @@ class EventBroadcaster:
 
 async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
     """Handle WebSocket connections at /api/v1/ws."""
-    ws = web.WebSocketResponse()
+    ws = web.WebSocketResponse(heartbeat=30.0)
     await ws.prepare(request)
 
     broadcaster: EventBroadcaster = request.app["broadcaster"]
@@ -63,10 +69,7 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
     try:
         async for msg in ws:
             if msg.type == WSMsgType.ERROR:
-                logger.warning(
-                    "WebSocket error: %s",
-                    ws.exception(),
-                )
+                logger.warning("WebSocket error: %s", ws.exception())
     finally:
         broadcaster.unregister(ws)
 

@@ -12,11 +12,10 @@ from pfm.ai.analyst import (
     GEMINI_MAX_OUTPUT_TOKENS,
     _escape_newlines_in_json_strings,
     _finalize_commentary_text,
-    _flatten_sections,
     _parse_sections,
     generate_commentary,
 )
-from pfm.ai.base import FALLBACK_COMMENTARY, CommentaryResult, CommentarySection
+from pfm.ai.base import FALLBACK_COMMENTARY, CommentaryResult, CommentarySection, flatten_sections
 from pfm.ai.prompts import AnalyticsSummary
 from pfm.db.ai_store import AIProviderStore
 from pfm.db.gemini_store import GeminiStore
@@ -197,7 +196,7 @@ def test_flatten_sections():
         CommentarySection(title="Market Context", description="BTC is up."),
         CommentarySection(title="Risk Alerts", description="Low diversification."),
     )
-    flat = _flatten_sections(sections)
+    flat = flatten_sections(sections)
     assert "Market Context" in flat
     assert "BTC is up." in flat
     assert "Risk Alerts" in flat
@@ -310,3 +309,42 @@ async def test_generate_commentary_with_model_parses_sections(tmp_path):
     assert result.sections[1].description == "High HHI."
     assert "Market Context" in result.text
     assert "BTC at **$95k**." in result.text
+
+
+async def test_generate_commentary_with_model_returns_preparsed_sections(tmp_path):
+    """When provider returns CommentaryResult with pre-populated sections, orchestrator returns as-is."""
+    db_path = tmp_path / "preparsed.db"
+    await init_db(db_path)
+    store = AIProviderStore(db_path)
+    await store.add("openrouter", api_key="key", active=True)
+
+    pre_sections = (
+        CommentarySection(title="Instructor Parsed", description="Already structured."),
+        CommentarySection(title="Risk", description="Low risk."),
+    )
+    mock_provider = MagicMock()
+    mock_provider.generate_commentary = AsyncMock(
+        return_value=CommentaryResult(
+            text="Instructor Parsed\nAlready structured.\n\nRisk\nLow risk.",
+            model="qwen3-235b",
+            sections=pre_sections,
+        )
+    )
+    mock_provider.close = AsyncMock()
+
+    settings = MagicMock()
+    settings.database_path = db_path
+    settings.gemini_api_key = SecretStr("")
+
+    from pfm.ai.analyst import generate_commentary_with_model
+
+    with (
+        patch("pfm.ai.analyst.get_settings", return_value=settings),
+        patch("pfm.ai.analyst._build_provider", return_value=mock_provider),
+    ):
+        result = await generate_commentary_with_model(_sample_analytics(), db_path=db_path)
+
+    # Should return the result as-is without re-parsing
+    assert result.sections == pre_sections
+    assert result.model == "qwen3-235b"
+    assert "Instructor Parsed" in result.text

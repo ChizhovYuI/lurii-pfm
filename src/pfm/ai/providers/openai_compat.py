@@ -1,12 +1,17 @@
-"""Shared base for OpenAI-compatible LLM providers (Ollama, OpenRouter, Grok)."""
+"""Shared base for OpenAI-compatible LLM providers (OpenRouter, Grok) using instructor."""
 
 from __future__ import annotations
 
 import logging
+from typing import Any
 
-import httpx
+import instructor
+from instructor.core import InstructorRetryException
+from openai import APIError, AsyncOpenAI
+from pydantic import ValidationError
 
-from pfm.ai.base import FALLBACK_COMMENTARY, CommentaryResult, LLMProvider
+from pfm.ai.base import FALLBACK_COMMENTARY, CommentaryResult, LLMProvider, flatten_sections
+from pfm.ai.schemas import CommentaryResponse
 
 logger = logging.getLogger(__name__)
 
@@ -26,35 +31,22 @@ class OpenAICompatibleProvider(LLMProvider):
         api_key: str | None = None,
         model: str | None = None,
         base_url: str | None = None,
-        client: httpx.AsyncClient | None = None,
+        client: object | None = None,
     ) -> None:
         self._api_key = api_key or ""
         self._model = model or self.default_model
         self._base_url = (base_url or self.default_base_url).rstrip("/")
         self._owns_client = client is None
-        self._client = client or httpx.AsyncClient(timeout=_TIMEOUT_SECONDS)
-
-    # -- hooks for subclasses --------------------------------------------------
-
-    def _build_headers(self) -> dict[str, str]:
-        """Return extra headers (e.g. Authorization). Override in subclass."""
-        if self._api_key:
-            return {"Authorization": f"Bearer {self._api_key}"}
-        return {}
-
-    def _parse_response(self, body: dict[str, object]) -> str:
-        """Extract generated text from a chat-completions response."""
-        choices = body.get("choices")
-        if not isinstance(choices, list) or not choices:
-            return ""
-        first = choices[0]
-        if not isinstance(first, dict):
-            return ""
-        message = first.get("message")
-        if not isinstance(message, dict):
-            return ""
-        content = message.get("content")
-        return str(content).strip() if content else ""
+        self._client: Any
+        if client is not None:
+            self._client = client
+        else:
+            openai_client = AsyncOpenAI(
+                api_key=self._api_key or "not-needed",
+                base_url=f"{self._base_url}/v1",
+                timeout=_TIMEOUT_SECONDS,
+            )
+            self._client = instructor.from_openai(openai_client, mode=instructor.Mode.JSON)
 
     # -- public API ------------------------------------------------------------
 
@@ -65,35 +57,27 @@ class OpenAICompatibleProvider(LLMProvider):
         *,
         max_output_tokens: int = 4096,
     ) -> CommentaryResult:
-        """Call ``/v1/chat/completions`` and return a :class:`CommentaryResult`."""
-        url = f"{self._base_url}/v1/chat/completions"
-        headers = {"Content-Type": "application/json", **self._build_headers()}
-        payload: dict[str, object] = {
-            "model": self._model,
-            "max_tokens": max_output_tokens,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-        }
-
+        """Call instructor-patched ``/v1/chat/completions`` and return a :class:`CommentaryResult`."""
         try:
-            response = await self._client.post(url, json=payload, headers=headers)
-            response.raise_for_status()
-            body = response.json()
-        except httpx.HTTPStatusError as exc:
-            error_msg = f"{self.name} API error {exc.response.status_code}"
-            logger.warning("%s: %s", error_msg, exc)
-            return CommentaryResult(text=FALLBACK_COMMENTARY, model=None, error=error_msg)
-        except (httpx.HTTPError, OSError) as exc:
-            error_msg = f"{self.name} API request failed: {exc}"
-            logger.warning("%s", error_msg)
+            response: CommentaryResponse = await self._client.chat.completions.create(
+                model=self._model,
+                max_tokens=max_output_tokens,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                response_model=CommentaryResponse,
+            )
+        except (APIError, ValidationError, InstructorRetryException):
+            error_msg = f"{self.name} API request failed"
+            logger.warning("%s", error_msg, exc_info=True)
             return CommentaryResult(text=FALLBACK_COMMENTARY, model=None, error=error_msg)
 
-        text = self._parse_response(body)
-        return CommentaryResult(text=text, model=self._model)
+        sections = response.to_commentary_sections()
+        flat_text = flatten_sections(sections)
+        return CommentaryResult(text=flat_text, model=self._model, sections=sections)
 
     async def close(self) -> None:
-        """Close the underlying HTTP client if owned."""
+        """Close the underlying OpenAI client if owned."""
         if self._owns_client:
-            await self._client.aclose()
+            await self._client.client.close()

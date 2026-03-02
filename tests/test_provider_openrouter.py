@@ -9,7 +9,6 @@ def test_openrouter_defaults():
     assert "openrouter.ai" in OpenRouterProvider.default_base_url
 
 
-def test_openrouter_auth_header():
+def test_openrouter_stores_api_key():
     provider = OpenRouterProvider(api_key="or-key-123")
-    headers = provider._build_headers()
-    assert headers["Authorization"] == "Bearer or-key-123"
+    assert provider._api_key == "or-key-123"

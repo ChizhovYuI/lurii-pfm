@@ -11,6 +11,7 @@ from pfm.ai.base import (
     CommentarySection,
     LLMProvider,
     ProviderName,
+    flatten_sections,
 )
 from pfm.ai.prompts import (
     WEEKLY_REPORT_SYSTEM_PROMPT,
@@ -29,6 +30,7 @@ __all__ = [
     "CommentarySection",
     "LLMProvider",
     "ProviderName",
+    "flatten_sections",
     "generate_commentary",
     "generate_commentary_with_model",
     "render_weekly_report_user_prompt",

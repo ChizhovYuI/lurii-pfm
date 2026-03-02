@@ -71,6 +71,14 @@ async def _on_startup(app: web.Application) -> None:
     logger.info("Startup complete — DB unlocked, services ready")
 
 
+async def _on_shutdown(app: web.Application) -> None:
+    """Close WebSocket connections so handlers can exit before the shutdown timeout."""
+    broadcaster = app.get("broadcaster")
+    if broadcaster is not None:
+        logger.info("Closing %d WebSocket client(s)…", broadcaster.client_count)
+        await broadcaster.close()
+
+
 async def _on_cleanup(app: web.Application) -> None:
     """Close shared resources and clear sensitive state."""
     scheduler: asyncio.Task[None] | None = app.get("_scheduler_task")
@@ -87,10 +95,6 @@ async def _on_cleanup(app: web.Application) -> None:
     if pricing is not None:
         await pricing.close()
 
-    broadcaster = app.get("broadcaster")
-    if broadcaster is not None:
-        await broadcaster.close()
-
     # Clear key from memory
     app.pop("db_key", None)
 
@@ -103,8 +107,10 @@ def create_app(db_path: Path) -> web.Application:
     app["db_path"] = db_path
     app["db_key"] = None
     app["db_locked"] = False
+    app["generating_commentary"] = False
     app["encryption_enabled"] = False
     app.on_startup.append(_on_startup)
+    app.on_shutdown.append(_on_shutdown)
     app.on_cleanup.append(_on_cleanup)
     setup_routes(app)
     return app

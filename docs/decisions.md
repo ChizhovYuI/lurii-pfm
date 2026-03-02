@@ -713,3 +713,202 @@ This updates only `model` for Gemini; `api_key`, `base_url`, and `active` are pr
 **Consequences:**
 - Report notify endpoint works correctly when daemon runs from any working directory
 - Consistent with how `is_telegram_configured` and `build_analytics_summary` already receive `db_path` in the same handler
+
+---
+
+## ADR-020: Integrate `instructor` for structured AI output
+
+**Date:** 2026-03-02
+
+**Status:** Accepted
+
+**Context:** LLM providers (Ollama, OpenRouter, Grok) returned raw text that the analyst orchestrator manually parsed as JSON. This parsing was fragile — it broke with `<think>` blocks, preamble text, unescaped newlines in JSON strings, and markdown code fences. Each failure mode required a dedicated workaround in `_parse_sections()`.
+
+**Problem:**
+- Manual JSON parsing required ~80 lines of defensive code (`_parse_sections`, `_escape_newlines_in_json_strings`, `_try_json_loads`, code fence stripping, preamble scanning)
+- Each new LLM quirk (e.g. Qwen3 `<think>` blocks) required a new parsing workaround
+- No validation that the JSON structure matched the expected `[{title, description}]` schema
+- No automatic retry on malformed output — a single bad response produced fallback commentary
+
+**Decision:** Integrate the `instructor` library to enforce structured output via Pydantic models at the API call level, with automatic validation and retries. Migrate Ollama, OpenRouter, and Grok providers; keep Gemini on its native `google-genai` SDK.
+
+**Design choices:**
+- **`instructor` + `openai` SDK** — `instructor.from_openai(AsyncOpenAI(...))` patches the OpenAI client to accept a `response_model` parameter. The LLM response is automatically parsed into a Pydantic model with validation and retry on failure
+- **Gemini excluded** — Gemini's 300-line failover/rate-limiting logic in `providers/gemini.py` is too risky to rewrite. `instructor.from_gemini()` targets the old SDK, not `google.genai`. Gemini continues through the existing manual `_parse_sections` path
+- **`CommentaryResponse` Pydantic model** — `sections: list[ReportSection]` with `min_length=1, max_length=10` provides lenient bounds while the prompt still requests exactly 5 sections
+- **`ReportSection` bridges to `CommentarySection`** — `to_commentary_sections()` converts Pydantic models to the existing frozen dataclass format, keeping the rest of the codebase unchanged
+- **`flatten_sections()` extracted to `base.py`** — both providers and analyst import from `base.py`, avoiding circular dependencies
+- **Pre-parsed sections short-circuit** — analyst orchestrator checks `result.sections` first; if populated (instructor path), skips manual JSON parsing entirely. Gemini results (empty `sections`) continue through the existing path
+- **Ollama uses `instructor.Mode.JSON`** — not `TOOLS` mode, maximizing compatibility with local models that lack function-calling support
+- **Ollama dual-client pattern** — instructor-patched `AsyncOpenAI` for generation (hits `/v1`), raw `httpx.AsyncClient` for auto-pull (`/api/pull`)
+- **OpenRouter and Grok unchanged** — they inherit from `OpenAICompatibleProvider` and only define class attributes. `default_base_url` values work as-is (constructor appends `/v1`)
+- **Specific exception handling** — catches `openai.APIError` and `pydantic.ValidationError` (covers HTTP errors + schema validation failures after instructor retry exhaustion)
+
+**New dependencies:**
+- `openai>=1.82.0` — OpenAI Python SDK (used as transport layer for OpenAI-compatible APIs)
+- `instructor>=1.8.0` — structured output enforcement via Pydantic models
+
+**Files changed:**
+- `pyproject.toml` — added `openai`, `instructor` dependencies + mypy override for `instructor`
+- `src/pfm/ai/schemas.py` — **new** `CommentaryResponse` and `ReportSection` Pydantic models
+- `src/pfm/ai/base.py` — extracted `flatten_sections()` as public function
+- `src/pfm/ai/__init__.py` — exported `flatten_sections`
+- `src/pfm/ai/providers/openai_compat.py` — replaced `httpx` with instructor-patched `AsyncOpenAI`
+- `src/pfm/ai/providers/ollama.py` — instructor `AsyncOpenAI` for generation + `httpx` for pull
+- `src/pfm/ai/analyst.py` — added `result.sections` short-circuit, uses `flatten_sections` from base
+- `tests/test_ai_schemas.py` — **new** (4 tests)
+- `tests/test_provider_openai_compat.py` — rewritten with mock instructor client
+- `tests/test_provider_ollama.py` — rewritten with mock instructor + httpx for pull
+- `tests/test_provider_openrouter.py` — updated (removed `_build_headers` test)
+- `tests/test_provider_grok.py` — updated (removed `_build_headers` test)
+- `tests/test_analyst.py` — added preparsed sections test, fixed `flatten_sections` import
+
+**Files NOT changed:**
+- `src/pfm/ai/providers/gemini.py` — stays on native `google-genai` SDK
+- `src/pfm/ai/providers/openrouter.py` — inherits changes from base class
+- `src/pfm/ai/providers/grok.py` — inherits changes from base class
+- `src/pfm/ai/prompts.py` — system prompt unchanged (still needed for Gemini)
+
+**Consequences:**
+- Providers return `CommentaryResult` with pre-populated `sections` — no manual JSON parsing needed
+- Pydantic validation catches malformed LLM output at the provider level with automatic retry
+- Manual parsing in `analyst.py` preserved as fallback for Gemini (and any future provider not using instructor)
+- Test count unchanged (42 AI tests); all pass with mypy and ruff clean
+- Future Gemini migration to instructor possible once `instructor.from_gemini()` supports `google.genai`
+
+---
+
+## ADR-021: Graceful WebSocket shutdown and AI commentary progress events
+
+**Date:** 2026-03-02
+
+**Status:** Accepted
+
+**Context:** Two related issues discovered during SwiftUI app integration:
+
+1. **Daemon can't stop while UI is connected** — stopping the daemon (SIGTERM via `launchctl unload` or `pfm server stop`) hung indefinitely when the SwiftUI app had an active WebSocket connection.
+
+2. **No visibility into AI commentary generation** — `POST /api/v1/ai/commentary` blocks for 10–120 seconds depending on the LLM provider. The UI had no way to show a loading state, detect concurrent requests, or know when generation completed.
+
+**Problem 1 — Shutdown deadlock:**
+- aiohttp's shutdown sequence: `on_shutdown` → wait `shutdown_timeout` for handlers → `on_cleanup`
+- `EventBroadcaster.close()` (which sends WebSocket close frames) was in `on_cleanup` — *after* the timeout wait
+- WebSocket handlers blocked in `async for msg in ws`, waiting for messages that would never come
+- The close signal that would unblock them was scheduled to run after they finished — circular deadlock
+- Default `shutdown_timeout` of 60 seconds made the hang feel permanent
+
+**Problem 2 — No commentary progress:**
+- `POST /api/v1/ai/commentary` was a synchronous request-response with no status signaling
+- No way for the UI to know generation was in progress (no app flag, no WebSocket event)
+- No guard against concurrent generation requests (two taps on "Generate" would run two LLM calls)
+
+**Decision:** Fix the shutdown sequence and add commentary progress events following the existing collection progress pattern.
+
+**Design choices:**
+
+*Graceful shutdown:*
+- **Move `broadcaster.close()` from `on_cleanup` to `on_shutdown`** — close frames are sent *before* the shutdown timeout, so WebSocket handlers receive the CLOSE message and exit naturally during the grace period
+- **`shutdown_timeout=5.0`** in `web.run_app()` (was aiohttp default of 60s) — server force-closes remaining connections after 5 seconds if a client doesn't acknowledge the close frame
+- **`heartbeat=30.0`** on `WebSocketResponse` — enables ping/pong to detect dead connections, preventing zombie WebSockets from blocking shutdown
+- **Per-connection 2s timeout** in `broadcaster.close()` — one stuck client can't block shutdown of other connections
+
+*Commentary progress:*
+- **`app["generating_commentary"]` flag** — mirrors the existing `app["collecting"]` pattern
+- **409 rejection** — `POST /api/v1/ai/commentary` returns `409 Conflict` if generation is already in progress, same as `POST /api/v1/collect`
+- **WebSocket events** — `commentary_started`, `commentary_completed`, `commentary_failed` broadcast to all connected clients, matching the collection event pattern (`collection_started`, `collection_completed`, `collection_failed`)
+- **Polling endpoint** — `GET /api/v1/ai/commentary/status` → `{"generating": true|false}`, mirrors `GET /api/v1/collect/status`
+
+**Files changed:**
+- `src/pfm/server/ws.py` — added `heartbeat=30.0`, per-connection close timeout, moved from `on_cleanup` to `on_shutdown`
+- `src/pfm/server/app.py` — added `on_shutdown` handler for broadcaster, initialized `generating_commentary` flag, removed broadcaster close from `on_cleanup`
+- `src/pfm/server/run.py` — set `shutdown_timeout=5.0`
+- `src/pfm/server/routes/ai.py` — added `GET /ai/commentary/status`, 409 guard, broadcast events around generation
+
+**Consequences:**
+- Daemon stops cleanly within ~5 seconds regardless of connected WebSocket clients
+- SwiftUI app receives real-time commentary progress via existing WebSocket connection
+- Concurrent generation requests are rejected with a clear error
+- UI can poll `GET /ai/commentary/status` as fallback if WebSocket reconnects mid-generation
+- No breaking changes — existing endpoints and event types unchanged
+
+---
+
+## ADR-022: Async AI commentary generation with background task
+
+**Date:** 2026-03-02
+
+**Status:** Accepted
+
+**Context:** `POST /api/v1/ai/commentary` ran the full LLM generation synchronously within the HTTP request handler. Depending on the provider and model, this took 30–150+ seconds. The SwiftUI app's `URLSession` timed out (`NSURLErrorDomain Code=-1001`) before the response arrived.
+
+**Problem:**
+- Ollama (llama3.1:8b) took ~52–148 seconds for commentary generation
+- OpenRouter latency varied widely depending on model and queue
+- iOS/macOS `URLSession` default timeout is 60 seconds
+- Extending the client timeout is fragile — any network hiccup during a 2-minute request causes a retry flood
+
+**Decision:** Convert `POST /api/v1/ai/commentary` to an async background task pattern, matching the existing `POST /api/v1/collect` design. The endpoint returns 202 immediately, and the UI receives results via WebSocket.
+
+**Design choices:**
+- **Same pattern as collection** — `asyncio.ensure_future(_run_commentary(app))` spawns a background coroutine, task reference stored in `app["_commentary_task"]` to prevent GC
+- **Validation before spawning** — snapshot existence check runs synchronously in the handler (fast DB query); only the slow LLM call runs in background
+- **Result in WebSocket event** — `commentary_completed` event includes `date`, `text`, `model`, `sections` so the UI can update immediately without a follow-up GET request
+- **Fallback read path** — `GET /api/v1/ai/commentary` reads cached result from DB, so the UI can also poll or read on reconnect
+- **`generating_commentary` flag in `finally:`** — always reset even if the background task crashes, preventing permanent 409 lockout
+- **No HTTP response body** — 202 returns `{"status": "started"}` only; all result data flows through WebSocket
+
+**API flow:**
+```
+1. UI sends POST /api/v1/ai/commentary → receives 202 {"status": "started"}
+2. UI receives WebSocket event: {"type": "commentary_started"}
+3. Background task runs LLM generation (30-150s)
+4. UI receives WebSocket event: {"type": "commentary_completed", "date": "...", "text": "...", ...}
+   OR: {"type": "commentary_failed", "error": "..."}
+5. On reconnect: GET /api/v1/ai/commentary reads cached result from DB
+```
+
+**Files changed:**
+- `src/pfm/server/routes/ai.py` — extracted `_run_commentary()` background task, handler returns 202
+
+**Consequences:**
+- No more client-side timeouts — HTTP round-trip completes in <50ms
+- UI shows loading state via `commentary_started` event, updates on `commentary_completed`
+- Background task failure is communicated via `commentary_failed` event (not a 500 response)
+- The 409 guard still prevents concurrent generation
+- Breaking change for API consumers expecting a synchronous response body — must switch to WebSocket or polling
+
+---
+
+## ADR-023: Ollama validation failures skip auto-pull
+
+**Date:** 2026-03-02
+
+**Status:** Accepted
+
+**Context:** The Ollama provider has an auto-pull mechanism: if `_call_chat()` returns an empty result, `generate_commentary()` assumes the model isn't installed, pulls it via `/api/pull`, and retries. This was designed for first-run scenarios where the user configures a model name but hasn't pulled it yet.
+
+**Problem:**
+- `llama3.1:8b` frequently generates malformed JSON — it places `description` content as a JSON key instead of `"description": "value"`. This is a known limitation of small local models with long structured output
+- All 3 instructor retry attempts fail with the same `ValidationError` (field `description` missing)
+- `_call_chat()` caught all exceptions uniformly and returned `CommentaryResult(text="")` — empty text
+- `generate_commentary()` interpreted empty text as "model not found" and triggered `/api/pull`
+- The pull was a no-op (model already installed), but the subsequent retry accidentally provided 3 more chances, sometimes succeeding by luck
+- False auto-pull added ~1 second of latency and misleading log messages (`"attempting model pull"`)
+
+**Decision:** Split exception handling in `_call_chat()` to distinguish API errors (model may not exist) from validation errors (model exists but generated bad output).
+
+**Design choices:**
+- **`APIError` → empty text** — signals potential model-not-found, allows auto-pull to proceed. Covers HTTP 404, connection refused, timeout
+- **`ValidationError | InstructorRetryException` → `FALLBACK_COMMENTARY`** — model responded but output was structurally invalid. Returns fallback text with `error="structured_output_failed"`. Non-empty text skips auto-pull in `generate_commentary()`
+- **No additional retries** — instructor already retried 3 times internally. A 4th round via auto-pull is unlikely to help for the same prompt. The fallback commentary is returned instead
+- **Consistent with `OpenAICompatibleProvider`** — the base class already returns `FALLBACK_COMMENTARY` on all failures. Ollama now matches this behavior for validation errors
+
+**Files changed:**
+- `src/pfm/ai/providers/ollama.py` — split `except` clause into `APIError` vs `ValidationError | InstructorRetryException`
+- `tests/test_provider_ollama.py` — added `test_ollama_validation_failure_skips_pull`
+
+**Consequences:**
+- Auto-pull only triggers on genuine API errors (model not found, connection refused)
+- Validation failures return fallback commentary immediately — no misleading pull attempt
+- Log messages accurately reflect the failure type (`"Ollama API error"` vs `"Ollama structured output validation failed"`)
+- Small models (llama3.1:8b) that struggle with JSON schema will return fallback instead of silently retrying via pull

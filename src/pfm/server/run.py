@@ -37,7 +37,7 @@ def run_server(
     write_pid_file()
     try:
         logger.info("Starting server on 127.0.0.1:%d (db=%s)", port, db_path)
-        web.run_app(app, host="127.0.0.1", port=port, print=None)
+        web.run_app(app, host="127.0.0.1", port=port, print=None, shutdown_timeout=5.0)
     finally:
         logger.info("Server stopped")
         remove_pid_file()

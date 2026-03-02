@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import json
 import logging
@@ -42,48 +43,79 @@ async def get_commentary(request: web.Request) -> web.Response:
     )
 
 
+@routes.get("/api/v1/ai/commentary/status")
+async def commentary_status(request: web.Request) -> web.Response:
+    """Return whether AI commentary generation is in progress."""
+    return web.json_response({"generating": request.app.get("generating_commentary", False)})
+
+
 @routes.post("/api/v1/ai/commentary")
 async def generate_commentary(request: web.Request) -> web.Response:
-    """Generate AI commentary from live-computed analytics and cache it."""
-    from pfm.ai import generate_commentary_with_model
-    from pfm.server.analytics_helper import build_analytics_summary
+    """Spawn background AI commentary generation. Returns 202 immediately."""
+    if request.app.get("generating_commentary"):
+        return web.json_response({"error": "Commentary generation already in progress"}, status=409)
 
     repo = request.app["repo"]
-    db_path = request.app["db_path"]
-
     latest = await repo.get_latest_snapshots()
     if not latest:
         return web.json_response({"error": "No snapshots available"}, status=404)
 
-    report_date = max(s.date for s in latest)
-    analytics = await build_analytics_summary(repo, report_date, db_path=db_path)
+    request.app["generating_commentary"] = True
+    task = asyncio.ensure_future(_run_commentary(request.app))
+    request.app["_commentary_task"] = task
 
-    result = await generate_commentary_with_model(analytics, db_path=db_path)
+    return web.json_response({"status": "started"}, status=202)
 
-    sections_dicts = [{"title": s.title, "description": s.description} for s in result.sections]
 
-    metric_payload: dict[str, Any] = {"text": result.text}
-    if result.model:
-        metric_payload["model"] = result.model
-    if sections_dicts:
-        metric_payload["sections"] = sections_dicts
+async def _run_commentary(app: web.Application) -> None:
+    """Background task: generate AI commentary, cache it, broadcast result."""
+    from pfm.ai import generate_commentary_with_model
+    from pfm.server.analytics_helper import build_analytics_summary
 
-    await repo.save_analytics_metric(
-        report_date,
-        "ai_commentary",
-        json.dumps(metric_payload),
-    )
+    repo = app["repo"]
+    db_path = app["db_path"]
+    broadcaster = app["broadcaster"]
 
-    response_data: dict[str, Any] = {
-        "date": report_date.isoformat(),
-        "text": result.text,
-        "model": result.model,
-        "sections": sections_dicts,
-    }
-    if result.error:
-        response_data["error"] = result.error
+    try:
+        await broadcaster.broadcast({"type": "commentary_started"})
 
-    return web.json_response(response_data)
+        latest = await repo.get_latest_snapshots()
+        report_date = max(s.date for s in latest)
+
+        analytics = await build_analytics_summary(repo, report_date, db_path=db_path)
+        result = await generate_commentary_with_model(analytics, db_path=db_path)
+
+        sections_dicts = [{"title": s.title, "description": s.description} for s in result.sections]
+
+        metric_payload: dict[str, Any] = {"text": result.text}
+        if result.model:
+            metric_payload["model"] = result.model
+        if sections_dicts:
+            metric_payload["sections"] = sections_dicts
+
+        await repo.save_analytics_metric(
+            report_date,
+            "ai_commentary",
+            json.dumps(metric_payload),
+        )
+
+        event: dict[str, Any] = {
+            "type": "commentary_completed",
+            "date": report_date.isoformat(),
+            "text": result.text,
+            "model": result.model,
+            "sections": sections_dicts,
+        }
+        if result.error:
+            event["error"] = result.error
+
+        await broadcaster.broadcast(event)
+
+    except Exception as exc:
+        logger.exception("AI commentary generation failed")
+        await broadcaster.broadcast({"type": "commentary_failed", "error": str(exc)})
+    finally:
+        app["generating_commentary"] = False
 
 
 # ── Legacy single-provider endpoints (backward compat) ──────────────

@@ -1,29 +1,15 @@
-"""Tests for OpenAI-compatible base provider."""
+"""Tests for OpenAI-compatible base provider using instructor."""
 
 from __future__ import annotations
 
-import json
-from dataclasses import dataclass, field
+from unittest.mock import AsyncMock, MagicMock
 
-import httpx
+from instructor.core import InstructorRetryException
+from openai import APIError
 
+from pfm.ai.base import FALLBACK_COMMENTARY
 from pfm.ai.providers.openai_compat import OpenAICompatibleProvider
-
-
-@dataclass
-class _FakeTransport(httpx.AsyncBaseTransport):
-    responses: list[httpx.Response] = field(default_factory=list)
-    requests: list[httpx.Request] = field(default_factory=list)
-
-    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        self.requests.append(request)
-        if self.responses:
-            resp = self.responses.pop(0)
-            resp.request = request
-            resp.stream = httpx.ByteStream(resp.content)
-            return resp
-        body = {"choices": [{"message": {"content": "test response"}}]}
-        return httpx.Response(200, json=body, request=request)
+from pfm.ai.schemas import CommentaryResponse, ReportSection
 
 
 class _TestProvider(OpenAICompatibleProvider):
@@ -32,91 +18,81 @@ class _TestProvider(OpenAICompatibleProvider):
     default_base_url = "http://localhost:9999"
 
 
+def _mock_client(response=None, side_effect=None):
+    """Create a mock instructor client."""
+    client = MagicMock()
+    create = AsyncMock(return_value=response, side_effect=side_effect)
+    client.chat.completions.create = create
+    return client
+
+
 async def test_generate_commentary_success():
-    transport = _FakeTransport()
-    client = httpx.AsyncClient(transport=transport)
+    response = CommentaryResponse(
+        sections=[
+            ReportSection(title="Market Context", description="BTC at **$95k**."),
+            ReportSection(title="Risk Alerts", description="High HHI."),
+        ]
+    )
+    client = _mock_client(response=response)
     provider = _TestProvider(client=client)
 
     result = await provider.generate_commentary("system", "user prompt")
 
-    assert result.text == "test response"
     assert result.model == "test-model"
-    assert len(transport.requests) == 1
+    assert len(result.sections) == 2
+    assert result.sections[0].title == "Market Context"
+    assert "BTC at **$95k**." in result.text
 
-    body = json.loads(transport.requests[0].content)
-    assert body["model"] == "test-model"
-    assert body["messages"][0]["role"] == "system"
-    assert body["messages"][1]["role"] == "user"
-    await provider.close()
-
-
-async def test_generate_commentary_with_api_key():
-    transport = _FakeTransport()
-    client = httpx.AsyncClient(transport=transport)
-    provider = _TestProvider(api_key="my-secret", client=client)
-
-    await provider.generate_commentary("sys", "usr")
-
-    auth = transport.requests[0].headers.get("authorization")
-    assert auth == "Bearer my-secret"
-    await provider.close()
+    call_kwargs = client.chat.completions.create.call_args
+    assert call_kwargs.kwargs["model"] == "test-model"
+    assert call_kwargs.kwargs["response_model"] is CommentaryResponse
 
 
-async def test_generate_commentary_empty_choices():
-    transport = _FakeTransport(responses=[httpx.Response(200, json={"choices": []})])
-    client = httpx.AsyncClient(transport=transport)
+async def test_generate_commentary_error_returns_fallback():
+    err = APIError(message="API timeout", request=MagicMock(), body=None)
+    client = _mock_client(side_effect=err)
     provider = _TestProvider(client=client)
 
     result = await provider.generate_commentary("sys", "usr")
 
-    assert result.text == ""
-    await provider.close()
-
-
-async def test_generate_commentary_custom_model_and_url():
-    transport = _FakeTransport()
-    client = httpx.AsyncClient(transport=transport)
-    provider = _TestProvider(model="custom-model", base_url="http://custom:8080", client=client)
-
-    await provider.generate_commentary("sys", "usr")
-
-    url = str(transport.requests[0].url)
-    assert "custom:8080" in url
-    body = json.loads(transport.requests[0].content)
-    assert body["model"] == "custom-model"
-    await provider.close()
-
-
-async def test_generate_commentary_http_error_returns_fallback():
-    transport = _FakeTransport(responses=[httpx.Response(402, text="Payment Required")])
-    client = httpx.AsyncClient(transport=transport)
-    provider = _TestProvider(client=client)
-
-    result = await provider.generate_commentary("sys", "usr")
-
-    assert "unavailable" in result.text
+    assert result.text == FALLBACK_COMMENTARY
     assert result.model is None
-    await provider.close()
+    assert result.error is not None
 
 
-async def test_generate_commentary_network_error_returns_fallback():
-    transport = _FakeTransport(responses=[httpx.Response(500, text="Internal Server Error")])
-    client = httpx.AsyncClient(transport=transport)
+async def test_generate_commentary_custom_model():
+    response = CommentaryResponse(sections=[ReportSection(title="Summary", description="OK.")])
+    client = _mock_client(response=response)
+    provider = _TestProvider(model="custom-model", client=client)
+
+    result = await provider.generate_commentary("sys", "usr")
+
+    assert result.model == "custom-model"
+    call_kwargs = client.chat.completions.create.call_args
+    assert call_kwargs.kwargs["model"] == "custom-model"
+
+
+async def test_generate_commentary_retry_exhausted_returns_fallback():
+    err = InstructorRetryException(
+        n_attempts=3,
+        total_usage=0,
+        messages=[],
+        last_completion=None,
+    )
+    client = _mock_client(side_effect=err)
     provider = _TestProvider(client=client)
 
     result = await provider.generate_commentary("sys", "usr")
 
-    assert "unavailable" in result.text
+    assert result.text == FALLBACK_COMMENTARY
     assert result.model is None
-    await provider.close()
+    assert result.error is not None
 
 
-async def test_close_does_not_close_external_client():
-    transport = _FakeTransport()
-    client = httpx.AsyncClient(transport=transport)
+async def test_close_does_not_close_injected_client():
+    client = _mock_client()
     provider = _TestProvider(client=client)
 
     await provider.close()
-    # Client should still be usable since we didn't own it
-    assert not client.is_closed
-    await client.aclose()
+    # Injected client should not be closed (owns_client is False)
+    assert not hasattr(client, "close") or not getattr(client.close, "called", False)

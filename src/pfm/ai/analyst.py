@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pfm.ai.base import FALLBACK_COMMENTARY, CommentaryResult, CommentarySection, ProviderName
+from pfm.ai.base import FALLBACK_COMMENTARY, CommentaryResult, CommentarySection, ProviderName, flatten_sections
 from pfm.ai.prompts import WEEKLY_REPORT_SYSTEM_PROMPT, render_weekly_report_user_prompt
 from pfm.ai.providers.registry import PROVIDER_REGISTRY
 from pfm.config import get_settings
@@ -56,11 +56,14 @@ async def generate_commentary_with_model(
     finally:
         await provider.close()
 
+    if result.sections:
+        return result  # Pre-parsed by instructor — skip manual parsing
+
     if result.text and result.text != FALLBACK_COMMENTARY:
         finalized = _finalize_commentary_text(result.text)
         sections = _parse_sections(finalized)
         if sections:
-            flat_text = _flatten_sections(sections)
+            flat_text = flatten_sections(sections)
             return CommentaryResult(text=flat_text, model=result.model, sections=sections, error=result.error)
         return CommentaryResult(text=finalized, model=result.model, error=result.error)
 
@@ -237,13 +240,3 @@ def _parse_sections(text: str) -> tuple[CommentarySection, ...]:
             sections.append(CommentarySection(title=title, description=description))
 
     return tuple(sections)
-
-
-def _flatten_sections(sections: tuple[CommentarySection, ...]) -> str:
-    """Convert structured sections into plain text for Telegram."""
-    parts: list[str] = []
-    for section in sections:
-        parts.append(section.title)
-        parts.append(section.description)
-        parts.append("")
-    return "\n".join(parts).strip()
