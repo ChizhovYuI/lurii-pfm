@@ -689,3 +689,27 @@ This updates only `model` for Gemini; `api_key`, `base_url`, and `active` are pr
 - Telegram delivery continues to work via flattened `text` field (no breaking change)
 - If the LLM returns non-JSON output (e.g. plain text), the system falls back gracefully — `sections` will be empty and `text` contains the raw output
 - Cached commentary in `analytics_metrics` includes `sections` for future reads without re-generation
+
+---
+
+## ADR-019: Pass `db_path` to `send_report` in report notify endpoint
+
+**Date:** 2026-03-02
+
+**Status:** Accepted
+
+**Context:** `POST /api/v1/report/notify` calls `send_report(report_payload)` without passing `db_path`. Inside `send_report`, `resolve_telegram_credentials` falls back to `settings.database_path` which defaults to the relative path `data/pfm.db`.
+
+**Problem:**
+- When the daemon runs via launchd (Homebrew install), its working directory is not the project root
+- `data/pfm.db` resolves to a non-existent path, causing `sqlite3.OperationalError: unable to open database file`
+- The report endpoint always fails with 500 in the daemon, even though `is_telegram_configured` (which does pass `db_path`) succeeds
+
+**Decision:** Pass `db_path=db_path` to `send_report()` in the report notify endpoint, consistent with all other DB-accessing calls in the same handler.
+
+**Files changed:**
+- `src/pfm/server/routes/report.py` — added `db_path=db_path` to `send_report()` call (line 41)
+
+**Consequences:**
+- Report notify endpoint works correctly when daemon runs from any working directory
+- Consistent with how `is_telegram_configured` and `build_analytics_summary` already receive `db_path` in the same handler

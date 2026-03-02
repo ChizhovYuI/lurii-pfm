@@ -38,7 +38,7 @@ async def send_report_notify(request: web.Request) -> web.Response:
         commentary = "AI commentary is not cached. Run 'pfm comment' to generate."
 
     report_payload = format_weekly_report(analytics, commentary)
-    sent = await send_report(report_payload)
+    sent = await send_report(report_payload, db_path=db_path)
 
     if sent:
         return web.json_response({"sent": True})
