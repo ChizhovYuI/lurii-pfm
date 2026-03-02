@@ -5,9 +5,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
+
+if TYPE_CHECKING:
+    from pfm.db.models import Source
+    from pfm.db.repository import Repository
+    from pfm.db.source_store import SourceStore
 
 from pfm.server.serializers import collector_result_to_dict
 
@@ -77,6 +82,9 @@ async def _run_collection(app: web.Application, source_name: str | None) -> None
         else:
             sources = await store.list_enabled()
 
+        if not source_name:
+            await _cleanup_disabled_snapshots(store, repo, sources)
+
         if not sources:
             await broadcaster.broadcast(
                 {
@@ -145,6 +153,21 @@ async def _run_collection(app: web.Application, source_name: str | None) -> None
         )
     finally:
         app["collecting"] = False
+
+
+async def _cleanup_disabled_snapshots(
+    store: SourceStore,
+    repo: Repository,
+    enabled_sources: list[Source],
+) -> None:
+    """Delete snapshots belonging to disabled (or removed) sources."""
+    all_sources = await store.list_all()
+    enabled_names = {s.name for s in enabled_sources}
+    disabled_names = [s.name for s in all_sources if s.name not in enabled_names]
+    if disabled_names:
+        deleted = await repo.delete_snapshots_by_source_names(disabled_names)
+        if deleted:
+            logger.info("Deleted %d snapshots for disabled sources: %s", deleted, disabled_names)
 
 
 async def _run_analyze(repo: object) -> None:

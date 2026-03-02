@@ -160,6 +160,18 @@ class Repository:
             raw_json=row["raw_json"],
         )
 
+    async def delete_snapshots_by_source_names(self, source_names: list[str]) -> int:
+        """Delete all snapshots for the given source_names. Returns count deleted."""
+        if not source_names:
+            return 0
+        placeholders = ",".join("?" for _ in source_names)
+        cursor = await self._db.execute(
+            f"DELETE FROM snapshots WHERE source_name IN ({placeholders})",  # noqa: S608
+            source_names,
+        )
+        await self._db.commit()
+        return cursor.rowcount
+
     # ── Transactions ──────────────────────────────────────────────────
 
     _TX_INSERT_SQL = (
