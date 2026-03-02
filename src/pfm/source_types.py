@@ -154,6 +154,19 @@ SOURCE_TYPES: dict[str, list[CredentialField]] = {
         ),
         CredentialField("flex_query_id", "Flex Query ID", secret=False),
     ],
+    "rabby": [
+        CredentialField(
+            "wallet_address",
+            "Wallet address (0x...)",
+            secret=False,
+            tip=(
+                "1. Open Rabby and copy your main wallet address (0x...)\n"
+                "2. Create a DeBank Cloud access key at cloud.debank.com\n"
+                "3. Keep key read-only and private"
+            ),
+        ),
+        CredentialField("access_key", "DeBank AccessKey"),
+    ],
     "revolut": [
         CredentialField(
             "secret_id",
@@ -169,6 +182,20 @@ SOURCE_TYPES: dict[str, list[CredentialField]] = {
         ),
         CredentialField("secret_key", "GoCardless Secret Key"),
         CredentialField("requisition_id", "GoCardless Requisition ID", secret=False),
+    ],
+    "yo": [
+        CredentialField(
+            "network",
+            "Network (e.g. base, ethereum, arbitrum)",
+            secret=False,
+            tip=(
+                "1. Open app.yo.xyz and select your vault\n"
+                "2. Copy network and vault contract address\n"
+                "3. Use your wallet address as user address"
+            ),
+        ),
+        CredentialField("vault_address", "Vault contract address (0x...)", secret=False),
+        CredentialField("user_address", "Wallet address (0x...)", secret=False),
     ],
 }
 

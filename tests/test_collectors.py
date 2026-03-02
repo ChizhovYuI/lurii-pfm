@@ -1520,3 +1520,6 @@ def test_collector_registry_populated():
     assert "ibkr" in COLLECTOR_REGISTRY
     assert "blend" in COLLECTOR_REGISTRY
     assert "kbank" in COLLECTOR_REGISTRY
+    assert "rabby" in COLLECTOR_REGISTRY
+    assert "revolut" in COLLECTOR_REGISTRY
+    assert "yo" in COLLECTOR_REGISTRY

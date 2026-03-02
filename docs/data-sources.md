@@ -18,6 +18,8 @@ Overview of all financial data sources, recommended integration method, and acce
 | 8 | KBank | Thai bank | THB | PDF parsing (Gmail IMAP auto-fetch) |
 | 9 | IBKR | Broker (stocks/ETFs) | USD | Flex Query (automated) |
 | 10 | Revolut | Multi-currency neobank | EUR, GBP, USD + others | GoCardless open banking API |
+| 11 | Rabby Wallet | EVM wallet | ETH, stablecoins, ERC-20 tokens | DeBank OpenAPI (`all_token_list`) |
+| 12 | yo.xyz | DeFi vault | Vault shares + underlying assets | yo.xyz REST API (`/vault`, `/history`) |
 
 ## Money Flow
 
@@ -496,6 +498,53 @@ Revolut app → Transactions → Export (CSV). Manual monthly export.
 
 ---
 
+## 11. Rabby Wallet
+
+**Method:** DeBank OpenAPI (wallet aggregation across EVM chains)
+
+### Endpoints
+
+Base URL: `https://pro-openapi.debank.com`
+
+| Purpose | Endpoint |
+|---------|----------|
+| Token balances | `GET /v1/user/all_token_list?id={wallet}` |
+| Transaction history | `GET /v1/user/all_history_list?id={wallet}` |
+
+Auth: `AccessKey` header (get key from DeBank Cloud).
+
+### Setup
+
+1. Copy wallet address from Rabby (`0x...`)
+2. Create access key at [cloud.debank.com](https://cloud.debank.com/)
+3. Add to pfm: `pfm source add` → select `rabby` → enter wallet address and access key
+4. API docs: [docs.cloud.debank.com](https://docs.cloud.debank.com/en/readme/open-api)
+
+---
+
+## 12. yo.xyz
+
+**Method:** yo.xyz REST API for vault snapshots and per-user history
+
+### Endpoints
+
+Base URL: `https://api.yo.xyz`
+
+| Purpose | Endpoint |
+|---------|----------|
+| Vault snapshot | `GET /api/v1/vault/{network}/{vaultAddress}` |
+| User vault history | `GET /api/v1/history/user/{network}/{vaultAddress}/{userAddress}` |
+
+### Setup
+
+1. Open [app.yo.xyz](https://app.yo.xyz/)
+2. Copy vault network and vault contract address
+3. Use your wallet address as `user_address`
+4. Add to pfm: `pfm source add` → select `yo` → enter network, vault address, and user address
+5. API docs: [docs.yo.xyz](https://docs.yo.xyz/)
+
+---
+
 ## Summary: Integration Complexity
 
 | Source | Complexity | Auth | Real-time? |
@@ -510,6 +559,8 @@ Revolut app → Transactions → Export (CSV). Manual monthly export.
 | KBank | Medium | Gmail App Password | No (batch) |
 | IBKR | Medium | Flex token | No (EOD) |
 | Revolut | Low | GoCardless secret | Yes (4x/day auto-sync) |
+| Rabby Wallet | Low | DeBank AccessKey | Yes |
+| yo.xyz | Medium | Wallet + vault params | Yes |
 
 ### Recommended Implementation Order
 
@@ -519,4 +570,6 @@ Revolut app → Transactions → Export (CSV). Manual monthly export.
 4. **Binance TH** — similar to Binance but needs testing
 5. **IBKR** — Flex Query setup, cron-based
 6. **Blend** — Soroban contract calls, most complex
-7. **KBank** — PDF parsing, least automatable
+7. **Rabby** — DeBank wallet aggregation
+8. **yo.xyz** — vault-specific DeFi position tracking
+9. **KBank** — PDF parsing, least automatable

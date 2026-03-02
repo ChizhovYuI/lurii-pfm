@@ -29,10 +29,10 @@ _FIAT_ASSETS: frozenset[str] = frozenset(
         "HKD",
     }
 )
-_CRYPTO_SOURCES: frozenset[str] = frozenset({"okx", "binance", "binance_th", "bybit", "lobstr"})
+_CRYPTO_SOURCES: frozenset[str] = frozenset({"okx", "binance", "binance_th", "bybit", "lobstr", "rabby"})
 _FIAT_SOURCES: frozenset[str] = frozenset({"wise", "kbank"})
 _STOCK_SOURCES: frozenset[str] = frozenset({"ibkr"})
-_DEFI_SOURCES: frozenset[str] = frozenset({"blend"})
+_DEFI_SOURCES: frozenset[str] = frozenset({"blend", "yo"})
 
 
 @dataclass(frozen=True, slots=True)

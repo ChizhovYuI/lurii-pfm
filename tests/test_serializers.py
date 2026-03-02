@@ -128,6 +128,12 @@ class TestAssetTypeForSnapshot:
     def test_crypto(self):
         assert asset_type_for_snapshot("okx", "BTC") == "crypto"
 
+    def test_crypto_rabby(self):
+        assert asset_type_for_snapshot("rabby", "ETH") == "crypto"
+
+    def test_defi_yo(self):
+        assert asset_type_for_snapshot("yo", "YOETH") == "defi"
+
     def test_fiat_asset(self):
         assert asset_type_for_snapshot("unknown", "USD") == "fiat"
 
