@@ -71,7 +71,13 @@ def remove_pid_file() -> None:
 
 
 def _find_pfm_executable() -> str:
-    """Locate the pfm executable for the launchd plist."""
+    """Locate the pfm executable for the launchd plist.
+
+    Prefer the stable Homebrew symlink so the plist survives version upgrades.
+    """
+    brew_pfm = Path("/opt/homebrew/bin/pfm")
+    if brew_pfm.exists():
+        return str(brew_pfm)
     pfm_path = shutil.which("pfm")
     if pfm_path:
         return pfm_path
