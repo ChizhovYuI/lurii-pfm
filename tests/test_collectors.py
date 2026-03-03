@@ -461,7 +461,6 @@ async def test_mexc_fetch_earn_with_apy(pricing):
                     }
                 ]
             )
-        # Other fallback earn paths should not be needed once first returns data.
         return _mock_response([])
 
     collector._client.get = mock_get  # type: ignore[assignment]

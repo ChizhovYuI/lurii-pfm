@@ -135,6 +135,9 @@ class TestAssetTypeForSnapshot:
     def test_crypto_mexc(self):
         assert asset_type_for_snapshot("mexc", "BTC") == "crypto"
 
+    def test_crypto_mexc_earn(self):
+        assert asset_type_for_snapshot("mexc_earn", "BTC") == "crypto"
+
     def test_defi_yo(self):
         assert asset_type_for_snapshot("yo", "YOETH") == "defi"
 

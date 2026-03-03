@@ -27,12 +27,7 @@ _SPOT_BASE_URL = "https://api.mexc.com"
 _CONTRACT_BASE_URL = "https://contract.mexc.com"
 _CONTRACT_ASSETS_PATH = "/api/v1/private/account/assets"
 _RATE_LIMITER = RateLimiter(requests_per_minute=600.0)
-_EARN_POSITION_PATHS: tuple[str, ...] = (
-    "/api/v3/asset/earn/position",
-    "/api/v3/earn/position",
-    "/api/v3/savings/position",
-    "/api/v3/staking/position",
-)
+_EARN_POSITION_PATH = "/api/v3/asset/earn/position"
 
 
 @register_collector
@@ -197,38 +192,46 @@ class MexcCollector(BaseCollector):
         return snapshots
 
     async def _fetch_earn(self, today: date) -> list[Snapshot]:
+        rows = await self._fetch_earn_rows(_EARN_POSITION_PATH)
+        if not rows:
+            return []
+
+        snapshots = await self._build_earn_snapshots(today, rows, {"path": _EARN_POSITION_PATH})
+        if snapshots:
+            logger.info("MEXC: found %d earn positions via %s", len(snapshots), _EARN_POSITION_PATH)
+        return snapshots
+
+    async def _build_earn_snapshots(
+        self,
+        today: date,
+        rows: list[dict[str, Any]],
+        meta: dict[str, Any],
+    ) -> list[Snapshot]:
         snapshots: list[Snapshot] = []
-        for path in _EARN_POSITION_PATHS:
-            rows = await self._fetch_earn_rows(path)
-            if not rows:
+        for row in rows:
+            parsed = self._parse_earn_row(row)
+            if parsed is None:
                 continue
-            for row in rows:
-                parsed = self._parse_earn_row(row)
-                if parsed is None:
-                    continue
-                symbol, amount, apy = parsed
+            symbol, amount, apy = parsed
 
-                try:
-                    price = await self._pricing.get_price_usd(symbol)
-                except ValueError:
-                    logger.warning("MEXC: cannot price earn asset %s, skipping", symbol)
-                    continue
+            try:
+                price = await self._pricing.get_price_usd(symbol)
+            except ValueError:
+                logger.warning("MEXC: cannot price earn asset %s, skipping", symbol)
+                continue
 
-                snapshots.append(
-                    Snapshot(
-                        date=today,
-                        source=self.source_name,
-                        asset=symbol,
-                        amount=amount,
-                        usd_value=amount * price,
-                        price=price,
-                        apy=apy,
-                        raw_json=json.dumps({"path": path, "row": row}),
-                    )
+            snapshots.append(
+                Snapshot(
+                    date=today,
+                    source=self.source_name,
+                    asset=symbol,
+                    amount=amount,
+                    usd_value=amount * price,
+                    price=price,
+                    apy=apy,
+                    raw_json=json.dumps({**meta, "row": row}),
                 )
-            if snapshots:
-                logger.info("MEXC: found %d earn positions via %s", len(snapshots), path)
-                return snapshots
+            )
         return snapshots
 
     async def _fetch_earn_rows(self, path: str) -> list[dict[str, Any]]:
@@ -237,19 +240,23 @@ class MexcCollector(BaseCollector):
         except (httpx.HTTPStatusError, json.JSONDecodeError, ValueError):
             return []
 
-        rows = _as_dict_rows(data)
-        if rows:
-            return rows
-        if isinstance(data, dict):
-            for key in ("data", "rows", "result", "list", "positions"):
-                rows = _as_dict_rows(data.get(key))
-                if rows:
-                    return rows
-        return []
+        return _rows_from_payload(data)
 
     @staticmethod
     def _parse_earn_row(row: dict[str, Any]) -> tuple[str, Decimal, Decimal] | None:
-        symbol = str(row.get("coin", row.get("asset", row.get("symbol", "")))).upper().strip()
+        symbol = (
+            str(
+                row.get(
+                    "coin",
+                    row.get(
+                        "asset",
+                        row.get("symbol", row.get("pledgeCurrency", row.get("profitCurrency", ""))),
+                    ),
+                )
+            )
+            .upper()
+            .strip()
+        )
         if not symbol:
             return None
 
@@ -258,7 +265,13 @@ class MexcCollector(BaseCollector):
                 "amount",
                 row.get(
                     "holdAmount",
-                    row.get("positionAmount", row.get("principal", row.get("investAmount", "0"))),
+                    row.get(
+                        "positionAmount",
+                        row.get(
+                            "positionQuantity",
+                            row.get("principal", row.get("investAmount", "0")),
+                        ),
+                    ),
                 ),
             )
         )
@@ -272,7 +285,13 @@ class MexcCollector(BaseCollector):
                     "apr",
                     row.get(
                         "interestRate",
-                        row.get("annualRate", row.get("rate", row.get("estimateApr", "0"))),
+                        row.get(
+                            "annualRate",
+                            row.get(
+                                "showApr",
+                                row.get("rate", row.get("estimateApr", "0")),
+                            ),
+                        ),
                     ),
                 ),
             )
@@ -379,6 +398,27 @@ def _as_dict_rows(value: object) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
     return [row for row in value if isinstance(row, dict)]
+
+
+def _rows_from_payload(value: object) -> list[dict[str, Any]]:
+    rows = _as_dict_rows(value)
+    if rows:
+        return rows
+    if not isinstance(value, dict):
+        return []
+
+    for key in ("data", "rows", "result", "list", "positions"):
+        rows = _as_dict_rows(value.get(key))
+        if rows:
+            return rows
+
+    nested = value.get("data")
+    if isinstance(nested, dict):
+        for key in ("rows", "result", "list", "positions"):
+            rows = _as_dict_rows(nested.get(key))
+            if rows:
+                return rows
+    return []
 
 
 def _to_decimal(value: object) -> Decimal:

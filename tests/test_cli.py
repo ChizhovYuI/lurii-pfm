@@ -113,9 +113,9 @@ def test_source_list_with_sources(runner, store):
 
 @pytest.mark.usefixtures("_patched_settings")
 def test_source_add_wizard(runner, store):
-    # Simulate wizard: pick type 13 (wise), name "wise-main", token "my-token"
-    # Type list is sorted, so wise is at position 13
-    input_text = "13\nwise-main\nmy-token\n"
+    # Simulate wizard: pick type 14 (wise), name "wise-main", token "my-token"
+    # Type list is sorted, so wise is at position 14
+    input_text = "14\nwise-main\nmy-token\n"
     result = runner.invoke(cli, ["source", "add"], input=input_text)
     assert result.exit_code == 0
     assert "added successfully" in result.output
@@ -127,7 +127,7 @@ def test_source_add_wizard(runner, store):
 @pytest.mark.usefixtures("_patched_settings")
 def test_source_add_duplicate(runner, store):
     asyncio.run(store.add("wise-main", "wise", {"api_token": "t"}))
-    input_text = "13\nwise-main\nmy-token\n"
+    input_text = "14\nwise-main\nmy-token\n"
     result = runner.invoke(cli, ["source", "add"], input=input_text)
     assert result.exit_code == 1
     assert "already exists" in result.output
@@ -137,7 +137,7 @@ def test_source_add_duplicate(runner, store):
 def test_source_add_with_defaults(runner, store):
     # Blend has optional soroban_rpc_url with a default.
     # Sorted types: binance=1, binance_th=2, bitget_wallet=3, blend=4,
-    # bybit=5, ibkr=6, kbank=7, lobstr=8, mexc=9, okx=10, rabby=11, revolut=12, wise=13, yo=14.
+    # bybit=5, ibkr=6, kbank=7, lobstr=8, mexc=9, mexc_earn=10, okx=11, rabby=12, revolut=13, wise=14, yo=15.
     # blend is index 4: address, contract_id, rpc_url (has default)
     input_text = "4\nblend-main\nGABC123\nCABC456\n\n"  # empty = accept default
     result = runner.invoke(cli, ["source", "add"], input=input_text)
