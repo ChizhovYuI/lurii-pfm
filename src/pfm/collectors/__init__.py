@@ -20,6 +20,7 @@ def register_collector(cls: type[BaseCollector]) -> type[BaseCollector]:
 from pfm.collectors import (  # noqa: E402
     binance,
     binance_th,
+    bitget_wallet,
     blend,
     bybit,
     ibkr,
@@ -37,6 +38,7 @@ __all__ = [
     "BaseCollector",
     "binance",
     "binance_th",
+    "bitget_wallet",
     "blend",
     "bybit",
     "ibkr",

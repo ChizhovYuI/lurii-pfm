@@ -135,6 +135,9 @@ class TestAssetTypeForSnapshot:
     def test_defi_yo(self):
         assert asset_type_for_snapshot("yo", "YOETH") == "defi"
 
+    def test_defi_bitget_wallet(self):
+        assert asset_type_for_snapshot("bitget_wallet", "USDC") == "defi"
+
     def test_fiat_asset(self):
         assert asset_type_for_snapshot("unknown", "USD") == "fiat"
 

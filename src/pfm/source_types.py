@@ -73,6 +73,81 @@ SOURCE_TYPES: dict[str, list[CredentialField]] = {
         ),
         CredentialField("api_secret", "API Secret"),
     ],
+    "bitget_wallet": [
+        CredentialField(
+            "wallet_address",
+            "Wallet address (0x...)",
+            secret=False,
+            tip=(
+                "1. Open Bitget Wallet and copy your EVM address (0x...)\n"
+                "2. Stablecoin Earn Plus on Base maps to an Aave V3 position\n"
+                "3. Keep defaults unless you use custom contracts/RPC"
+            ),
+        ),
+        CredentialField(
+            "bonus_apy",
+            "Bonus APY (decimal or %)",
+            required=False,
+            default="18.8",
+            secret=False,
+        ),
+        CredentialField(
+            "base_apy_override",
+            "Base APY override (optional)",
+            required=False,
+            default="10",
+            secret=False,
+        ),
+        CredentialField(
+            "rpc_url",
+            "Base RPC URL",
+            required=False,
+            default="https://base-rpc.publicnode.com",
+            secret=False,
+        ),
+        CredentialField(
+            "asset_symbol",
+            "Asset symbol",
+            required=False,
+            default="USDC",
+            secret=False,
+        ),
+        CredentialField(
+            "underlying_token_address",
+            "Underlying token address",
+            required=False,
+            default="0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            secret=False,
+        ),
+        CredentialField(
+            "a_token_address",
+            "Aave aToken address",
+            required=False,
+            default="0x4e65fE4DbA92790696d040ac24Aa414708F5c0AB",
+            secret=False,
+        ),
+        CredentialField(
+            "pool_data_provider_address",
+            "Aave pool data provider",
+            required=False,
+            default="0x0F43731EB8d45A581f4a36DD74F5f358bc90C73A",
+            secret=False,
+        ),
+        CredentialField(
+            "token_decimals",
+            "Token decimals",
+            required=False,
+            default="6",
+            secret=False,
+        ),
+        CredentialField(
+            "lookback_blocks",
+            "Transaction lookback blocks",
+            required=False,
+            default="200000",
+            secret=False,
+        ),
+    ],
     "lobstr": [
         CredentialField(
             "stellar_address",

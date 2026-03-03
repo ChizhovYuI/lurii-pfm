@@ -1562,5 +1562,6 @@ def test_collector_registry_populated():
     assert "blend" in COLLECTOR_REGISTRY
     assert "kbank" in COLLECTOR_REGISTRY
     assert "rabby" in COLLECTOR_REGISTRY
+    assert "bitget_wallet" in COLLECTOR_REGISTRY
     assert "revolut" in COLLECTOR_REGISTRY
     assert "yo" in COLLECTOR_REGISTRY

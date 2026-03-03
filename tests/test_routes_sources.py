@@ -41,12 +41,13 @@ async def test_list_source_types(client):
     assert resp.status == 200
     data = await resp.json()
     # Should return all configured source types
-    assert len(data) == 12
+    assert len(data) == 13
     expected_types = {
         "okx",
         "binance",
         "binance_th",
         "bybit",
+        "bitget_wallet",
         "lobstr",
         "blend",
         "wise",
