@@ -73,6 +73,19 @@ SOURCE_TYPES: dict[str, list[CredentialField]] = {
         ),
         CredentialField("api_secret", "API Secret"),
     ],
+    "mexc": [
+        CredentialField(
+            "api_key",
+            "API Key",
+            tip=(
+                "1. Log in to mexc.com\n"
+                "2. Open API Management\n"
+                "3. Create API key with Read-only permissions\n"
+                "4. Copy API Key and Secret"
+            ),
+        ),
+        CredentialField("api_secret", "API Secret"),
+    ],
     "bitget_wallet": [
         CredentialField(
             "wallet_address",

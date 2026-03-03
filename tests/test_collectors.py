@@ -21,6 +21,7 @@ from pfm.collectors.bybit import BybitCollector
 from pfm.collectors.ibkr import IbkrCollector
 from pfm.collectors.kbank import KbankCollector
 from pfm.collectors.lobstr import LobstrCollector
+from pfm.collectors.mexc import MexcCollector
 from pfm.collectors.okx import OkxCollector
 from pfm.collectors.wise import WiseCollector
 from pfm.db.models import Snapshot, Transaction, TransactionType
@@ -341,6 +342,137 @@ async def test_binance_th_transactions_404_on_all_paths_is_clean_skip(pricing, c
     assert txs == []
     assert "endpoint is unavailable (404) on known paths, skipping." in caplog.text
     assert "Client error '404 Not Found'" not in caplog.text
+
+
+# ── MEXC ──────────────────────────────────────────────────────────────
+
+
+async def test_mexc_fetch_balances(pricing):
+    collector = MexcCollector(pricing, api_key="key", api_secret="secret")
+    collector._get_openapi = AsyncMock(return_value={"success": True, "data": []})  # type: ignore[method-assign]
+    account_resp = _mock_response(
+        {
+            "balances": [
+                {"asset": "BTC", "free": "0.1", "locked": "0.2"},
+                {"asset": "USDC", "free": "500", "locked": "0"},
+                {"asset": "DOGE", "free": "0", "locked": "0"},
+            ]
+        }
+    )
+    collector._client.get = AsyncMock(return_value=account_resp)
+
+    snapshots = await collector.fetch_balances()
+    assert len(snapshots) == 2
+    btc = next(s for s in snapshots if s.asset == "BTC")
+    assert btc.amount == Decimal("0.3")
+
+
+async def test_mexc_fetch_transactions(pricing):
+    collector = MexcCollector(pricing, api_key="key", api_secret="secret")
+    deposit_resp = _mock_response(
+        [
+            {
+                "coin": "USDC",
+                "amount": "100",
+                "insertTime": 1705276800000,
+                "txId": "dep-1",
+            }
+        ]
+    )
+    withdrawal_resp = _mock_response(
+        [
+            {
+                "coin": "USDC",
+                "amount": "50",
+                "applyTime": "2024-01-15T00:00:00+00:00",
+                "id": "wd-1",
+            }
+        ]
+    )
+
+    async def mock_get(path, **kwargs):
+        if "deposit/hisrec" in path:
+            return deposit_resp
+        if "withdraw/history" in path:
+            return withdrawal_resp
+        raise AssertionError(f"Unexpected path: {path}")
+
+    collector._client.get = mock_get  # type: ignore[assignment]
+
+    txs = await collector.fetch_transactions()
+    assert len(txs) == 2
+    dep = next(t for t in txs if t.tx_type == TransactionType.DEPOSIT)
+    assert dep.asset == "USDC"
+    wd = next(t for t in txs if t.tx_type == TransactionType.WITHDRAWAL)
+    assert wd.asset == "USDC"
+
+
+async def test_mexc_signed_params(pricing):
+    collector = MexcCollector(pricing, api_key="key", api_secret="secret")
+    params = collector._signed_params({"symbol": "BTCUSDT"})
+    assert "timestamp" in params
+    assert "signature" in params
+    assert params["symbol"] == "BTCUSDT"
+
+
+async def test_mexc_openapi_headers(pricing):
+    collector = MexcCollector(pricing, api_key="key", api_secret="secret")
+    with patch("pfm.collectors.mexc.time.time", return_value=1700000000.0):
+        headers = collector._openapi_headers({"recv_window": "5000", "symbol": "BTC_USDT"})
+    assert headers["ApiKey"] == "key"
+    assert headers["Request-Time"] == "1700000000000"
+    assert headers["Signature"] == "93c3bb21b72cc9f5d779a973b8f4f862bc52d6567033a5c1c4dc9d0bfa7c4aca"
+
+
+async def test_mexc_fetch_contract_balances(pricing):
+    collector = MexcCollector(pricing, api_key="key", api_secret="secret")
+    collector._get_openapi = AsyncMock(  # type: ignore[method-assign]
+        return_value={
+            "success": True,
+            "data": [
+                {"currency": "USDC", "equity": "42.5", "availableBalance": "42.5", "frozenBalance": "0"},
+                {"currency": "DOGE", "equity": "0", "availableBalance": "0", "frozenBalance": "0"},
+            ],
+        }
+    )
+    snapshots = await collector._fetch_contract_balances(pricing.today())
+    assert len(snapshots) == 1
+    usdc = snapshots[0]
+    assert usdc.asset == "USDC"
+    assert usdc.amount == Decimal("42.5")
+    assert usdc.usd_value == Decimal("42.5")
+
+
+async def test_mexc_fetch_earn_with_apy(pricing):
+    pricing._set_cache("USDC", Decimal(1))
+    collector = MexcCollector(pricing, api_key="key", api_secret="secret")
+    collector._get_openapi = AsyncMock(return_value={"success": True, "data": []})  # type: ignore[method-assign]
+
+    async def mock_get(path, **kwargs):
+        if path == "/api/v3/account":
+            return _mock_response({"balances": []})
+        if path == "/api/v3/asset/earn/position":
+            return _mock_response(
+                [
+                    {
+                        "asset": "USDC",
+                        "amount": "250",
+                        "apy": "12.5",
+                    }
+                ]
+            )
+        # Other fallback earn paths should not be needed once first returns data.
+        return _mock_response([])
+
+    collector._client.get = mock_get  # type: ignore[assignment]
+
+    snapshots = await collector.fetch_balances()
+    earn_snaps = [s for s in snapshots if s.apy > 0]
+    assert len(earn_snaps) == 1
+    usdc = earn_snaps[0]
+    assert usdc.asset == "USDC"
+    assert usdc.amount == Decimal(250)
+    assert usdc.apy == Decimal("0.125")
 
 
 # ── OKX ───────────────────────────────────────────────────────────────
@@ -1555,6 +1687,7 @@ def test_collector_registry_populated():
     assert "lobstr" in COLLECTOR_REGISTRY
     assert "binance" in COLLECTOR_REGISTRY
     assert "binance_th" in COLLECTOR_REGISTRY
+    assert "mexc" in COLLECTOR_REGISTRY
     assert "okx" in COLLECTOR_REGISTRY
     assert "bybit" in COLLECTOR_REGISTRY
     assert "wise" in COLLECTOR_REGISTRY
