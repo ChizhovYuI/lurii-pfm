@@ -115,7 +115,11 @@ async def test_yo_returns_empty_balances_for_missing_user_position(pricing):
     collector._client.get = mock_get  # type: ignore[assignment]
 
     snapshots = await collector.fetch_balances()
-    assert snapshots == []
+    assert len(snapshots) == 1
+    assert snapshots[0].asset == "WETH"
+    assert snapshots[0].amount == Decimal(0)
+    assert snapshots[0].usd_value == Decimal(0)
+    assert snapshots[0].price == Decimal(0)
 
 
 async def test_yo_parses_transactions_from_history_dict_shapes_without_derived_balances(pricing):

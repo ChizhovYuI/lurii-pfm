@@ -75,14 +75,39 @@ class YoCollector(BaseCollector):
         """Fetch current vault position balances for a user."""
         today = self._pricing.today()
         vault = await self._get_vault()
-        history_rows = await self._get_history(limit=200)
+        history_rows = await self._get_history(limit=1000)
         derived_holding = _derive_share_holding_from_history(vault, history_rows)
         holdings = [derived_holding] if derived_holding is not None else []
         apy = _extract_vault_apy(vault)
 
         if not holdings:
-            logger.info("yo: no balances found for network=%s vault=%s", self._network, self._vault_address)
-            return []
+            logger.info(
+                "yo: no balances found for network=%s vault=%s (saving zero snapshot)",
+                self._network,
+                self._vault_address,
+            )
+            zero_symbol = _pick_zero_asset_symbol(vault)
+            if not zero_symbol:
+                return []
+            return [
+                Snapshot(
+                    date=today,
+                    source=self.source_name,
+                    asset=zero_symbol,
+                    amount=Decimal(0),
+                    usd_value=Decimal(0),
+                    price=Decimal(0),
+                    apy=apy,
+                    raw_json=json.dumps(
+                        {
+                            "derivedFrom": "history",
+                            "state": "empty_position",
+                            "network": self._network,
+                            "vaultAddress": self._vault_address,
+                        }
+                    ),
+                )
+            ]
 
         snapshots: list[Snapshot] = []
         for holding in holdings:
@@ -289,3 +314,12 @@ def _extract_vault_apy(vault: dict[str, Any]) -> Decimal:
             continue
         return value / Decimal(100) if value > 1 else value
     return Decimal(0)
+
+
+def _pick_zero_asset_symbol(vault: dict[str, Any]) -> str:
+    share_asset = _as_dict(vault.get("shareAsset"))
+    share_symbol = str(share_asset.get("symbol", "")).upper()
+    if share_symbol:
+        return share_symbol
+    asset = _as_dict(vault.get("asset"))
+    return str(asset.get("symbol", "")).upper()
