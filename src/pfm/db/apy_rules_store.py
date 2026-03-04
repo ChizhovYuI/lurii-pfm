@@ -68,8 +68,9 @@ def compute_effective_apy(  # noqa: PLR0913
 ) -> Decimal:
     """Compute effective APY by applying matching rules to the protocol APY.
 
-    For "base" rules: replaces the protocol APY with the bracket APY.
-    For "bonus" rules: adds the bracket APY on top.
+    APY is computed as a weighted average across tiered brackets.
+    For "base" rules: replaces the protocol APY.
+    For "bonus" rules: adds on top of the base.
     """
     matching = [
         r for r in rules if r.protocol == protocol and r.coin == coin and r.started_at <= snapshot_date <= r.finished_at
@@ -79,30 +80,53 @@ def compute_effective_apy(  # noqa: PLR0913
     for rule in matching:
         if rule.type != "base":
             continue
-        bracket = _find_bracket(rule.limits, amount)
-        if bracket is not None:
-            base = bracket.apy
+        weighted = _weighted_apy(rule.limits, amount, fallback_apy=protocol_apy)
+        if weighted is not None:
+            base = weighted
 
     bonus = Decimal(0)
     for rule in matching:
         if rule.type != "bonus":
             continue
-        bracket = _find_bracket(rule.limits, amount)
-        if bracket is not None:
-            bonus += bracket.apy
+        weighted = _weighted_apy(rule.limits, amount, fallback_apy=Decimal(0))
+        if weighted is not None:
+            bonus += weighted
 
     return base + bonus
 
 
-def _find_bracket(limits: tuple[RuleLimit, ...], amount: Decimal) -> RuleLimit | None:
-    """Find the limit bracket where from_amount < amount <= to_amount."""
-    for limit in limits:
-        if amount <= limit.from_amount:
+def _weighted_apy(
+    limits: tuple[RuleLimit, ...],
+    amount: Decimal,
+    *,
+    fallback_apy: Decimal,
+) -> Decimal | None:
+    """Compute weighted-average APY across tiered brackets.
+
+    Each bracket covers (from_amount, to_amount]. The portion of
+    the total amount that falls within a bracket earns that bracket's
+    APY. Uncovered portions use ``fallback_apy`` (protocol APY for
+    base rules, 0 for bonus rules).
+    """
+    if amount <= 0:
+        return None
+    covered = Decimal(0)
+    total_weighted = Decimal(0)
+    has_match = False
+    for lim in sorted(limits, key=lambda x: x.from_amount):
+        upper = lim.to_amount if lim.to_amount is not None else amount
+        tier_amount = min(amount, upper) - lim.from_amount
+        if tier_amount <= 0:
             continue
-        if limit.to_amount is not None and amount > limit.to_amount:
-            continue
-        return limit
-    return None
+        has_match = True
+        covered += tier_amount
+        total_weighted += tier_amount * lim.apy
+    if not has_match:
+        return None
+    uncovered = amount - covered
+    if uncovered > 0:
+        total_weighted += uncovered * fallback_apy
+    return total_weighted / amount
 
 
 class ApyRulesStore:

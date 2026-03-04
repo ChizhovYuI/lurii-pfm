@@ -546,17 +546,14 @@ async def test_apy_rules_override():
         wallet_address="0x771e4E594855e95eE1280940F69D2b0F0C0a1417",
     )
 
-    # Set up tiered base rule: 10% for 0-5000 USDC
+    # Set up base rule: 10% for first 5000 USDC, rest falls back to protocol APY
     collector.apy_rules = [
         ApyRule(
             id="rule-1",
             protocol="aave",
             coin="usdc",
             type="base",
-            limits=(
-                RuleLimit(from_amount=Decimal(0), to_amount=Decimal(5000), apy=Decimal("0.10")),
-                RuleLimit(from_amount=Decimal(5000), to_amount=None, apy=Decimal("0.0297")),
-            ),
+            limits=(RuleLimit(from_amount=Decimal(0), to_amount=Decimal(5000), apy=Decimal("0.10")),),
             started_at=date(2024, 1, 1),
             finished_at=date(2025, 12, 31),
         ),

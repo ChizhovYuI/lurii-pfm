@@ -25,16 +25,13 @@ def _base_rule(
     started_at: date = date(2024, 1, 1),
     finished_at: date = date(2025, 12, 31),
 ) -> ApyRule:
-    """Stablecoin Earn Plus tiered base rule: 10% for 0-5000, 2.97% above."""
+    """Stablecoin Earn Plus base rule: 10% for first 5000 USDC."""
     return ApyRule(
         id="base-1",
         protocol="aave",
         coin="usdc",
         type="base",
-        limits=(
-            RuleLimit(from_amount=Decimal(0), to_amount=Decimal(5000), apy=Decimal("0.10")),
-            RuleLimit(from_amount=Decimal(5000), to_amount=None, apy=Decimal("0.0297")),
-        ),
+        limits=(RuleLimit(from_amount=Decimal(0), to_amount=Decimal(5000), apy=Decimal("0.10")),),
         started_at=started_at,
         finished_at=finished_at,
     )
@@ -45,13 +42,13 @@ def _bonus_rule(
     started_at: date = date(2024, 6, 1),
     finished_at: date = date(2024, 6, 7),
 ) -> ApyRule:
-    """7-day bonus boost: +18.8% for any amount."""
+    """7-day bonus boost: +18.8% for first 4014 USDC."""
     return ApyRule(
         id="bonus-1",
         protocol="aave",
         coin="usdc",
         type="bonus",
-        limits=(RuleLimit(from_amount=Decimal(0), to_amount=None, apy=Decimal("0.188")),),
+        limits=(RuleLimit(from_amount=Decimal(0), to_amount=Decimal(4014), apy=Decimal("0.188")),),
         started_at=started_at,
         finished_at=finished_at,
     )
@@ -68,10 +65,13 @@ def test_base_rule_lower_bracket():
     assert result == Decimal("0.10")
 
 
-def test_base_rule_upper_bracket():
+def test_base_rule_weighted_with_fallback():
+    """Amount 10000: first 5000 at 10%, remaining 5000 at protocol APY (3.1%)."""
     rules = [_base_rule()]
-    result = compute_effective_apy(Decimal("0.031"), rules, "aave", "usdc", Decimal("5000.01"), date(2024, 3, 1))
-    assert result == Decimal("0.0297")
+    protocol_apy = Decimal("0.031")
+    result = compute_effective_apy(protocol_apy, rules, "aave", "usdc", Decimal(10000), date(2024, 3, 1))
+    expected = (Decimal(5000) * Decimal("0.10") + Decimal(5000) * protocol_apy) / Decimal(10000)
+    assert result == expected
 
 
 def test_base_rule_exact_boundary_5000():
@@ -88,10 +88,19 @@ def test_base_rule_zero_amount_no_bracket():
     assert result == Decimal("0.031")
 
 
-def test_bonus_stacking():
+def test_bonus_stacking_within_bracket():
+    """Amount 1000 is fully within bonus bracket (<=4014), so bonus = 18.8%."""
     rules = [_base_rule(), _bonus_rule()]
     result = compute_effective_apy(Decimal("0.031"), rules, "aave", "usdc", Decimal(1000), date(2024, 6, 3))
     assert result == Decimal("0.10") + Decimal("0.188")
+
+
+def test_bonus_weighted_above_bracket():
+    """Amount 5000 exceeds bonus bracket (4014): bonus is weighted average."""
+    rules = [_base_rule(), _bonus_rule()]
+    result = compute_effective_apy(Decimal("0.031"), rules, "aave", "usdc", Decimal(5000), date(2024, 6, 3))
+    expected_bonus = Decimal(4014) * Decimal("0.188") / Decimal(5000)
+    assert result == Decimal("0.10") + expected_bonus
 
 
 def test_bonus_outside_date_range():
@@ -175,7 +184,6 @@ _VALID_RULE_DATA = {
     "type": "base",
     "limits": [
         {"from_amount": "0", "to_amount": "5000", "apy": "0.10"},
-        {"from_amount": "5000", "to_amount": None, "apy": "0.0297"},
     ],
     "started_at": "2024-01-01",
     "finished_at": "2025-12-31",
@@ -187,7 +195,7 @@ async def test_add_and_load(store):
     assert len(rules) == 1
     assert rules[0].protocol == "aave"
     assert rules[0].coin == "usdc"
-    assert len(rules[0].limits) == 2
+    assert len(rules[0].limits) == 1
 
     loaded = await store.load_rules("test-src")
     assert len(loaded) == 1
