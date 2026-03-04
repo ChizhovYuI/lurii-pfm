@@ -235,6 +235,22 @@ async def test_update_enabled(store: SourceStore):
 
 
 @pytest.mark.asyncio
+async def test_update_partial_credentials_merges(store: SourceStore):
+    await store.add(
+        "okx-main",
+        "okx",
+        {
+            "api_key": "k",
+            "api_secret": "s",
+            "passphrase": "p",
+        },
+    )
+    updated = await store.update("okx-main", credentials={"api_key": "k2"})
+    creds = json.loads(updated.credentials)
+    assert creds == {"api_key": "k2", "api_secret": "s", "passphrase": "p"}
+
+
+@pytest.mark.asyncio
 async def test_update_invalid_credentials_raises(store: SourceStore):
     await store.add(
         "okx-main",
@@ -246,7 +262,7 @@ async def test_update_invalid_credentials_raises(store: SourceStore):
         },
     )
     with pytest.raises(InvalidCredentialsError):
-        await store.update("okx-main", credentials={"api_key": "k"})
+        await store.update("okx-main", credentials={"api_key": ""})
 
 
 @pytest.mark.asyncio

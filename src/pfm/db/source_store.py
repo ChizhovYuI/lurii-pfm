@@ -119,11 +119,13 @@ class SourceStore:
         params: list[str | int] = []
 
         if credentials is not None:
-            errors = validate_credentials(existing.type, credentials)
+            existing_creds: dict[str, str] = json.loads(existing.credentials)
+            merged = {**existing_creds, **credentials}
+            errors = validate_credentials(existing.type, merged)
             if errors:
                 raise InvalidCredentialsError("; ".join(errors))
             sets.append("credentials = ?")
-            params.append(json.dumps(credentials))
+            params.append(json.dumps(merged))
 
         if enabled is not None:
             sets.append("enabled = ?")
