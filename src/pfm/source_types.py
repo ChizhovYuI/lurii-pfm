@@ -247,6 +247,19 @@ SOURCE_TYPES: dict[str, list[CredentialField]] = {
 }
 
 
+@dataclass(frozen=True, slots=True)
+class ApyRulesProtocol:
+    """Describes which protocol+coins support APY rules for a source type."""
+
+    protocol: str
+    coins: tuple[str, ...]
+
+
+APY_RULES_TYPES: dict[str, tuple[ApyRulesProtocol, ...]] = {
+    "bitget_wallet": (ApyRulesProtocol(protocol="aave", coins=("usdc", "usdt")),),
+}
+
+
 def validate_credentials(source_type: str, credentials: dict[str, str]) -> list[str]:
     """Validate credentials against the schema for a source type.
 

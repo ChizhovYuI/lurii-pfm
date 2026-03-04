@@ -17,6 +17,7 @@ from pfm.collectors.base import BaseCollector
 from pfm.db.models import Snapshot, Transaction, TransactionType
 
 if TYPE_CHECKING:
+    from pfm.db.apy_rules_store import ApyRule
     from pfm.pricing.coingecko import PricingService
 
 logger = logging.getLogger(__name__)
@@ -149,6 +150,7 @@ class BitgetWalletCollector(BaseCollector):
         self._solana_address = _normalize_solana_address(solana_address) if solana_address else ""
         self._graph_ql_url = _AAVE_GRAPHQL_URL
         self._client = httpx.AsyncClient(timeout=30.0)
+        self.apy_rules: list[ApyRule] = []
 
     @retry()
     async def _graphql(self, query: str, variables: dict[str, object]) -> object:
@@ -264,6 +266,11 @@ class BitgetWalletCollector(BaseCollector):
             # Prefer on-chain aToken balance (includes real-time accrued interest)
             onchain_amount = await self._fetch_onchain_balance(asset)
             amount = onchain_amount if onchain_amount and onchain_amount > 0 else graphql_amount
+
+            if self.apy_rules:
+                from pfm.db.apy_rules_store import compute_effective_apy
+
+                apy = compute_effective_apy(apy, self.apy_rules, "aave", asset.lower(), amount, today)
 
             price = await self._pricing.get_price_usd(asset)
             usd_value = amount * price

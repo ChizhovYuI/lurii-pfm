@@ -21,14 +21,19 @@ routes = web.RouteTableDef()
 @routes.get("/api/v1/source-types")
 async def list_source_types(_request: web.Request) -> web.Response:
     """Return credential field schemas for all known source types."""
-    from pfm.source_types import SOURCE_TYPES
+    from pfm.source_types import APY_RULES_TYPES, SOURCE_TYPES
 
     return web.json_response(
         {
-            name: [
-                {"name": f.name, "prompt": f.prompt, "required": f.required, "secret": f.secret, "tip": f.tip}
-                for f in fields
-            ]
+            name: {
+                "fields": [
+                    {"name": f.name, "prompt": f.prompt, "required": f.required, "secret": f.secret, "tip": f.tip}
+                    for f in fields
+                ],
+                "supported_apy_rules": [
+                    {"protocol": p.protocol, "coins": list(p.coins)} for p in APY_RULES_TYPES.get(name, ())
+                ],
+            }
             for name, fields in SOURCE_TYPES.items()
         }
     )

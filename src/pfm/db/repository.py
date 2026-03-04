@@ -160,6 +160,25 @@ class Repository:
             raw_json=row["raw_json"],
         )
 
+    async def get_snapshots_by_source_name_and_date_range(
+        self, source_name: str, start: date, end: date
+    ) -> list[Snapshot]:
+        """Get snapshots for a specific source_name between two dates (inclusive)."""
+        cursor = await self._db.execute(
+            "SELECT * FROM snapshots WHERE source_name = ? AND date >= ? AND date <= ? ORDER BY date, asset",
+            (source_name, str(start), str(end)),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_snapshot(row) for row in rows]
+
+    async def update_snapshot_apy(self, snapshot_id: int, new_apy: Decimal) -> None:
+        """Update the APY of a single snapshot by ID."""
+        await self._db.execute(
+            "UPDATE snapshots SET apy = ? WHERE id = ?",
+            (str(new_apy), snapshot_id),
+        )
+        await self._db.commit()
+
     async def delete_snapshots_by_source_names(self, source_names: list[str]) -> int:
         """Delete all snapshots for the given source_names. Returns count deleted."""
         if not source_names:

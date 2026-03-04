@@ -60,8 +60,12 @@ async def test_list_source_types(client):
         "yo",
     }
     assert set(data.keys()) == expected_types
-    # Each type has a list of field dicts with correct shape
-    for fields in data.values():
+    # Each type has fields list and supported_apy_rules
+    for type_info in data.values():
+        assert "fields" in type_info
+        assert "supported_apy_rules" in type_info
+        assert isinstance(type_info["supported_apy_rules"], list)
+        fields = type_info["fields"]
         assert isinstance(fields, list)
         assert len(fields) > 0
         for field in fields:
@@ -72,12 +76,18 @@ async def test_list_source_types(client):
             assert "tip" in field
             assert isinstance(field["required"], bool)
             assert isinstance(field["secret"], bool)
+    # Only bitget_wallet has APY rules config
+    apy_rules = data["bitget_wallet"]["supported_apy_rules"]
+    assert len(apy_rules) == 1
+    assert apy_rules[0]["protocol"] == "aave"
+    assert apy_rules[0]["coins"] == ["usdc", "usdt"]
+    assert data["okx"]["supported_apy_rules"] == []
 
 
 async def test_list_source_types_wise_fields(client):
     resp = await client.get("/api/v1/source-types")
     data = await resp.json()
-    wise_fields = data["wise"]
+    wise_fields = data["wise"]["fields"]
     assert len(wise_fields) == 1
     assert wise_fields[0]["name"] == "api_token"
     assert wise_fields[0]["required"] is True
@@ -88,7 +98,7 @@ async def test_list_source_types_wise_fields(client):
 async def test_list_source_types_mexc_earn_uid_field(client):
     resp = await client.get("/api/v1/source-types")
     data = await resp.json()
-    fields = {field["name"]: field for field in data["mexc_earn"]}
+    fields = {field["name"]: field for field in data["mexc_earn"]["fields"]}
     assert "uid" in fields
     assert fields["uid"]["required"] is True
     assert fields["uid"]["secret"] is False

@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, Any
 from aiohttp import web
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from pfm.db.models import Source
     from pfm.db.repository import Repository
     from pfm.db.source_store import SourceStore
@@ -114,6 +116,7 @@ async def _run_collection(app: web.Application, source_name: str | None) -> None
             creds = json.loads(src.credentials)
             collector = collector_cls(pricing, **creds)
             collector.instance_name = src.name
+            await _inject_apy_rules(collector, src, db_path)
             try:
                 result = await collector.collect(repo)
                 results.append(result)
@@ -168,6 +171,18 @@ async def _cleanup_disabled_snapshots(
         deleted = await repo.delete_snapshots_by_source_names(disabled_names)
         if deleted:
             logger.info("Deleted %d snapshots for disabled sources: %s", deleted, disabled_names)
+
+
+async def _inject_apy_rules(collector: object, src: Source, db_path: str | Path) -> None:
+    """Load APY rules for sources that support them."""
+    from pfm.source_types import APY_RULES_TYPES
+
+    if src.type not in APY_RULES_TYPES:
+        return
+    from pfm.db.apy_rules_store import ApyRulesStore
+
+    store = ApyRulesStore(db_path)
+    collector.apy_rules = await store.load_rules(src.name)  # type: ignore[attr-defined]
 
 
 async def _run_analyze(repo: object) -> None:

@@ -53,7 +53,7 @@ def _usdc_supply(
             "chainId": 8453,
         },
         "balance": {"amount": {"value": amount}, "usd": usd},
-        "apy": {"value": apy, "formatted": f"{float(apy)*100:.2f}"},
+        "apy": {"value": apy, "formatted": f"{float(apy) * 100:.2f}"},
     }
 
 
@@ -534,6 +534,53 @@ async def test_sol_staking_empty_result():
 
     snapshots = await collector.fetch_balances()
     assert len(snapshots) == 0
+
+
+async def test_apy_rules_override():
+    """APY rules override the protocol APY during collection."""
+    from pfm.db.apy_rules_store import ApyRule, RuleLimit
+
+    pricing = _pricing()
+    collector = BitgetWalletCollector(
+        pricing,
+        wallet_address="0x771e4E594855e95eE1280940F69D2b0F0C0a1417",
+    )
+
+    # Set up tiered base rule: 10% for 0-5000 USDC
+    collector.apy_rules = [
+        ApyRule(
+            id="rule-1",
+            protocol="aave",
+            coin="usdc",
+            type="base",
+            limits=(
+                RuleLimit(from_amount=Decimal(0), to_amount=Decimal(5000), apy=Decimal("0.10")),
+                RuleLimit(from_amount=Decimal(5000), to_amount=None, apy=Decimal("0.0297")),
+            ),
+            started_at=date(2024, 1, 1),
+            finished_at=date(2025, 12, 31),
+        ),
+    ]
+
+    onchain_hex = hex(251_500_000)  # 251.5 USDC
+
+    async def mock_post(_url: str, *, json: dict[str, object]) -> MagicMock:
+        if json.get("method") == "eth_call":
+            return _mock_response({"jsonrpc": "2.0", "id": 1, "result": onchain_hex})
+        query = str(json.get("query", ""))
+        if "markets(request" in query:
+            return _mock_response(_aave_markets_response())
+        if "userSupplies(request" in query:
+            return _mock_response({"data": {"value": [_usdc_supply()]}})
+        raise AssertionError(f"Unexpected RPC call: {json}")
+
+    collector._client.post = AsyncMock(side_effect=mock_post)  # type: ignore[assignment]
+
+    snapshots = await collector.fetch_balances()
+    assert len(snapshots) == 1
+    snap = snapshots[0]
+    # Protocol APY was 0.031, but base rule overrides to 0.10 (amount 251.5 is in 0-5000 bracket)
+    assert snap.apy == Decimal("0.10")
 
 
 def test_invalid_solana_address():

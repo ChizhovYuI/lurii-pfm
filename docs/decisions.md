@@ -962,25 +962,33 @@ This updates only `model` for Gemini; `api_key`, `base_url`, and `active` are pr
 
 **Status:** Accepted
 
-**Context:** Bitget Wallet's "Stablecoin Earn Plus" product offers tiered APY (10% for 0–5000 USDC, 2.97% above) and temporary bonus boosts (+18.8% for 7 days). The Aave GraphQL API returns only the protocol APY (3.1%), so the actual yield is not reflected in snapshots.
+**Context:** Bitget Wallet's "Stablecoin Earn Plus" product offers tiered APY (10% for 0–5000 USDC, 2.97% above) and temporary bonus boosts (+18.8% for 7 days). The Aave GraphQL API returns only the protocol APY (3.1%), so the actual yield is not reflected in snapshots. The SwiftUI app also needs to discover which source types support APY rules and which protocol+coin combinations are valid.
 
 **Problem:**
 - Aave API reports ~3.1% APY, but the user earns 10% on the first 5000 USDC via Bitget's product
 - Temporary bonus boosts (e.g. +18.8% for 7 days) are not reflected in any API
 - Historical snapshots retain the incorrect protocol APY and cannot be corrected retroactively
+- No signal in the API for whether a source type supports APY rules — the UI would need to hardcode valid protocol/coin values
 
-**Decision:** Add user-configurable APY rules stored in `app_settings` that override/supplement protocol APY during collection and retroactively recalculate historical snapshots when rules change.
+**Decision:** Add user-configurable APY rules stored in `app_settings` that override/supplement protocol APY during collection and retroactively recalculate historical snapshots when rules change. Expose valid protocol+coin combinations per source type in `/api/v1/source-types`.
 
 **Design choices:**
+
+*Storage and computation:*
 - **`app_settings` storage** — rules stored as JSON array under key `apy_rules:{source_name}`. Reuses existing key-value table, no schema migration needed
 - **Two rule types** — `base` replaces the protocol APY with a tiered bracket; `bonus` adds on top. Multiple bonus rules stack additively
 - **Tiered brackets** — each rule has `limits: [{from_amount, to_amount, apy}]` where `from_amount` is exclusive lower bound, `to_amount` is inclusive upper bound (None = infinity). Matches the Earn Plus tier structure
 - **Date-scoped rules** — `started_at`/`finished_at` define the active period. Temporary boosts naturally expire without manual deletion
 - **Pure computation function** — `compute_effective_apy(protocol_apy, rules, protocol, coin, amount, date)` is a pure function with no I/O, easy to test
 - **Retroactive recalculation** — after any rule CRUD, affected snapshots (union date range of old + new rules) are queried and their APY is recomputed from `raw_json.apy.value` (the original protocol APY). This preserves the protocol APY as ground truth
-- **Source type guard** — API routes validate `source.type == "bitget_wallet"` before allowing rule operations. Rules are not applicable to other source types
 - **Collector integration** — `BitgetWalletCollector.apy_rules` is populated from the store before collection. Rules are applied inline during `_fetch_aave_balances()`, so new snapshots immediately reflect the effective APY
 - **Validation** — known protocol (`aave`), coin (`usdc`, `usdt`), type (`base`, `bonus`) enums. Non-empty limits, valid dates, `started_at <= finished_at`
+
+*UI discovery:*
+- **`supported_apy_rules: [{protocol, coins}]`** in `/api/v1/source-types` response — provides the valid protocol+coin combinations for combobox rendering. Empty array means APY rules are not available for that source type
+- **`ApyRulesProtocol` dataclass** in `source_types.py` — `(protocol: str, coins: tuple[str, ...])`, single source of truth for both API response and route validation
+- **`APY_RULES_TYPES` dict** — maps source type name to tuple of `ApyRulesProtocol`. Route validation checks `source.type in APY_RULES_TYPES` instead of hardcoding source type names
+- **Restructured `/api/v1/source-types` response** — changed from `{name: [fields]}` to `{name: {fields: [...], supported_apy_rules: [...]}}` to accommodate the new metadata
 
 **Data model:**
 ```python
@@ -1010,16 +1018,33 @@ class ApyRule:
 | PUT | `/api/v1/sources/{name}/apy-rules/{id}` | Update rule, recalculate |
 | DELETE | `/api/v1/sources/{name}/apy-rules/{id}` | Delete rule, recalculate |
 
+**Source-types response shape:**
+```
+"bitget_wallet": {
+  "fields": [{"name": "wallet_address", "prompt": "...", ...}],
+  "supported_apy_rules": [
+    {"protocol": "aave", "coins": ["usdc", "usdt"]}
+  ]
+}
+"okx": {
+  "fields": [{"name": "api_key", "prompt": "...", ...}],
+  "supported_apy_rules": []
+}
+```
+
 **Files changed:**
 - `src/pfm/db/apy_rules_store.py` — **new** `RuleLimit`, `ApyRule` dataclasses, `compute_effective_apy()`, `ApyRulesStore` CRUD
 - `src/pfm/server/routes/apy_rules.py` — **new** 4 route handlers with recalculation
 - `src/pfm/db/repository.py` — added `get_snapshots_by_source_name_and_date_range()`, `update_snapshot_apy()`
 - `src/pfm/collectors/bitget_wallet.py` — added `apy_rules` attribute, applies rules in `_fetch_aave_balances()`
-- `src/pfm/server/routes/collect.py` — injects rules into bitget_wallet collectors before collection
+- `src/pfm/server/routes/collect.py` — injects rules into collectors for supported source types
 - `src/pfm/server/routes/__init__.py` — registered `apy_rules_routes`
+- `src/pfm/source_types.py` — added `ApyRulesProtocol` dataclass and `APY_RULES_TYPES` dict
+- `src/pfm/server/routes/sources.py` — restructured `/api/v1/source-types` response to include `supported_apy_rules`
 - `tests/test_apy_rules_store.py` — **new** 27 tests (computation + CRUD + validation)
 - `tests/test_apy_rules_routes.py` — **new** 9 route tests
 - `tests/test_bitget_wallet.py` — added APY rules override test
+- `tests/test_routes_sources.py` — updated for new response shape
 
 **Consequences:**
 - Earn summary and portfolio analytics reflect the actual yield, not just the protocol APY
@@ -1027,56 +1052,6 @@ class ApyRule:
 - Temporary bonus boosts are modeled with date-scoped rules that naturally expire
 - Protocol APY is preserved in `raw_json` as ground truth for recalculation
 - No schema migration — reuses existing `app_settings` table
-- Scoped to `bitget_wallet` sources; extensible to other source types if needed
-
----
-
-## ADR-026: Structured `supported_apy_rules` in source-types API
-
-**Date:** 2026-03-04
-
-**Status:** Accepted
-
-**Context:** The SwiftUI app needs to know which source types support APY rules and which protocol+coin combinations are valid, so it can render the rule creation form with appropriate comboboxes.
-
-**Problem:**
-- No signal in the API for whether a source type supports APY rules
-- The UI would need to hardcode `bitget_wallet` and valid protocol/coin values
-- Adding APY rule support for a new source type would require a UI update
-
-**Decision:** Add `supported_apy_rules` array to the `/api/v1/source-types` response. Each entry describes a valid protocol and its coins. An empty array means APY rules are not available for that source type.
-
-**Design choices:**
-- **`supported_apy_rules: [{protocol, coins}]`** over `supports_apy_rules: bool` — provides the valid protocol+coin combinations for combobox rendering, not just a boolean flag
-- **Empty array = not supported** — no separate boolean needed; `[]` is falsy in both Swift and JS
-- **`ApyRulesProtocol` dataclass** in `source_types.py` — `(protocol: str, coins: tuple[str, ...])`, single source of truth for both API response and route validation
-- **`APY_RULES_TYPES` dict** — maps source type name to tuple of `ApyRulesProtocol`. Route validation (`apy_rules.py`, `collect.py`) checks `source.type in APY_RULES_TYPES` instead of hardcoding `"bitget_wallet"`
-- **Restructured `/api/v1/source-types` response** — changed from `{name: [fields]}` to `{name: {fields: [...], supported_apy_rules: [...]}}` to accommodate the new metadata
-
-**Response shape:**
-```json
-{
-  "bitget_wallet": {
-    "fields": [{"name": "wallet_address", ...}],
-    "supported_apy_rules": [
-      {"protocol": "aave", "coins": ["usdc", "usdt"]}
-    ]
-  },
-  "okx": {
-    "fields": [{"name": "api_key", ...}],
-    "supported_apy_rules": []
-  }
-}
-```
-
-**Files changed:**
-- `src/pfm/source_types.py` — added `ApyRulesProtocol` dataclass, replaced `APY_RULES_TYPES` frozenset with structured dict
-- `src/pfm/server/routes/sources.py` — restructured response to include `supported_apy_rules`
-- `src/pfm/server/routes/apy_rules.py` — uses `APY_RULES_TYPES` for source type validation
-- `src/pfm/server/routes/collect.py` — uses `APY_RULES_TYPES` for source type check
-- `tests/test_routes_sources.py` — updated for new response shape, asserts protocol/coins
-
-**Consequences:**
 - UI renders protocol and coin comboboxes from API data, no hardcoded values
 - Adding APY rule support for a new source type requires only a new entry in `APY_RULES_TYPES`
 - Breaking change for `/api/v1/source-types` consumers — response shape changed from `[fields]` to `{fields, supported_apy_rules}`
