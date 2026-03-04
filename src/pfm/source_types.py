@@ -108,6 +108,17 @@ SOURCE_TYPES: dict[str, list[CredentialField]] = {
                 "2. PFM reads Stablecoin Earn Plus position on Base automatically"
             ),
         ),
+        CredentialField(
+            "solana_address",
+            "Solana address for SOL staking (optional)",
+            required=False,
+            secret=False,
+            tip=(
+                "1. Open Bitget Wallet and switch to Solana network\n"
+                "2. Copy your Solana address\n"
+                "3. PFM reads native SOL staking positions automatically"
+            ),
+        ),
     ],
     "lobstr": [
         CredentialField(

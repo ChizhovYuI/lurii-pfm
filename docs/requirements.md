@@ -56,7 +56,7 @@ Personal Financial Management system that aggregates assets and statements from 
 - F0.2: Sources stored in SQLite `sources` table (name, type, credentials JSON, enabled flag)
 - F0.3: Interactive wizard for adding sources (pick type → name → fill credentials)
 - F0.4: Named instances — multiple accounts per source type (e.g. `okx-main`, `okx-trading`)
-- F0.5: Hardcoded source types: okx, binance, binance_th, bybit, lobstr, blend, wise, kbank, ibkr, revolut, rabby, yo
+- F0.5: Hardcoded source types: okx, binance, binance_th, bybit, lobstr, blend, wise, kbank, ibkr, revolut, rabby, yo, bitget_wallet
 - F0.6: `pfm source show` masks secrets in output
 - F0.7: `pfm source enable/disable` toggles source activity
 - F0.8: `pfm collect` auto-discovers enabled sources from DB

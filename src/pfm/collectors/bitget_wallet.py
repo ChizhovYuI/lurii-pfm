@@ -1,4 +1,4 @@
-"""Bitget Wallet collector backed by Aave V3 API data on Base."""
+"""Bitget Wallet collector: Aave V3 (Base) + native SOL staking."""
 
 from __future__ import annotations
 
@@ -23,9 +23,25 @@ logger = logging.getLogger(__name__)
 
 _RATE_LIMITER = RateLimiter(requests_per_minute=180.0)
 _AAVE_GRAPHQL_URL = "https://api.v3.aave.com/graphql"
+_BASE_RPC_URL = "https://mainnet.base.org"
 _BASE_CHAIN_ID = 8453
 _GRAPHQL_PAGE_SIZE = "FIFTY"
 _ADDRESS_RE = re.compile(r"^0x[a-fA-F0-9]{40}$")
+
+# Solana staking constants
+_SOLANA_RPC_URL = "https://api.mainnet-beta.solana.com"
+_STAKE_PROGRAM_ID = "Stake11111111111111111111111111111111111111"
+_SOL_DECIMALS = 9
+_SOLANA_ADDRESS_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
+_STAKEWIZ_API_URL = "https://api.stakewiz.com/validator"
+
+# aToken contract addresses on Base (Aave V3)
+_ATOKEN_MAP: dict[str, str] = {
+    "USDC": "0x4e65fE4DbA92790696d040ac24Aa414708F5c0AB",
+    "USDT": "0x8619d80FB0141ba7F184CbF22fd724116943bA1C",
+}
+_ATOKEN_DECIMALS: dict[str, int] = {"USDC": 6, "USDT": 6}
+_BALANCE_OF_SELECTOR = "0x70a08231"
 
 _MARKETS_QUERY = """
 query Markets($request: MarketsRequest!) {
@@ -126,17 +142,13 @@ class BitgetWalletCollector(BaseCollector):
         pricing: PricingService,
         *,
         wallet_address: str,
-        **legacy_settings: str,
+        solana_address: str = "",
     ) -> None:
         super().__init__(pricing)
         self._wallet_address = _normalize_address(wallet_address, field_name="wallet_address")
+        self._solana_address = _normalize_solana_address(solana_address) if solana_address else ""
         self._graph_ql_url = _AAVE_GRAPHQL_URL
         self._client = httpx.AsyncClient(timeout=30.0)
-        if legacy_settings:
-            logger.info(
-                "bitget_wallet: ignoring deprecated settings keys: %s",
-                ", ".join(sorted(legacy_settings)),
-            )
 
     @retry()
     async def _graphql(self, query: str, variables: dict[str, object]) -> object:
@@ -188,7 +200,38 @@ class BitgetWalletCollector(BaseCollector):
             raise ValueError(msg)
         return markets
 
+    async def _fetch_onchain_balance(self, asset: str) -> Decimal | None:
+        """Query aToken balanceOf on Base via JSON-RPC eth_call."""
+        atoken = _ATOKEN_MAP.get(asset)
+        if not atoken:
+            return None
+        decimals = _ATOKEN_DECIMALS.get(asset, 6)
+        # balanceOf(address) — pad wallet address to 32 bytes
+        data = _BALANCE_OF_SELECTOR + self._wallet_address[2:].lower().zfill(64)
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "eth_call",
+            "params": [{"to": atoken, "data": data}, "latest"],
+        }
+        resp = await self._client.post(_BASE_RPC_URL, json=payload)
+        resp.raise_for_status()
+        result = resp.json().get("result")
+        if not result or result == "0x":
+            return None
+        raw = int(result, 16)
+        return Decimal(raw) / Decimal(10**decimals)
+
     async def fetch_balances(self) -> list[Snapshot]:
+        """Fetch Aave supply balances and SOL staking positions."""
+        snapshots: list[Snapshot] = []
+        snapshots.extend(await self._fetch_aave_balances())
+        snapshots.extend(await self._fetch_sol_staking())
+        if not snapshots:
+            logger.info("bitget_wallet: no positions for wallet=%s", self._wallet_address)
+        return snapshots
+
+    async def _fetch_aave_balances(self) -> list[Snapshot]:
         """Fetch current wallet supply balances from Aave Base market."""
         markets = await self._fetch_base_markets()
         value = await self._graphql(
@@ -210,22 +253,28 @@ class BitgetWalletCollector(BaseCollector):
             if not isinstance(row, dict):
                 continue
 
-            amount = _decimal_or_zero(_get_path(row, "balance", "amount", "value"))
-            if amount <= 0:
+            graphql_amount = _decimal_or_zero(_get_path(row, "balance", "amount", "value"))
+            if graphql_amount <= 0:
                 continue
             apy = _decimal_or_zero(_get_path(row, "apy", "value"))
-            usd_value_raw = _to_decimal(_get_path(row, "balance", "usd"))
-            usd_value = usd_value_raw if usd_value_raw is not None else Decimal(0)
-            price = (usd_value / amount) if amount > 0 and usd_value > 0 else Decimal(0)
 
             currency = row.get("currency")
             asset = str(currency.get("symbol") or "UNKNOWN") if isinstance(currency, dict) else "UNKNOWN"
+
+            # Prefer on-chain aToken balance (includes real-time accrued interest)
+            onchain_amount = await self._fetch_onchain_balance(asset)
+            amount = onchain_amount if onchain_amount and onchain_amount > 0 else graphql_amount
+
+            price = await self._pricing.get_price_usd(asset)
+            usd_value = amount * price
+
             raw_payload: dict[str, Any] = {
                 "wallet_address": self._wallet_address,
                 "market": row.get("market"),
                 "currency": currency,
                 "balance": row.get("balance"),
                 "apy": row.get("apy"),
+                "onchain_amount": str(onchain_amount) if onchain_amount else None,
             }
 
             snapshots.append(
@@ -243,8 +292,99 @@ class BitgetWalletCollector(BaseCollector):
 
         if not snapshots:
             logger.info("bitget_wallet: no Aave supply positions for wallet=%s", self._wallet_address)
-            return []
         return snapshots
+
+    async def _fetch_sol_staking(self) -> list[Snapshot]:
+        """Fetch native SOL staking positions via Solana RPC."""
+        if not self._solana_address:
+            return []
+
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getProgramAccounts",
+            "params": [
+                _STAKE_PROGRAM_ID,
+                {
+                    "encoding": "jsonParsed",
+                    "filters": [
+                        {"memcmp": {"offset": 44, "bytes": self._solana_address}},
+                    ],
+                },
+            ],
+        }
+        resp = await self._client.post(_SOLANA_RPC_URL, json=payload)
+        resp.raise_for_status()
+        result = resp.json().get("result")
+        if not isinstance(result, list) or not result:
+            logger.info("bitget_wallet: no SOL stake accounts for %s", self._solana_address)
+            return []
+
+        total_lamports = 0
+        voter: str | None = None
+        stake_accounts: list[dict[str, Any]] = []
+        for entry in result:
+            if not isinstance(entry, dict):
+                continue
+            account = entry.get("account")
+            if not isinstance(account, dict):
+                continue
+            lamports = account.get("lamports", 0)
+            if not isinstance(lamports, int) or lamports <= 0:
+                continue
+            total_lamports += lamports
+            if not voter:
+                extracted = str(_get_path(account, "data", "parsed", "info", "stake", "delegation", "voter") or "")
+                if extracted:
+                    voter = extracted
+            stake_accounts.append(
+                {
+                    "pubkey": entry.get("pubkey"),
+                    "lamports": lamports,
+                }
+            )
+
+        if total_lamports == 0:
+            return []
+
+        amount = Decimal(total_lamports) / Decimal(10**_SOL_DECIMALS)
+        price = await self._pricing.get_price_usd("SOL")
+        usd_value = amount * price
+        apy = await self._fetch_validator_apy(voter) if voter else Decimal(0)
+        today = self._pricing.today()
+
+        raw_payload: dict[str, Any] = {
+            "solana_address": self._solana_address,
+            "stake_accounts": stake_accounts,
+            "total_lamports": total_lamports,
+            "voter": voter,
+        }
+
+        return [
+            Snapshot(
+                date=today,
+                source=self.source_name,
+                asset="SOL",
+                amount=amount,
+                usd_value=usd_value,
+                price=price,
+                apy=apy,
+                raw_json=json.dumps(raw_payload),
+            )
+        ]
+
+    async def _fetch_validator_apy(self, voter: str) -> Decimal:
+        """Fetch validator APY estimate from Stakewiz API."""
+        try:
+            resp = await self._client.get(f"{_STAKEWIZ_API_URL}/{voter}", timeout=10.0)
+            resp.raise_for_status()
+            data = resp.json()
+            if isinstance(data, dict) and data.get("apy_estimate") is not None:
+                # Stakewiz returns percentage (e.g. 6.13), convert to decimal (0.0613)
+                return Decimal(str(data["apy_estimate"])) / Decimal(100)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("bitget_wallet: failed to fetch validator APY for voter=%s: %s", voter, exc)
+        return Decimal(0)
 
     async def fetch_transactions(self, since: date | None = None) -> list[Transaction]:
         """Fetch supply/withdraw history from Aave transaction API."""
@@ -302,6 +442,14 @@ def _normalize_address(value: str, *, field_name: str) -> str:
         msg = f"{field_name} must be a 0x-prefixed 40-hex address"
         raise ValueError(msg)
     return "0x" + text[2:].lower()
+
+
+def _normalize_solana_address(value: str) -> str:
+    text = value.strip()
+    if not _SOLANA_ADDRESS_RE.fullmatch(text):
+        msg = "solana_address must be a base58 Solana public key (32-44 chars)"
+        raise ValueError(msg)
+    return text
 
 
 def _coerce_address(value: object) -> str:

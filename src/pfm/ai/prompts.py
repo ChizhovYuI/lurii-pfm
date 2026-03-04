@@ -36,7 +36,7 @@ Top holdings:
 
 Allocation by category:
 {allocation_by_category}
-
+{extra_sections}
 Risk metrics:
 {risk_metrics}
 
@@ -71,6 +71,8 @@ class AnalyticsSummary:
     currency_exposure: str
     risk_metrics: str
     warnings: tuple[str, ...] = ()
+    earn_positions: str = ""
+    weekly_pnl: str = ""
 
 
 def render_weekly_report_user_prompt(analytics: AnalyticsSummary) -> str:
@@ -79,11 +81,24 @@ def render_weekly_report_user_prompt(analytics: AnalyticsSummary) -> str:
     allocation_by_category = _compact_allocation_by_category(analytics.allocation_by_category)
     risk_metrics = _compact_risk_metrics(analytics.risk_metrics)
     warnings_text = "\n".join(analytics.warnings) if analytics.warnings else "None"
+
+    extra_parts: list[str] = []
+    if analytics.earn_positions:
+        earn = _compact_earn_positions(analytics.earn_positions)
+        if earn:
+            extra_parts.append(f"DeFi/Earn positions (assets generating yield):\n{_pretty_json(earn)}")
+    if analytics.weekly_pnl:
+        pnl = _compact_weekly_pnl(analytics.weekly_pnl)
+        if pnl:
+            extra_parts.append(f"7-Day portfolio change:\n{_pretty_json(pnl)}")
+    extra_sections = "\n".join(extra_parts) + "\n" if extra_parts else ""
+
     return WEEKLY_REPORT_USER_PROMPT_TEMPLATE.format(
         as_of_date=analytics.as_of_date.isoformat(),
         net_worth_usd=_fmt_usd(analytics.net_worth_usd),
         top_holdings=_pretty_json(top_holdings),
         allocation_by_category=_pretty_json(allocation_by_category),
+        extra_sections=extra_sections,
         risk_metrics=_pretty_json(risk_metrics),
         warnings=warnings_text,
     )
@@ -189,3 +204,46 @@ def _fmt_usd(value: object) -> str:
 def _fmt_pct(value: object) -> str:
     """Format percentage with '%' suffix to prevent AI misinterpretation."""
     return f"{_to_decimal(value).quantize(Decimal('0.01'))}%"
+
+
+def _compact_earn_positions(raw: str) -> list[dict[str, object]]:
+    rows = _parse_list(raw)
+    compact: list[dict[str, object]] = [
+        {
+            "asset": str(row.get("asset", "UNKNOWN")),
+            "source": str(row.get("source", "")),
+            "usd_value": _fmt_usd(row.get("usd_value", "0")),
+            "apy": _fmt_pct(row.get("apy", "0")),
+            "portfolio_pct": _fmt_pct(row.get("portfolio_pct", "0")),
+        }
+        for row in rows
+    ]
+    compact.sort(key=lambda r: _to_decimal(r.get("usd_value", "0")), reverse=True)
+    return compact
+
+
+def _compact_weekly_pnl(raw: str) -> dict[str, object] | None:
+    parsed = _parse_dict(raw)
+    if not parsed:
+        return None
+    result: dict[str, object] = {
+        "start_date": parsed.get("start_date", ""),
+        "end_date": parsed.get("end_date", ""),
+        "start_value": _fmt_usd(parsed.get("start_value", "0")),
+        "end_value": _fmt_usd(parsed.get("end_value", "0")),
+        "absolute_change": _fmt_usd(parsed.get("absolute_change", "0")),
+        "percentage_change": _fmt_pct(parsed.get("percentage_change", "0")),
+    }
+    for key in ("top_gainers", "top_losers"):
+        items = parsed.get(key, [])
+        if isinstance(items, list):
+            result[key] = [
+                {
+                    "asset": str(item.get("asset", "UNKNOWN")),
+                    "absolute_change": _fmt_usd(item.get("absolute_change", "0")),
+                    "percentage_change": _fmt_pct(item.get("percentage_change", "0")),
+                }
+                for item in items
+                if isinstance(item, dict)
+            ][:3]
+    return result

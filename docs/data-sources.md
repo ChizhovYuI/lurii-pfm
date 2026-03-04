@@ -20,6 +20,7 @@ Overview of all financial data sources, recommended integration method, and acce
 | 10 | Revolut | Multi-currency neobank | EUR, GBP, USD + others | GoCardless open banking API |
 | 11 | Rabby Wallet | EVM wallet | ETH, stablecoins, ERC-20 tokens | DeBank OpenAPI (`all_token_list`) |
 | 12 | yo.xyz | DeFi vault | Vault shares + underlying assets | yo.xyz REST API (`/vault`, `/history`) |
+| 13 | Bitget Wallet | EVM + Solana wallet | USDC/USDT (Aave), SOL (staking) | Aave GraphQL + Solana RPC + Stakewiz |
 
 ## Money Flow
 
@@ -545,6 +546,49 @@ Base URL: `https://api.yo.xyz`
 
 ---
 
+## 13. Bitget Wallet
+
+**Method:** Aave V3 GraphQL API (Base chain) + Solana RPC (native staking) + Stakewiz API (validator APY)
+
+Bitget Wallet is a multi-chain wallet. PFM tracks two position types:
+1. **Aave V3 supplies on Base** — stablecoin lending (USDC, USDT)
+2. **Native SOL staking** — delegated to Bitget Wallet's self-operated validator
+
+### Endpoints
+
+| Purpose | Endpoint | Method |
+|---------|----------|--------|
+| Aave markets | `POST https://api.v3.aave.com/graphql` | GraphQL `markets` query |
+| Aave user supplies | `POST https://api.v3.aave.com/graphql` | GraphQL `userSupplies` query |
+| Aave transaction history | `POST https://api.v3.aave.com/graphql` | GraphQL `userTransactionHistory` query |
+| aToken on-chain balance | `POST https://mainnet.base.org` | JSON-RPC `eth_call` (balanceOf) |
+| SOL stake accounts | `POST https://api.mainnet-beta.solana.com` | JSON-RPC `getProgramAccounts` |
+| Validator APY | `GET https://api.stakewiz.com/validator/{voter}` | REST |
+
+Rate limits: Aave GraphQL 180 req/min. Solana public RPC has standard rate limits. Stakewiz is best-effort.
+
+### SOL Staking Details
+
+- Queries Solana Stake program (`Stake11111111111111111111111111111111111111`) with `memcmp` filter at offset 44 (withdrawer pubkey)
+- Returns all stake accounts delegated from the wallet, summed into one SOL snapshot
+- Validator APY fetched from Stakewiz (e.g. ~6.13% for Bitget Wallet validator, 0% commission)
+- Balance is total account lamports (÷ 10^9 for SOL)
+
+### Setup
+
+1. Open Bitget Wallet → copy your EVM address (`0x...`)
+2. Switch to Solana network → copy your Solana address (base58)
+3. Add to pfm: `pfm source add` → select `bitget_wallet` → enter wallet address and (optionally) Solana address
+
+### Credentials
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `wallet_address` | Yes | EVM address (`0x...`) for Aave positions on Base |
+| `solana_address` | No | Solana address (base58) for native SOL staking |
+
+---
+
 ## Summary: Integration Complexity
 
 | Source | Complexity | Auth | Real-time? |
@@ -561,6 +605,7 @@ Base URL: `https://api.yo.xyz`
 | Revolut | Low | GoCardless secret | Yes (4x/day auto-sync) |
 | Rabby Wallet | Low | DeBank AccessKey | Yes |
 | yo.xyz | Medium | Wallet + vault params | Yes |
+| Bitget Wallet | Low | Public addresses | Yes |
 
 ### Recommended Implementation Order
 

@@ -912,3 +912,44 @@ This updates only `model` for Gemini; `api_key`, `base_url`, and `active` are pr
 - Validation failures return fallback commentary immediately — no misleading pull attempt
 - Log messages accurately reflect the failure type (`"Ollama API error"` vs `"Ollama structured output validation failed"`)
 - Small models (llama3.1:8b) that struggle with JSON schema will return fallback instead of silently retrying via pull
+
+---
+
+## ADR-024: Add native SOL staking to Bitget Wallet collector
+
+**Date:** 2026-03-04
+
+**Status:** Accepted
+
+**Context:** The Bitget Wallet collector only tracked Aave V3 supply positions on Base (EVM). Bitget Wallet also supports native SOL staking via its self-operated Solana validator (`7tKWFaaLi2FJSqukHxUrnXph8M3ynrqn3kEkKPpgcNHZ`, "Bitget Wallet", 0% commission).
+
+**Problem:**
+- Staked SOL was not tracked in the portfolio
+- EVM address and Solana address are different keys (secp256k1 vs ed25519), so the existing `wallet_address` cannot derive the Solana address
+
+**Decision:** Extend `BitgetWalletCollector` to fetch native SOL staking positions via Solana RPC, with validator APY from Stakewiz API.
+
+**Design choices:**
+- **Optional `solana_address` credential** — added to `source_types.py` as `required=False`. Existing configs without it continue to work unchanged (backward compatible)
+- **Solana RPC `getProgramAccounts`** — queries the Stake program (`Stake11111111111111111111111111111111111111`) with `memcmp` filter at offset 44 (withdrawer pubkey) and `jsonParsed` encoding. Returns all stake accounts owned by the wallet
+- **Aggregated single SOL snapshot** — all stake accounts are summed into one `Snapshot(asset="SOL")`. Multiple validators are supported but APY is taken from the first active voter
+- **Lamports → SOL conversion** — `Decimal(total_lamports) / Decimal(10^9)`, using `Decimal` throughout to avoid float precision loss
+- **Stakewiz API for APY** — `GET https://api.stakewiz.com/validator/{voter}` returns `apy_estimate` as a percentage (e.g. 6.13). Converted to decimal (0.0613) for consistency with Aave APY storage. Best-effort: logs warning and returns 0 on failure
+- **Voter extraction from parsed data** — reads `account.data.parsed.info.stake.delegation.voter` from the first active stake account. Skips accounts with no delegation (inactive/warming-up) so a later active account can still provide the voter
+- **Refactored `fetch_balances()`** — split into `_fetch_aave_balances()` + `_fetch_sol_staking()`, combined in `fetch_balances()`. Both return `list[Snapshot]`
+- **Base58 address validation** — `_SOLANA_ADDRESS_RE` matches `[1-9A-HJ-NP-Za-km-z]{32,44}` (standard base58 alphabet, valid Solana pubkey length range)
+- **Public Solana RPC** — uses `https://api.mainnet-beta.solana.com` (rate-limited but sufficient for single daily collection)
+
+**Raw JSON payload includes:**
+- `solana_address`, `voter`, `total_lamports`, `stake_accounts` (array of `{pubkey, lamports}`)
+
+**Files changed:**
+- `src/pfm/collectors/bitget_wallet.py` — added Solana constants, `solana_address` param, `_fetch_sol_staking()`, `_fetch_validator_apy()`, `_normalize_solana_address()`, refactored `fetch_balances()`
+- `src/pfm/source_types.py` — added `solana_address` credential field to `bitget_wallet`
+- `tests/test_bitget_wallet.py` — 5 new tests with real stake account data fixtures (address `BcbaVrK3...`, ~7.89 SOL, validator `7tKWFaa...`)
+
+**Consequences:**
+- SOL staking positions appear in portfolio analytics, earn summary, and AI commentary
+- Existing Bitget Wallet configs without `solana_address` are unaffected
+- Stakewiz dependency is best-effort — APY defaults to 0 if the API is unreachable
+- Source count remains 10 (Bitget Wallet gains a capability, not a new source type)

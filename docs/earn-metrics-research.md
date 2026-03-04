@@ -2,8 +2,8 @@
 
 ## Summary
 
-Research into how to obtain APR% and APY% for all earn/DeFi positions across the 9 data
-sources. **4 sources** have active earn positions with yield data available via API.
+Research into how to obtain APR% and APY% for all earn/DeFi positions across the data
+sources. **5 sources** have active earn positions with yield data available via API.
 
 | Source | Product | Asset | Effective APR | How to Get |
 |--------|---------|-------|---------------|------------|
@@ -14,6 +14,8 @@ sources. **4 sources** have active earn positions with yield data available via 
 | Bybit | Flexible Saving | USDT | **5.60%** (Tier 1 ≤200) | `yesterdayYield` from position |
 | Bybit | Flexible Saving | USDC | **5.80%** (Tier 1 ≤200) | `yesterdayYield` from position |
 | Bybit | On-Chain Staking | SOL | 4.38% | `estimateApr` from product |
+| Bitget Wallet | Aave V3 Supply | USDC | ~3.1% | Aave GraphQL `apy.value` |
+| Bitget Wallet | Native SOL Staking | SOL | ~6.13% | Stakewiz API `apy_estimate` |
 | Blend | DeFi Lending (supply) | USDC | ~8.57% | On-chain calculation |
 | Binance | Simple Earn (inactive) | — | — | `simple-earn/flexible/list` |
 
@@ -363,7 +365,53 @@ backstop_rate = config["bstop_rate"] / 10**7  # 0.20 = 20%
 
 ---
 
-## 4. Binance Simple Earn (No Active Positions)
+## 4. Bitget Wallet (Aave V3 + SOL Staking)
+
+### Active Positions
+
+**Aave V3 Supply (Base chain):**
+- USDC: supplied via Aave, APY from GraphQL `apy.value` field (~3.1%)
+- On-chain aToken balance used for precision (includes accrued interest)
+
+**Native SOL Staking:**
+- SOL: ~7.89, delegated to Bitget Wallet validator (`7tKWFaa...`), 0% commission
+
+### How to Get APY
+
+**Aave supplies:** APY is returned directly in the Aave GraphQL `userSupplies` response:
+```
+query { userSupplies { apy { value formatted } } }
+```
+- `apy.value` is a decimal (e.g. `0.031` = 3.1%)
+- Price fetched from CoinGecko; on-chain `balanceOf` provides precise amount
+
+**SOL staking:** APY is fetched from the Stakewiz validator API:
+```
+GET https://api.stakewiz.com/validator/{voter_pubkey}
+Response: { "apy_estimate": 6.13, "commission": 0, "name": "Bitget Wallet" }
+```
+- `apy_estimate` is a percentage (6.13 = 6.13%), converted to decimal (0.0613) in the collector
+- Best-effort: defaults to 0 if Stakewiz is unreachable
+
+### Current Rates (March 2026)
+
+| Product | Asset | APY | Source |
+|---------|-------|-----|--------|
+| Aave V3 Supply (Base) | USDC | ~3.1% | Aave GraphQL |
+| Native SOL Staking | SOL | ~6.13% | Stakewiz API |
+
+### API Calls Required
+
+| Purpose | Calls | Auth |
+|---------|-------|------|
+| Aave markets + supplies | 2 GraphQL | None |
+| On-chain aToken balance | 1 per asset | None (public RPC) |
+| SOL stake accounts | 1 Solana RPC | None (public RPC) |
+| Validator APY | 1 REST | None |
+
+---
+
+## 5. Binance Simple Earn (No Active Positions)
 
 No active earn positions, but the API supports querying available rates.
 
@@ -400,7 +448,7 @@ Response:
 
 ---
 
-## 5. Sources Without Earn (No APR applicable)
+## 6. Sources Without Earn (No APR applicable)
 
 | Source | Reason |
 |--------|--------|
@@ -565,5 +613,6 @@ Response:
 |--------|-------|------|-------|
 | OKX | 1 (balance) + N (rate per ccy) | Yes | N = number of savings currencies |
 | Bybit | 2 (positions) + N (products) | Yes | N = number of earn products held |
+| Bitget Wallet | 2 GraphQL + 1 RPC + 1 Solana RPC + 1 Stakewiz | No | All public endpoints |
 | Blend | 3-5 Soroban simulations | No auth | reserve_list + positions + config + N reserves |
 | Binance | 1 (positions) | Yes | Only if positions exist |

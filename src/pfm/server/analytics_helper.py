@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from pfm.server.serializers import _str_decimal
@@ -29,6 +30,7 @@ async def build_analytics_summary(
         compute_net_worth,
         compute_risk_metrics,
     )
+    from pfm.analytics.pnl import PnlPeriod, compute_pnl
 
     snapshots = await repo.get_snapshots_resolved(snapshot_date)
 
@@ -47,6 +49,54 @@ async def build_analytics_summary(
     alloc_category = await compute_allocation_by_category(repo, snapshot_date)
     currency_exposure = await compute_currency_exposure(repo, snapshot_date)
     risk = await compute_risk_metrics(repo, snapshot_date)
+
+    # Earn positions: snapshots with APY > 0
+    earn_positions = ""
+    earn_snaps = [s for s in snapshots if s.apy > 0]
+    if earn_snaps:
+        earn_positions = json.dumps(
+            [
+                {
+                    "asset": s.asset,
+                    "source": s.source_name or s.source,
+                    "usd_value": _str_decimal(s.usd_value),
+                    "apy": _str_decimal(s.apy * 100),
+                    "portfolio_pct": _str_decimal((s.usd_value / net_worth * 100) if net_worth else Decimal(0)),
+                }
+                for s in earn_snaps
+            ]
+        )
+
+    # Weekly PnL: skip section if no prior snapshot exists
+    weekly_pnl = ""
+    pnl = await compute_pnl(repo, snapshot_date, PnlPeriod.WEEKLY)
+    if pnl.start_date is not None and pnl.start_date != pnl.end_date:
+        weekly_pnl = json.dumps(
+            {
+                "start_date": pnl.start_date.isoformat(),
+                "end_date": pnl.end_date.isoformat() if pnl.end_date else "",
+                "start_value": _str_decimal(pnl.start_value),
+                "end_value": _str_decimal(pnl.end_value),
+                "absolute_change": _str_decimal(pnl.absolute_change),
+                "percentage_change": _str_decimal(pnl.percentage_change),
+                "top_gainers": [
+                    {
+                        "asset": r.asset,
+                        "absolute_change": _str_decimal(r.absolute_change),
+                        "percentage_change": _str_decimal(r.percentage_change),
+                    }
+                    for r in pnl.top_gainers[:3]
+                ],
+                "top_losers": [
+                    {
+                        "asset": r.asset,
+                        "absolute_change": _str_decimal(r.absolute_change),
+                        "percentage_change": _str_decimal(r.percentage_change),
+                    }
+                    for r in pnl.top_losers[:3]
+                ],
+            }
+        )
 
     return AnalyticsSummary(
         as_of_date=snapshot_date,
@@ -112,4 +162,6 @@ async def build_analytics_summary(
             }
         ),
         warnings=tuple(warnings),
+        earn_positions=earn_positions,
+        weekly_pnl=weekly_pnl,
     )
