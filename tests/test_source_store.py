@@ -32,7 +32,7 @@ async def store(tmp_path: Path) -> SourceStore:
 
 
 def test_all_source_types_defined():
-    assert len(SOURCE_TYPES) == 15
+    assert len(SOURCE_TYPES) == 16
     expected = {
         "okx",
         "binance",
@@ -48,6 +48,7 @@ def test_all_source_types_defined():
         "ibkr",
         "rabby",
         "revolut",
+        "emcd",
         "yo",
     }
     assert set(SOURCE_TYPES.keys()) == expected

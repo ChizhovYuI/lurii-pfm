@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
 from pfm.db.models import Snapshot, Source
 from pfm.db.source_store import SourceStore
+
+if TYPE_CHECKING:
+    from pfm.pricing.coingecko import PricingService
+
+logger = logging.getLogger(__name__)
 
 routes = web.RouteTableDef()
 
@@ -56,11 +62,13 @@ async def ingest_extension_snapshot(request: web.Request) -> web.Response:
     matched_source = matched_sources[0]
     assets = _resolve_assets(body)
     captured_date = _resolve_captured_date(body.get("capturedAt"))
-    snapshots = _build_snapshots(
+    pricing: PricingService = request.app["pricing"]
+    snapshots = await _build_snapshots(
         assets,
         snapshot_date=captured_date,
         source_type=source_type,
         source_name=matched_source.name,
+        pricing=pricing,
     )
 
     repo = request.app["repo"]
@@ -110,7 +118,8 @@ def _match_sources(sources: list[Source], *, source_type: str, uid: str) -> list
             continue
         if not isinstance(credentials, dict):
             continue
-        if str(credentials.get("uid", "")).strip() == uid:
+        source_uid = str(credentials.get("uid", credentials.get("email", ""))).strip()
+        if source_uid == uid:
             matches.append(source)
     return matches
 
@@ -135,12 +144,13 @@ def _resolve_captured_date(value: object) -> date:
     return datetime.now(tz=UTC).date()
 
 
-def _build_snapshots(
+async def _build_snapshots(
     assets: list[dict[str, Any]],
     *,
     snapshot_date: date,
     source_type: str,
     source_name: str,
+    pricing: PricingService,
 ) -> list[Snapshot]:
     snapshots: list[Snapshot] = []
 
@@ -156,7 +166,17 @@ def _build_snapshots(
         if amount == 0 and usd_value == 0:
             continue
 
-        price = usd_value / amount if amount != 0 else Decimal(0)
+        # When the extension doesn't provide USD values, look up the price.
+        if usd_value == 0 and amount > 0:
+            try:
+                price = await pricing.get_price_usd(symbol)
+                usd_value = amount * price
+            except (ValueError, Exception):
+                logger.warning("ext_snapshot: cannot price %s, saving with usd_value=0", symbol)
+                price = Decimal(0)
+        else:
+            price = usd_value / amount if amount != 0 else Decimal(0)
+
         quoted_apr = _to_decimal(asset.get("quotedAprPercent", asset.get("quoted_apr_percent", "0")))
         apy = quoted_apr / Decimal(100) if quoted_apr > 1 else quoted_apr
 

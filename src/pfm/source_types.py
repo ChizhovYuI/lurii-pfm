@@ -244,6 +244,18 @@ SOURCE_TYPES: dict[str, list[CredentialField]] = {
         CredentialField("vault_address", "Vault contract address (0x...)", secret=False),
         CredentialField("user_address", "Wallet address (0x...)", secret=False),
     ],
+    "emcd": [
+        CredentialField(
+            "email",
+            "EMCD account email",
+            secret=False,
+            tip=(
+                "1. Log in to emcd.io\n"
+                "2. Use the email address of your EMCD account\n"
+                "3. Data is synced via the Lurii Finance Chrome extension"
+            ),
+        ),
+    ],
 }
 
 
