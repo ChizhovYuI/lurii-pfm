@@ -30,6 +30,15 @@ _LAUNCHD_LABEL = "finance.lurii.pfm"
 # Module-level mutable cache container (single-process server).
 _cache: dict[str, Any] = {"data": None, "ts": 0.0}
 
+# Install state machine: idle → installing → installed | error
+_install_state: dict[str, Any] = {"status": "idle", "progress": 0.0, "message": ""}
+
+
+def _reset_install_state() -> None:
+    _install_state["status"] = "idle"
+    _install_state["progress"] = 0.0
+    _install_state["message"] = ""
+
 
 async def _exec(*cmd: str) -> int:
     """Run a command and return exit code."""
@@ -94,12 +103,22 @@ async def _get_updates() -> dict[str, Any]:
 async def check_updates(request: web.Request) -> web.Response:  # noqa: ARG001
     """Return current and latest versions for pfm and the macOS app."""
     result = await _get_updates()
+    result["restart_pending"] = _install_state["status"] == "installed"
     return web.json_response(result)
+
+
+@routes.get("/api/v1/updates/status")
+async def get_install_status(request: web.Request) -> web.Response:  # noqa: ARG001
+    """Return current install state so the UI can poll on reconnect."""
+    return web.json_response(_install_state)
 
 
 @routes.post("/api/v1/updates/install")
 async def install_updates(request: web.Request) -> web.Response:
     """Run ``brew upgrade`` for the specified target in background."""
+    if _install_state["status"] == "installing":
+        return web.json_response({"error": "Install already in progress"}, status=409)
+
     try:
         body = await request.json()
     except (ValueError, KeyError):
@@ -115,22 +134,60 @@ async def install_updates(request: web.Request) -> web.Response:
     if not commands:
         return web.json_response({"error": f"Unknown target: {target}"}, status=400)
 
-    async def _run() -> None:
-        for cmd in commands:
-            await _exec(*cmd)
-        # Invalidate cache so the next check picks up the new version.
-        _cache["data"] = None
+    broadcaster = request.app["broadcaster"]
 
-        # Restart the daemon via launchctl (safety net — brew post_install
-        # may not reliably restart when the running process upgrades itself).
-        if target in ("pfm", "all"):
-            uid = str(os.getuid())
-            plist = Path.home() / "Library/LaunchAgents" / f"{_LAUNCHD_LABEL}.plist"
-            if plist.exists():
-                await _exec("launchctl", "bootout", f"gui/{uid}/{_LAUNCHD_LABEL}")
-                await _exec("launchctl", "bootstrap", f"gui/{uid}", str(plist))
+    _install_state["status"] = "installing"
+    _install_state["progress"] = 0.0
+    _install_state["message"] = "Starting update..."
+
+    async def _run() -> None:
+        try:
+            await broadcaster.broadcast({"type": "update_started"})
+
+            _install_state["progress"] = 0.33
+            _install_state["message"] = "Running brew update..."
+            await broadcaster.broadcast(
+                {"type": "update_progress", "progress": 0.33, "message": "Running brew update..."},
+            )
+            await _exec(_BREW, "update")
+
+            _install_state["progress"] = 0.66
+            _install_state["message"] = "Upgrading packages..."
+            await broadcaster.broadcast(
+                {"type": "update_progress", "progress": 0.66, "message": "Upgrading packages..."},
+            )
+            for cmd in commands:
+                await _exec(*cmd)
+
+            # Invalidate cache so the next check picks up the new version.
+            _cache["data"] = None
+
+            _install_state["status"] = "installed"
+            _install_state["progress"] = 1.0
+            _install_state["message"] = "Updates installed"
+            await broadcaster.broadcast({"type": "update_completed"})
+        except (OSError, asyncio.CancelledError) as exc:
+            _install_state["status"] = "error"
+            _install_state["progress"] = 0.0
+            _install_state["message"] = str(exc)
+            await broadcaster.broadcast({"type": "update_failed", "error": str(exc)})
 
     task = asyncio.create_task(_run())
     request.app.setdefault("_bg_tasks", set()).add(task)
     task.add_done_callback(request.app["_bg_tasks"].discard)
     return web.json_response({"status": "started"}, status=202)
+
+
+@routes.post("/api/v1/updates/restart")
+async def restart_services(request: web.Request) -> web.Response:  # noqa: ARG001
+    """Restart the pfm daemon via launchctl."""
+    _reset_install_state()
+
+    uid = str(os.getuid())
+    plist = Path.home() / "Library/LaunchAgents" / f"{_LAUNCHD_LABEL}.plist"
+    if not plist.exists():
+        return web.json_response({"error": "LaunchAgent plist not found"}, status=404)
+
+    await _exec("launchctl", "bootout", f"gui/{uid}/{_LAUNCHD_LABEL}")
+    await _exec("launchctl", "bootstrap", f"gui/{uid}", str(plist))
+    return web.json_response({"status": "restarting"})

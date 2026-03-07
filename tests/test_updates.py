@@ -27,9 +27,10 @@ async def client(aiohttp_client, db_path):
 
 @pytest.fixture(autouse=True)
 def _clear_cache():
-    """Reset the module-level cache between tests."""
+    """Reset the module-level cache and install state between tests."""
     updates_mod._cache["data"] = None
     updates_mod._cache["ts"] = 0.0
+    updates_mod._reset_install_state()
 
 
 async def test_fetch_latest_tag_parses_tag(client):
@@ -78,6 +79,7 @@ async def test_check_updates_returns_versions(client):
     assert data["pfm"]["current"] == __version__
     assert data["pfm"]["latest"] == "0.15.0"
     assert data["app"]["latest"] == "1.9"
+    assert "restart_pending" in data
 
 
 async def test_check_updates_caches_result(client):
@@ -117,3 +119,64 @@ async def test_install_returns_202(client):
     assert resp.status == 202
     data = await resp.json()
     assert data["status"] == "started"
+
+
+async def test_install_status_returns_state(client):
+    resp = await client.get("/api/v1/updates/status")
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["status"] == "idle"
+    assert data["progress"] == 0.0
+
+
+async def test_install_conflict_when_already_installing(client):
+    updates_mod._install_state["status"] = "installing"
+    resp = await client.post("/api/v1/updates/install", json={"target": "pfm"})
+    assert resp.status == 409
+
+
+async def test_restart_returns_404_when_no_plist(client):
+    with patch("pfm.server.routes.updates.Path.home") as mock_home:
+        from pathlib import Path
+
+        mock_home.return_value = Path("/nonexistent")
+        resp = await client.post("/api/v1/updates/restart")
+    assert resp.status == 404
+
+
+async def test_restart_resets_install_state(client):
+    updates_mod._install_state["status"] = "installed"
+    updates_mod._install_state["progress"] = 1.0
+
+    with (
+        patch("pfm.server.routes.updates.Path.home") as mock_home,
+        patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+    ):
+        from pathlib import Path as RealPath
+
+        tmp = RealPath("/tmp/test_launchagent")
+        la_dir = tmp / "Library/LaunchAgents"
+        la_dir.mkdir(parents=True, exist_ok=True)
+        plist = la_dir / "finance.lurii.pfm.plist"
+        plist.write_text("<plist/>")
+        mock_home.return_value = tmp
+
+        proc = AsyncMock()
+        proc.communicate.return_value = (b"", b"")
+        proc.returncode = 0
+        mock_exec.return_value = proc
+
+        resp = await client.post("/api/v1/updates/restart")
+
+    assert resp.status == 200
+    assert updates_mod._install_state["status"] == "idle"
+
+
+async def test_check_updates_restart_pending_when_installed(client):
+    updates_mod._install_state["status"] = "installed"
+    with patch.object(updates_mod, "_fetch_latest_tag", new_callable=AsyncMock) as mock:
+        mock.return_value = __version__
+        resp = await client.get("/api/v1/updates")
+
+    data = await resp.json()
+    assert data["restart_pending"] is True
