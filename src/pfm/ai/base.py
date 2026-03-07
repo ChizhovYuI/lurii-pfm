@@ -53,6 +53,10 @@ class LLMProvider(ABC):
     """Abstract base for all LLM providers."""
 
     @abstractmethod
+    async def validate_connection(self) -> None:
+        """Validate provider connectivity without generating commentary."""
+
+    @abstractmethod
     async def generate_commentary(
         self,
         system_prompt: str,

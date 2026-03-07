@@ -142,6 +142,17 @@ class Trading212Collector(BaseCollector):
         logger.info("Trading 212: found %d non-zero balances", len(raw))
         return raw
 
+    async def validate_connection(self) -> None:
+        """Validate credentials with read-only account endpoints only."""
+        summary = await self._get_json(_SUMMARY_PATH)
+        positions = await self._get_json(_POSITIONS_PATH)
+        if not isinstance(summary, dict):
+            msg = f"Trading 212 summary response must be an object, got {type(summary).__name__}"
+            raise TypeError(msg)
+        if not isinstance(positions, list):
+            msg = f"Trading 212 positions response must be a list, got {type(positions).__name__}"
+            raise TypeError(msg)
+
     async def _position_price_usd(
         self,
         position: dict[str, Any],

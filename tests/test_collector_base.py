@@ -144,3 +144,14 @@ async def test_collect_formats_dns_error_with_country_access_hint(repo, pricing)
         in result.errors[0]
     )
     assert transactions_called is False
+
+
+async def test_close_closes_owned_httpx_clients(pricing):
+    collector = MockCollector(pricing)
+    collector._client = httpx.AsyncClient()
+    collector._extra_client = httpx.AsyncClient()
+
+    await collector.close()
+
+    assert collector._client.is_closed
+    assert collector._extra_client.is_closed

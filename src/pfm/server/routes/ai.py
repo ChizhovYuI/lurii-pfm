@@ -11,6 +11,12 @@ from typing import Any
 from aiohttp import web
 
 from pfm.db.ai_store import AIProviderStore
+from pfm.server.connection_validation import (
+    ConnectionValidationError,
+)
+from pfm.server.connection_validation import (
+    validate_ai_provider_connection as run_ai_provider_validation,
+)
 from pfm.server.serializers import mask_secret
 
 logger = logging.getLogger(__name__)
@@ -230,6 +236,24 @@ async def upsert_provider(request: web.Request) -> web.Response:
             "active": config.active,
         }
     )
+
+
+@routes.post("/api/v1/ai/providers/{type}/validate")
+async def validate_provider(request: web.Request) -> web.Response:
+    """Validate a provider configuration without saving it."""
+    provider_type = request.match_info["type"]
+    body: dict[str, Any] = await request.json()
+
+    try:
+        message = await run_ai_provider_validation(
+            str(request.app["db_path"]),
+            provider_type=provider_type,
+            fields=body,
+        )
+    except ConnectionValidationError as exc:
+        return web.json_response({"error": exc.message}, status=exc.status_code)
+
+    return web.json_response({"ok": True, "message": message})
 
 
 @routes.delete("/api/v1/ai/providers/{type}")

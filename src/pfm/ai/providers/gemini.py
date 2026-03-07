@@ -60,6 +60,10 @@ class GeminiProvider(LLMProvider):
             return (self._model,)
         return GEMINI_MODELS
 
+    async def validate_connection(self) -> None:
+        """Validate API key and selected model without generating commentary."""
+        await self._client.aio.models.get(model=self._models[0])
+
     async def generate_commentary(
         self,
         system_prompt: str,

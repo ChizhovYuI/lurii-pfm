@@ -96,3 +96,26 @@ async def test_close_does_not_close_injected_client():
     await provider.close()
     # Injected client should not be closed (owns_client is False)
     assert not hasattr(client, "close") or not getattr(client.close, "called", False)
+
+
+async def test_validate_connection_uses_raw_models_endpoint():
+    client = _mock_client()
+    raw_client = MagicMock()
+    raw_client.models.list = AsyncMock(return_value=[{"id": "test-model"}])
+    provider = _TestProvider(client=client, raw_client=raw_client)
+
+    await provider.validate_connection()
+
+    raw_client.models.list.assert_awaited_once()
+
+
+async def test_validate_connection_propagates_models_error():
+    client = _mock_client()
+    raw_client = MagicMock()
+    raw_client.models.list = AsyncMock(side_effect=APIError(message="bad auth", request=MagicMock(), body=None))
+    provider = _TestProvider(client=client, raw_client=raw_client)
+
+    import pytest
+
+    with pytest.raises(APIError):
+        await provider.validate_connection()

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import aiosqlite
 import httpx
 from aiohttp import web
 
@@ -30,14 +33,144 @@ _LAUNCHD_LABEL = "finance.lurii.pfm"
 # Module-level mutable cache container (single-process server).
 _cache: dict[str, Any] = {"data": None, "ts": 0.0}
 
-# Install state machine: idle → installing → installed | error
-_install_state: dict[str, Any] = {"status": "idle", "progress": 0.0, "message": ""}
+_UPDATE_STATE_KEY = "update_state"
+_VALID_INSTALL_STATUSES = frozenset({"idle", "installing", "installed", "error"})
+_VALID_INSTALL_TARGETS = frozenset({"pfm", "app", "all"})
+_INTERRUPTED_INSTALL_MESSAGE = "Update was interrupted. Please check versions and retry or restart."
+
+# In-process mirror of the persisted state for logging/tests/debugging.
+_install_state: dict[str, Any] = {}
 
 
-def _reset_install_state() -> None:
-    _install_state["status"] = "idle"
-    _install_state["progress"] = 0.0
-    _install_state["message"] = ""
+def _default_install_state() -> dict[str, Any]:
+    return {
+        "status": "idle",
+        "progress": 0.0,
+        "message": "",
+        "target": "all",
+        "installed_versions": {},
+        "updated_at": "",
+    }
+
+
+def _timestamp_now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _set_cached_install_state(state: dict[str, Any]) -> dict[str, Any]:
+    normalized = _normalize_install_state(state)
+    _install_state.clear()
+    _install_state.update(normalized)
+    return dict(normalized)
+
+
+def _normalize_install_state(raw: object) -> dict[str, Any]:
+    default_state = _default_install_state()
+    if not isinstance(raw, dict):
+        return dict(default_state)
+
+    status = str(raw.get("status") or default_state["status"])
+    if status not in _VALID_INSTALL_STATUSES:
+        status = str(default_state["status"])
+
+    raw_progress = raw.get("progress", default_state["progress"])
+    try:
+        progress = float(raw_progress)
+    except (TypeError, ValueError):
+        progress = float(default_state["progress"])
+    progress = min(max(progress, 0.0), 1.0)
+
+    message = str(raw.get("message") or default_state["message"])
+    target = str(raw.get("target") or default_state["target"])
+    if target not in _VALID_INSTALL_TARGETS:
+        target = str(default_state["target"])
+
+    raw_versions = raw.get("installed_versions")
+    installed_versions = (
+        {str(key): str(value) for key, value in raw_versions.items() if value}
+        if isinstance(raw_versions, dict)
+        else dict(default_state["installed_versions"])
+    )
+
+    updated_at = str(raw.get("updated_at") or default_state["updated_at"])
+
+    return {
+        "status": status,
+        "progress": progress,
+        "message": message,
+        "target": target,
+        "installed_versions": installed_versions,
+        "updated_at": updated_at,
+    }
+
+
+async def _load_install_state(db_path: Path) -> dict[str, Any]:
+    async with aiosqlite.connect(str(db_path)) as db:
+        row = await (await db.execute("SELECT value FROM app_settings WHERE key = ?", (_UPDATE_STATE_KEY,))).fetchone()
+
+    if row is None:
+        return _set_cached_install_state(_default_install_state())
+
+    try:
+        state = json.loads(str(row[0]))
+    except json.JSONDecodeError:
+        logger.warning("Invalid persisted update_state payload; resetting to defaults.")
+        return _set_cached_install_state(_default_install_state())
+
+    return _set_cached_install_state(state)
+
+
+async def _save_install_state(db_path: Path, state: dict[str, Any]) -> dict[str, Any]:
+    normalized = _set_cached_install_state(state)
+    async with aiosqlite.connect(str(db_path)) as db:
+        await db.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')",
+            (_UPDATE_STATE_KEY, json.dumps(normalized)),
+        )
+        await db.commit()
+    return dict(normalized)
+
+
+async def _update_install_state(db_path: Path, **changes: object) -> dict[str, Any]:
+    current = await _load_install_state(db_path)
+    state = {**current, **changes, "updated_at": _timestamp_now()}
+    return await _save_install_state(db_path, state)
+
+
+async def _reset_install_state(db_path: Path) -> dict[str, Any]:
+    state = _default_install_state()
+    state["updated_at"] = _timestamp_now()
+    return await _save_install_state(db_path, state)
+
+
+async def reconcile_interrupted_install_state(db_path: Path) -> dict[str, Any]:
+    state = await _load_install_state(db_path)
+    if state["status"] != "installing":
+        return state
+
+    logger.warning("Found interrupted update_state during startup; marking it as error.")
+    return await _save_install_state(
+        db_path,
+        {
+            **state,
+            "status": "error",
+            "progress": 0.0,
+            "message": _INTERRUPTED_INSTALL_MESSAGE,
+            "updated_at": _timestamp_now(),
+        },
+    )
+
+
+def _extract_installed_versions(updates: dict[str, Any]) -> dict[str, str]:
+    versions: dict[str, str] = {}
+    pfm_latest = updates.get("pfm", {}).get("latest")
+    app_latest = updates.get("app", {}).get("latest")
+    if isinstance(pfm_latest, str) and pfm_latest:
+        versions["pfm"] = pfm_latest
+    if isinstance(app_latest, str) and app_latest:
+        versions["app"] = app_latest
+    return versions
 
 
 async def _exec(*cmd: str) -> int:
@@ -100,33 +233,37 @@ async def _get_updates() -> dict[str, Any]:
 
 
 @routes.get("/api/v1/updates")
-async def check_updates(request: web.Request) -> web.Response:  # noqa: ARG001
+async def check_updates(request: web.Request) -> web.Response:
     """Return current and latest versions for pfm and the macOS app."""
     result = await _get_updates()
-    result["restart_pending"] = _install_state["status"] == "installed"
+    state = await _load_install_state(request.app["db_path"])
+    result["restart_pending"] = state["status"] == "installed"
     return web.json_response(result)
 
 
 @routes.post("/api/v1/updates/check")
-async def force_check_updates(request: web.Request) -> web.Response:  # noqa: ARG001
+async def force_check_updates(request: web.Request) -> web.Response:
     """Run ``brew update`` and return fresh version info."""
     await _exec(_BREW, "update")
     _cache["data"] = None
     result = await _get_updates()
-    result["restart_pending"] = _install_state["status"] == "installed"
+    state = await _load_install_state(request.app["db_path"])
+    result["restart_pending"] = state["status"] == "installed"
     return web.json_response(result)
 
 
 @routes.get("/api/v1/updates/status")
-async def get_install_status(request: web.Request) -> web.Response:  # noqa: ARG001
+async def get_install_status(request: web.Request) -> web.Response:
     """Return current install state so the UI can poll on reconnect."""
-    return web.json_response(_install_state)
+    return web.json_response(await _load_install_state(request.app["db_path"]))
 
 
 @routes.post("/api/v1/updates/install")
 async def install_updates(request: web.Request) -> web.Response:
     """Run ``brew upgrade`` for the specified target in background."""
-    if _install_state["status"] == "installing":
+    db_path = request.app["db_path"]
+    current_state = await _load_install_state(db_path)
+    if current_state["status"] == "installing":
         return web.json_response({"error": "Install already in progress"}, status=409)
 
     try:
@@ -146,23 +283,29 @@ async def install_updates(request: web.Request) -> web.Response:
 
     broadcaster = request.app["broadcaster"]
 
-    _install_state["status"] = "installing"
-    _install_state["progress"] = 0.0
-    _install_state["message"] = "Starting update..."
+    await _save_install_state(
+        db_path,
+        {
+            "status": "installing",
+            "progress": 0.0,
+            "message": "Starting update...",
+            "target": target,
+            "installed_versions": {},
+            "updated_at": _timestamp_now(),
+        },
+    )
 
     async def _run() -> None:
         try:
             await broadcaster.broadcast({"type": "update_started"})
 
-            _install_state["progress"] = 0.33
-            _install_state["message"] = "Running brew update..."
+            await _update_install_state(db_path, progress=0.33, message="Running brew update...")
             await broadcaster.broadcast(
                 {"type": "update_progress", "progress": 0.33, "message": "Running brew update..."},
             )
             await _exec(_BREW, "update")
 
-            _install_state["progress"] = 0.66
-            _install_state["message"] = "Upgrading packages..."
+            await _update_install_state(db_path, progress=0.66, message="Upgrading packages...")
             await broadcaster.broadcast(
                 {"type": "update_progress", "progress": 0.66, "message": "Upgrading packages..."},
             )
@@ -171,15 +314,31 @@ async def install_updates(request: web.Request) -> web.Response:
 
             # Invalidate cache so the next check picks up the new version.
             _cache["data"] = None
-
-            _install_state["status"] = "installed"
-            _install_state["progress"] = 1.0
-            _install_state["message"] = "Updates installed"
+            updates = await _get_updates()
+            await _save_install_state(
+                db_path,
+                {
+                    "status": "installed",
+                    "progress": 1.0,
+                    "message": "Updates installed",
+                    "target": target,
+                    "installed_versions": _extract_installed_versions(updates),
+                    "updated_at": _timestamp_now(),
+                },
+            )
             await broadcaster.broadcast({"type": "update_completed"})
         except (OSError, asyncio.CancelledError) as exc:
-            _install_state["status"] = "error"
-            _install_state["progress"] = 0.0
-            _install_state["message"] = str(exc)
+            await _save_install_state(
+                db_path,
+                {
+                    "status": "error",
+                    "progress": 0.0,
+                    "message": str(exc),
+                    "target": target,
+                    "installed_versions": {},
+                    "updated_at": _timestamp_now(),
+                },
+            )
             await broadcaster.broadcast({"type": "update_failed", "error": str(exc)})
 
     task = asyncio.create_task(_run())
@@ -189,15 +348,14 @@ async def install_updates(request: web.Request) -> web.Response:
 
 
 @routes.post("/api/v1/updates/restart")
-async def restart_services(request: web.Request) -> web.Response:  # noqa: ARG001
+async def restart_services(request: web.Request) -> web.Response:
     """Restart the pfm daemon via launchctl."""
-    _reset_install_state()
-
     uid = str(os.getuid())
     plist = Path.home() / "Library/LaunchAgents" / f"{_LAUNCHD_LABEL}.plist"
     if not plist.exists():
         return web.json_response({"error": "LaunchAgent plist not found"}, status=404)
 
+    await _reset_install_state(request.app["db_path"])
     await _exec("launchctl", "bootout", f"gui/{uid}/{_LAUNCHD_LABEL}")
     await _exec("launchctl", "bootstrap", f"gui/{uid}", str(plist))
     return web.json_response({"status": "restarting"})

@@ -22,6 +22,8 @@ from pfm.ai.providers.gemini import (
 class _FakeAsyncModels:
     responses: list[object] = field(default_factory=list)
     calls: list[dict[str, object]] = field(default_factory=list)
+    get_response: object | None = None
+    get_calls: list[str] = field(default_factory=list)
 
     async def generate_content(self, *, model: str, contents: str, config: dict[str, object]) -> object:
         self.calls.append({"model": model, "contents": contents, "config": config})
@@ -31,6 +33,12 @@ class _FakeAsyncModels:
                 raise next_response
             return next_response
         return SimpleNamespace(text="")
+
+    async def get(self, *, model: str) -> object:
+        self.get_calls.append(model)
+        if isinstance(self.get_response, Exception):
+            raise self.get_response
+        return self.get_response or SimpleNamespace(name=model)
 
 
 @dataclass
@@ -144,6 +152,34 @@ async def test_gemini_provider_closes_owned_client():
     await provider.close()
     assert fake_aio.closed
     assert fake_client.closed
+
+
+async def test_gemini_validate_connection_uses_models_get():
+    fake_models = _FakeAsyncModels(get_response=SimpleNamespace(name="gemini-2.5-pro"))
+    fake_client = _FakeClient(aio=_FakeAioClient(models=fake_models))
+
+    provider = GeminiProvider(api_key="key", client=fake_client)  # type: ignore[arg-type]
+    await provider.validate_connection()
+
+    assert fake_models.get_calls == ["gemini-2.5-pro"]
+
+
+async def test_gemini_validate_connection_propagates_api_error():
+    error_response = httpx.Response(
+        401,
+        json={"error": {"message": "bad api key"}},
+        request=httpx.Request("GET", "https://example.invalid/models"),
+    )
+    error = errors.ClientError(401, {"error": {"status": "UNAUTHENTICATED"}}, error_response)
+    fake_models = _FakeAsyncModels(get_response=error)
+    fake_client = _FakeClient(aio=_FakeAioClient(models=fake_models))
+
+    provider = GeminiProvider(api_key="key", client=fake_client)  # type: ignore[arg-type]
+
+    import pytest
+
+    with pytest.raises(errors.ClientError):
+        await provider.validate_connection()
 
 
 def test_retry_delay_applies_model_minimum():

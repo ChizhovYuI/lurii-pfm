@@ -10,6 +10,8 @@ from datetime import timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
+import httpx
+
 from pfm.collectors._retry import is_dns_resolution_error
 from pfm.db.models import CollectorResult, RawBalance, Snapshot, Transaction
 
@@ -51,6 +53,16 @@ class BaseCollector(ABC):
     @abstractmethod
     async def fetch_raw_balances(self) -> list[RawBalance]:
         """Fetch current balances from the source without pricing."""
+
+    async def validate_connection(self) -> None:
+        """Validate source credentials using a read-only balance fetch."""
+        await self.fetch_raw_balances()
+
+    async def close(self) -> None:
+        """Close any owned HTTP clients attached to the collector."""
+        for value in vars(self).values():
+            if isinstance(value, httpx.AsyncClient) and not value.is_closed:
+                await value.aclose()
 
     def _build_snapshots(
         self,

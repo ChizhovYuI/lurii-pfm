@@ -31,6 +31,7 @@ async def _on_startup(app: web.Application) -> None:
     from pfm.db.models import init_db
     from pfm.db.repository import Repository
     from pfm.pricing.coingecko import PricingService
+    from pfm.server.routes.updates import reconcile_interrupted_install_state
 
     db_path: Path = app["db_path"]
     key_hex: str | None = app.get("db_key") or os.environ.get("PFM_DB_KEY")
@@ -49,6 +50,7 @@ async def _on_startup(app: web.Application) -> None:
         return
 
     await init_db(db_path, key_hex=key_hex)
+    await reconcile_interrupted_install_state(db_path)
 
     settings = get_settings()
 

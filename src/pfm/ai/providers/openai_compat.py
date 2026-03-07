@@ -32,23 +32,30 @@ class OpenAICompatibleProvider(LLMProvider):
         model: str | None = None,
         base_url: str | None = None,
         client: object | None = None,
+        raw_client: object | None = None,
     ) -> None:
         self._api_key = api_key or ""
         self._model = model or self.default_model
         self._base_url = (base_url or self.default_base_url).rstrip("/")
-        self._owns_client = client is None
+        self._owns_client = client is None and raw_client is None
         self._client: Any
+        self._raw_client: Any
         if client is not None:
             self._client = client
+            self._raw_client = raw_client if raw_client is not None else getattr(client, "client", client)
         else:
-            openai_client = AsyncOpenAI(
+            self._raw_client = raw_client or AsyncOpenAI(
                 api_key=self._api_key or "not-needed",
                 base_url=f"{self._base_url}/v1",
                 timeout=_TIMEOUT_SECONDS,
             )
-            self._client = instructor.from_openai(openai_client, mode=instructor.Mode.JSON)
+            self._client = instructor.from_openai(self._raw_client, mode=instructor.Mode.JSON)
 
     # -- public API ------------------------------------------------------------
+
+    async def validate_connection(self) -> None:
+        """Validate auth/base URL using the provider's /models endpoint."""
+        await self._raw_client.models.list()
 
     async def generate_commentary(
         self,
@@ -80,4 +87,4 @@ class OpenAICompatibleProvider(LLMProvider):
     async def close(self) -> None:
         """Close the underlying OpenAI client if owned."""
         if self._owns_client:
-            await self._client.client.close()
+            await self._raw_client.close()

@@ -31,6 +31,14 @@ class _FakeTransport(httpx.AsyncBaseTransport):
         return httpx.Response(200, json={"status": "success"}, request=request)
 
 
+@dataclass
+class _FailingTransport(httpx.AsyncBaseTransport):
+    error: Exception
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        raise self.error
+
+
 def _mock_openai_client(response=None, side_effect=None):
     """Create a mock instructor-patched OpenAI client."""
     client = MagicMock()
@@ -153,3 +161,44 @@ async def test_ollama_close_does_not_close_injected_clients():
     # Injected clients should not be closed
     assert not http_client.is_closed
     await http_client.aclose()
+
+
+async def test_ollama_validate_connection_success():
+    transport = _FakeTransport(
+        responses=[httpx.Response(200, json={"models": [{"name": "qwen3:14b"}]})],
+    )
+    http_client = httpx.AsyncClient(transport=transport)
+    provider = OllamaProvider(http_client=http_client)
+
+    await provider.validate_connection()
+
+    assert len(transport.requests) == 1
+    assert "/api/tags" in str(transport.requests[0].url)
+    await provider.close()
+
+
+async def test_ollama_validate_connection_missing_model():
+    transport = _FakeTransport(
+        responses=[httpx.Response(200, json={"models": [{"name": "llama3.1:8b"}]})],
+    )
+    http_client = httpx.AsyncClient(transport=transport)
+    provider = OllamaProvider(model="qwen3:14b", http_client=http_client)
+
+    import pytest
+
+    with pytest.raises(ValueError, match="not installed"):
+        await provider.validate_connection()
+
+    await provider.close()
+
+
+async def test_ollama_validate_connection_unreachable():
+    http_client = httpx.AsyncClient(transport=_FailingTransport(error=httpx.ConnectError("connection refused")))
+    provider = OllamaProvider(http_client=http_client)
+
+    import pytest
+
+    with pytest.raises(httpx.ConnectError):
+        await provider.validate_connection()
+
+    await provider.close()

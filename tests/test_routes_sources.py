@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import aiosqlite
 import pytest
 
+from pfm.collectors import COLLECTOR_REGISTRY
+from pfm.collectors.base import BaseCollector
 from pfm.db.models import init_db
 from pfm.db.source_store import SourceStore
 from pfm.server.app import create_app
@@ -217,3 +220,95 @@ async def test_list_sources_after_add(client_with_source):
     data = await resp.json()
     assert len(data) == 1
     assert data[0]["name"] == "wise-main"
+
+
+class _FakeWiseValidationCollector(BaseCollector):
+    source_name = "wise"
+    last_api_token = ""
+    last_cache_db_path = "unexpected"
+
+    def __init__(self, pricing, *, api_token: str) -> None:
+        super().__init__(pricing)
+        type(self).last_api_token = api_token
+        type(self).last_cache_db_path = str(pricing._cache_db_path)
+
+    async def fetch_raw_balances(self):
+        return []
+
+    async def fetch_transactions(self, since=None):
+        return []
+
+
+async def test_validate_source_connection_success_without_persisting(client, monkeypatch, db_path):
+    monkeypatch.setitem(COLLECTOR_REGISTRY, "wise", _FakeWiseValidationCollector)
+
+    resp = await client.post(
+        "/api/v1/source-connections/validate",
+        json={
+            "type": "wise",
+            "credentials": {"api_token": "validate-only-token"},
+        },
+    )
+
+    assert resp.status == 200
+    data = await resp.json()
+    assert data == {"ok": True, "message": "Connection successful."}
+    assert _FakeWiseValidationCollector.last_api_token == "validate-only-token"
+    assert _FakeWiseValidationCollector.last_cache_db_path == "None"
+
+    store = SourceStore(db_path)
+    assert await store.list_all() == []
+
+    async with aiosqlite.connect(str(db_path)) as db:
+        sources_count = (await (await db.execute("SELECT COUNT(*) FROM sources")).fetchone())[0]
+        snapshots_count = (await (await db.execute("SELECT COUNT(*) FROM snapshots")).fetchone())[0]
+        transactions_count = (await (await db.execute("SELECT COUNT(*) FROM transactions")).fetchone())[0]
+        prices_count = (await (await db.execute("SELECT COUNT(*) FROM prices")).fetchone())[0]
+
+    assert sources_count == 0
+    assert snapshots_count == 0
+    assert transactions_count == 0
+    assert prices_count == 0
+
+
+async def test_validate_source_connection_reuses_saved_secret(client_with_source, monkeypatch):
+    monkeypatch.setitem(COLLECTOR_REGISTRY, "wise", _FakeWiseValidationCollector)
+
+    resp = await client_with_source.post(
+        "/api/v1/source-connections/validate",
+        json={
+            "name": "wise-main",
+            "credentials": {},
+        },
+    )
+
+    assert resp.status == 200
+    assert _FakeWiseValidationCollector.last_api_token == "test-token-123456"
+
+
+async def test_validate_source_connection_invalid_credentials(client):
+    resp = await client.post(
+        "/api/v1/source-connections/validate",
+        json={
+            "type": "wise",
+            "credentials": {},
+        },
+    )
+
+    assert resp.status == 400
+    data = await resp.json()
+    assert "Missing required field: api_token" in data["error"]
+
+
+async def test_validate_source_connection_unknown_source(client):
+    resp = await client.post(
+        "/api/v1/source-connections/validate",
+        json={
+            "name": "unknown-source",
+            "credentials": {},
+        },
+    )
+
+    assert resp.status == 404
+    data = await resp.json()
+    assert "not found" in data["error"]

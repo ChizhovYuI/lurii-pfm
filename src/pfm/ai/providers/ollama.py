@@ -80,6 +80,22 @@ class OllamaProvider(LLMProvider):
 
         return await self._call_chat(system_prompt, user_prompt, max_output_tokens=max_output_tokens)
 
+    async def validate_connection(self) -> None:
+        """Validate Ollama reachability and model availability."""
+        url = f"{self._base_url}/api/tags"
+        response = await self._http_client.get(url, timeout=_TIMEOUT_SECONDS)
+        response.raise_for_status()
+        body = response.json()
+        models = body.get("models")
+        if not isinstance(models, list):
+            msg = "Ollama returned an invalid models list."
+            raise TypeError(msg)
+
+        installed = {str(model.get("name", "")) for model in models if isinstance(model, dict)}
+        if self._model and self._model not in installed:
+            msg = f"Ollama model '{self._model}' is not installed."
+            raise ValueError(msg)
+
     async def _call_chat(
         self,
         system_prompt: str,

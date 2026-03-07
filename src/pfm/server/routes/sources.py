@@ -13,6 +13,12 @@ from pfm.db.source_store import (
     SourceNotFoundError,
     SourceStore,
 )
+from pfm.server.connection_validation import (
+    ConnectionValidationError,
+)
+from pfm.server.connection_validation import (
+    validate_source_connection as run_source_validation,
+)
 from pfm.server.serializers import source_to_dict
 
 routes = web.RouteTableDef()
@@ -45,6 +51,25 @@ async def list_sources(request: web.Request) -> web.Response:
     store = SourceStore(request.app["db_path"])
     sources = await store.list_all()
     return web.json_response([source_to_dict(s) for s in sources])
+
+
+@routes.post("/api/v1/source-connections/validate")
+@routes.post("/api/v1/sources/validate")
+async def validate_source_connection(request: web.Request) -> web.Response:
+    """Validate source credentials without saving them."""
+    body: dict[str, Any] = await request.json()
+
+    try:
+        message = await run_source_validation(
+            request.app["db_path"],
+            source_name=body.get("name"),
+            source_type=body.get("type"),
+            credentials=body.get("credentials"),
+        )
+    except ConnectionValidationError as exc:
+        return web.json_response({"error": exc.message}, status=exc.status_code)
+
+    return web.json_response({"ok": True, "message": message})
 
 
 @routes.post("/api/v1/sources")
