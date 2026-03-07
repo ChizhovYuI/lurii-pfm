@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -23,9 +25,23 @@ _REPOS = {
 }
 _CACHE_TTL = 3600  # 1 hour
 _BREW = "/opt/homebrew/bin/brew"
+_LAUNCHD_LABEL = "finance.lurii.pfm"
 
 # Module-level mutable cache container (single-process server).
 _cache: dict[str, Any] = {"data": None, "ts": 0.0}
+
+
+async def _exec(*cmd: str) -> int:
+    """Run a command and return exit code."""
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    rc = proc.returncode or 0
+    logger.info("%s: exit=%d stdout=%s stderr=%s", cmd[0], rc, stdout.decode()[:200], stderr.decode()[:200])
+    return rc
 
 
 async def _fetch_latest_tag(repo: str) -> str | None:
@@ -101,21 +117,18 @@ async def install_updates(request: web.Request) -> web.Response:
 
     async def _run() -> None:
         for cmd in commands:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await proc.communicate()
-            logger.info(
-                "brew upgrade %s: exit=%d stdout=%s stderr=%s",
-                cmd[-1],
-                proc.returncode,
-                stdout.decode()[:200],
-                stderr.decode()[:200],
-            )
+            await _exec(*cmd)
         # Invalidate cache so the next check picks up the new version.
         _cache["data"] = None
+
+        # Restart the daemon via launchctl (safety net — brew post_install
+        # may not reliably restart when the running process upgrades itself).
+        if target in ("pfm", "all"):
+            uid = str(os.getuid())
+            plist = Path.home() / "Library/LaunchAgents" / f"{_LAUNCHD_LABEL}.plist"
+            if plist.exists():
+                await _exec("launchctl", "bootout", f"gui/{uid}/{_LAUNCHD_LABEL}")
+                await _exec("launchctl", "bootstrap", f"gui/{uid}", str(plist))
 
     task = asyncio.create_task(_run())
     request.app.setdefault("_bg_tasks", set()).add(task)
