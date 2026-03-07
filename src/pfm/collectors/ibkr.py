@@ -16,7 +16,7 @@ import httpx
 from pfm.collectors import register_collector
 from pfm.collectors._retry import retry
 from pfm.collectors.base import BaseCollector
-from pfm.db.models import Snapshot, Transaction, TransactionType
+from pfm.db.models import RawBalance, Transaction, TransactionType
 
 if TYPE_CHECKING:
     from pfm.pricing.coingecko import PricingService
@@ -161,11 +161,10 @@ class IbkrCollector(BaseCollector):
                 trades.append(attrs)
         return trades
 
-    async def fetch_balances(self) -> list[Snapshot]:
+    async def fetch_raw_balances(self) -> list[RawBalance]:
         """Fetch positions and cash balances via Flex Query."""
         xml_text = await self._get_statement_xml()
-        today = self._pricing.today()
-        snapshots: list[Snapshot] = []
+        raw: list[RawBalance] = []
 
         # Open positions (stocks, ETFs) — prefer SUMMARY level to avoid lot duplicates.
         # Some Flex payloads omit levelOfDetail entirely; treat those as acceptable.
@@ -184,14 +183,11 @@ class IbkrCollector(BaseCollector):
                 continue
 
             price = market_value / quantity if quantity else Decimal(0)
-            snapshots.append(
-                Snapshot(
-                    date=today,
-                    source=self.source_name,
+            raw.append(
+                RawBalance(
                     asset=symbol,
                     amount=quantity,
-                    usd_value=market_value,  # IBKR provides USD value directly
-                    price=price,
+                    price=price,  # IBKR provides USD value directly
                     raw_json=json.dumps(pos),
                 )
             )
@@ -209,22 +205,16 @@ class IbkrCollector(BaseCollector):
             cash_by_currency[currency] = cash_by_currency.get(currency, Decimal(0)) + ending_cash
 
         for currency, amount in cash_by_currency.items():
-            price = await self._pricing.get_price_usd(currency)
-            usd_value = amount * price
-            snapshots.append(
-                Snapshot(
-                    date=today,
-                    source=self.source_name,
+            raw.append(
+                RawBalance(
                     asset=currency,
                     amount=amount,
-                    usd_value=usd_value,
-                    price=price,
                     raw_json=json.dumps({"currency": currency, "endingCash": str(amount)}),
                 )
             )
 
-        logger.info("IBKR: found %d positions + cash balances", len(snapshots))
-        return snapshots
+        logger.info("IBKR: found %d positions + cash balances", len(raw))
+        return raw
 
     async def fetch_transactions(self, since: date | None = None) -> list[Transaction]:
         """Fetch trades from the Flex Query statement."""

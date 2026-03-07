@@ -16,10 +16,12 @@ dependencies = [
     "pydantic-settings>=2.13.1",
     "sqlcipher3>=0.6.2",
     "stellar-sdk>=13.2.1",
+    "mcp>=1.0",
 ]
 
 [project.scripts]
 pfm = "pfm.cli:cli"
+pfm-mcp = "pfm.mcp_server:main"
 
 [project.optional-dependencies]
 dev = [
@@ -112,6 +114,9 @@ ignore = [
 "src/pfm/server/**/*.py" = [
     "PLC0415", # late imports are used to avoid circular deps and keep startup fast
 ]
+"src/pfm/mcp_server.py" = [
+    "PLC0415", # late imports inside tools to avoid heavy startup and circular deps
+]
 "src/pfm/cli.py" = [
     "PLC0415", # late imports are used to avoid circular deps and keep startup fast
 ]
@@ -190,12 +195,20 @@ module = ["instructor", "instructor.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
+module = ["mcp", "mcp.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
 module = ["openai", "openai.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["pfm.server.routes.*", "pfm.server.middleware"]
 disable_error_code = ["misc"]  # aiohttp RouteTableDef decorators are untyped
+
+[[tool.mypy.overrides]]
+module = "pfm.mcp_server"
+disable_error_code = ["misc"]  # FastMCP decorators are untyped
 
 # ── Pytest ────────────────────────────────────────────────────────────
 [tool.pytest.ini_options]
@@ -216,6 +229,7 @@ asyncio_mode = "auto"
 [tool.coverage.run]
 source = ["src/pfm"]
 branch = true
+omit = ["src/pfm/mcp_server.py"]
 
 [tool.coverage.report]
 exclude_lines = [

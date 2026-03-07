@@ -21,14 +21,15 @@ import pdfplumber
 
 from pfm.collectors import register_collector
 from pfm.collectors.base import BaseCollector
-from pfm.db.models import Snapshot, Transaction, TransactionType
+from pfm.db.models import RawBalance, Transaction, TransactionType
 
 if TYPE_CHECKING:
     from pfm.pricing.coingecko import PricingService
 
 logger = logging.getLogger(__name__)
 
-_KBANK_PDF_DIR = Path("data/kbank")
+_APP_SUPPORT_DIR = Path.home() / "Library" / "Application Support" / "Lurii Finance"
+_KBANK_PDF_DIR = _APP_SUPPORT_DIR / "kbank"
 
 
 @register_collector
@@ -56,7 +57,6 @@ class KbankCollector(BaseCollector):
         self._gmail_app_password = gmail_app_password
         self._kbank_sender_email = kbank_sender_email
         self._pdf_password = pdf_password
-        self._cached_snapshots: list[Snapshot] = []
         self._cached_transactions: list[Transaction] = []
         self._last_statement_date: date | None = None
 
@@ -73,7 +73,7 @@ class KbankCollector(BaseCollector):
         """Date of the latest transaction found in the parsed statement."""
         return self._last_statement_date
 
-    async def fetch_balances(self) -> list[Snapshot]:
+    async def fetch_raw_balances(self) -> list[RawBalance]:
         """Return the ending balance from the most recently parsed statement."""
         if not self._pdf_path and self._gmail_configured:
             fetched = await asyncio.to_thread(self._fetch_pdf_from_gmail)
@@ -85,37 +85,15 @@ class KbankCollector(BaseCollector):
             logger.info("KBank: no PDF path set and Gmail not configured, skipping")
             return []
 
-        snapshots, transactions = self._parse_pdf(self._pdf_path)
+        raw_balances, transactions = self._parse_pdf(self._pdf_path)
         # Use the snapshot date (parsed from Period field) for statement freshness
-        if snapshots:
-            self._last_statement_date = snapshots[0].date
+        if raw_balances:
+            self._last_statement_date = raw_balances[0].date
         else:
             self._last_statement_date = self._infer_statement_date(transactions)
-        converted_snapshots: list[Snapshot] = []
-        for snap in snapshots:
-            usd_value = snap.usd_value
-            price = Decimal(0)
-            if snap.asset:
-                try:
-                    price = await self._pricing.get_price_usd(snap.asset)
-                    usd_value = snap.amount * price
-                except Exception:
-                    logger.exception("KBank: failed to convert %s %s to USD", snap.amount, snap.asset)
-            converted_snapshots.append(
-                Snapshot(
-                    date=snap.date,
-                    source=snap.source,
-                    asset=snap.asset,
-                    amount=snap.amount,
-                    usd_value=usd_value,
-                    price=price,
-                    raw_json=snap.raw_json,
-                )
-            )
 
-        self._cached_snapshots = converted_snapshots
         self._cached_transactions = transactions
-        return converted_snapshots
+        return raw_balances
 
     async def fetch_transactions(self, since: date | None = None) -> list[Transaction]:
         """Return transactions from the most recently parsed statement."""
@@ -136,7 +114,7 @@ class KbankCollector(BaseCollector):
 
         Connects to imap.gmail.com:993 (SSL), searches for emails from the
         KBank sender, downloads the newest PDF attachment, and saves it to
-        data/kbank/ for audit trail.
+        ~/Library/Application Support/Lurii Finance/kbank/ for audit trail.
 
         Returns the path to the downloaded PDF, or None on failure.
         """
@@ -188,7 +166,7 @@ class KbankCollector(BaseCollector):
             with contextlib.suppress(imaplib.IMAP4.error):
                 conn.logout()
 
-    def _parse_pdf(self, pdf_path: Path) -> tuple[list[Snapshot], list[Transaction]]:
+    def _parse_pdf(self, pdf_path: Path) -> tuple[list[RawBalance], list[Transaction]]:
         """Parse a KBank PDF statement using pdfplumber.
 
         KBank PDFs have a specific structure per page:
@@ -199,7 +177,7 @@ class KbankCollector(BaseCollector):
             logger.error("KBank PDF not found: %s", pdf_path)
             return [], []
 
-        snapshots: list[Snapshot] = []
+        raw_balances: list[RawBalance] = []
         transactions: list[Transaction] = []
         ending_balance = Decimal(0)
         statement_date: date | None = None
@@ -221,14 +199,12 @@ class KbankCollector(BaseCollector):
         snapshot_date = (statement_date + timedelta(days=1)) if statement_date else self._pricing.today()
 
         if ending_balance > 0:
-            snapshots.append(
-                Snapshot(
-                    date=snapshot_date,
-                    source=self.source_name,
+            raw_balances.append(
+                RawBalance(
                     asset="THB",
                     amount=ending_balance,
-                    usd_value=Decimal(0),  # will be converted later
                     raw_json=json.dumps({"ending_balance": str(ending_balance), "pdf": str(pdf_path)}),
+                    date=snapshot_date,
                 )
             )
 
@@ -238,7 +214,7 @@ class KbankCollector(BaseCollector):
             ending_balance,
             snapshot_date,
         )
-        return snapshots, transactions
+        return raw_balances, transactions
 
     @staticmethod
     def _infer_statement_date(transactions: list[Transaction]) -> date | None:

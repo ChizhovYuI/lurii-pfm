@@ -16,7 +16,7 @@ from pfm.collectors import register_collector
 from pfm.collectors._auth import sign_binance
 from pfm.collectors._retry import RateLimiter, retry
 from pfm.collectors.base import BaseCollector
-from pfm.db.models import Snapshot, Transaction, TransactionType
+from pfm.db.models import RawBalance, Transaction, TransactionType
 
 if TYPE_CHECKING:
     from pfm.pricing.coingecko import PricingService
@@ -92,10 +92,9 @@ class MexcCollector(BaseCollector):
         resp.raise_for_status()
         return resp.json()
 
-    async def fetch_balances(self) -> list[Snapshot]:
+    async def fetch_raw_balances(self) -> list[RawBalance]:
         """Fetch spot balances from account endpoint."""
-        today = self._pricing.today()
-        snapshots: list[Snapshot] = []
+        raw: list[RawBalance] = []
 
         # Spot wallet balances.
         data = await self._get("/api/v3/account")
@@ -108,35 +107,25 @@ class MexcCollector(BaseCollector):
             if not ticker or amount == 0:
                 continue
 
-            try:
-                price = await self._pricing.get_price_usd(ticker)
-            except ValueError:
-                logger.warning("MEXC: cannot price %s, skipping", ticker)
-                continue
-
-            snapshots.append(
-                Snapshot(
-                    date=today,
-                    source=self.source_name,
+            raw.append(
+                RawBalance(
                     asset=ticker,
                     amount=amount,
-                    usd_value=amount * price,
-                    price=price,
                     raw_json=json.dumps(bal),
                 )
             )
 
         # Contract account balances via OPEN-API auth.
-        snapshots.extend(await self._fetch_contract_balances(today))
+        raw.extend(await self._fetch_contract_raw())
 
-        # Earn positions are separate APY-bearing snapshots when available.
-        earn_snapshots = await self._fetch_earn(today)
-        snapshots.extend(earn_snapshots)
+        # Earn positions are separate APY-bearing raw balances when available.
+        earn_raw = await self._fetch_earn_raw()
+        raw.extend(earn_raw)
 
-        logger.info("MEXC: found %d non-zero balances", len(snapshots))
-        return snapshots
+        logger.info("MEXC: found %d non-zero balances", len(raw))
+        return raw
 
-    async def _fetch_contract_balances(self, today: date) -> list[Snapshot]:
+    async def _fetch_contract_raw(self) -> list[RawBalance]:
         try:
             data = await self._get_openapi(_CONTRACT_ASSETS_PATH)
         except (httpx.HTTPStatusError, json.JSONDecodeError, ValueError) as exc:
@@ -153,7 +142,7 @@ class MexcCollector(BaseCollector):
                 return []
             rows = _as_dict_rows(data.get("data"))
 
-        snapshots: list[Snapshot] = []
+        raw: list[RawBalance] = []
         for row in rows:
             ticker = str(row.get("currency", "")).upper().strip()
             if not ticker:
@@ -172,67 +161,46 @@ class MexcCollector(BaseCollector):
             if amount <= 0:
                 continue
 
-            try:
-                price = await self._pricing.get_price_usd(ticker)
-            except ValueError:
-                logger.warning("MEXC: cannot price contract asset %s, skipping", ticker)
-                continue
-
-            snapshots.append(
-                Snapshot(
-                    date=today,
-                    source=self.source_name,
+            raw.append(
+                RawBalance(
                     asset=ticker,
                     amount=amount,
-                    usd_value=amount * price,
-                    price=price,
                     raw_json=json.dumps({"accountType": "contract", "row": row}),
                 )
             )
-        return snapshots
+        return raw
 
-    async def _fetch_earn(self, today: date) -> list[Snapshot]:
+    async def _fetch_earn_raw(self) -> list[RawBalance]:
         rows = await self._fetch_earn_rows(_EARN_POSITION_PATH)
         if not rows:
             return []
 
-        snapshots = await self._build_earn_snapshots(today, rows, {"path": _EARN_POSITION_PATH})
-        if snapshots:
-            logger.info("MEXC: found %d earn positions via %s", len(snapshots), _EARN_POSITION_PATH)
-        return snapshots
+        raw = self._build_earn_raw(rows, {"path": _EARN_POSITION_PATH})
+        if raw:
+            logger.info("MEXC: found %d earn positions via %s", len(raw), _EARN_POSITION_PATH)
+        return raw
 
-    async def _build_earn_snapshots(
+    def _build_earn_raw(
         self,
-        today: date,
         rows: list[dict[str, Any]],
         meta: dict[str, Any],
-    ) -> list[Snapshot]:
-        snapshots: list[Snapshot] = []
+    ) -> list[RawBalance]:
+        raw: list[RawBalance] = []
         for row in rows:
             parsed = self._parse_earn_row(row)
             if parsed is None:
                 continue
             symbol, amount, apy = parsed
 
-            try:
-                price = await self._pricing.get_price_usd(symbol)
-            except ValueError:
-                logger.warning("MEXC: cannot price earn asset %s, skipping", symbol)
-                continue
-
-            snapshots.append(
-                Snapshot(
-                    date=today,
-                    source=self.source_name,
+            raw.append(
+                RawBalance(
                     asset=symbol,
                     amount=amount,
-                    usd_value=amount * price,
-                    price=price,
                     apy=apy,
                     raw_json=json.dumps({**meta, "row": row}),
                 )
             )
-        return snapshots
+        return raw
 
     async def _fetch_earn_rows(self, path: str) -> list[dict[str, Any]]:
         try:

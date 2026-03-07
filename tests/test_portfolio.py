@@ -214,7 +214,7 @@ def test_data_warnings_kbank_outdated():
 def test_data_warnings_kbank_fresh():
     snapshots = [
         Snapshot(date(2024, 1, 15), "okx", "BTC", Decimal(1), Decimal(45000)),
-        Snapshot(date(2024, 1, 2), "kbank", "THB", Decimal(1000), Decimal(28)),
+        Snapshot(date(2024, 1, 14), "kbank", "THB", Decimal(1000), Decimal(28)),
     ]
     enabled = {"okx", "kbank"}
     warnings = compute_data_warnings(snapshots, enabled, date(2024, 1, 15))

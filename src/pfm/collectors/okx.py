@@ -15,7 +15,7 @@ from pfm.collectors._auth import sign_okx
 from pfm.collectors._math import apr_to_apy
 from pfm.collectors._retry import RateLimiter, retry
 from pfm.collectors.base import BaseCollector
-from pfm.db.models import Snapshot, Transaction, TransactionType
+from pfm.db.models import RawBalance, Transaction, TransactionType
 
 if TYPE_CHECKING:
     from datetime import date
@@ -120,9 +120,9 @@ class OkxCollector(BaseCollector):
 
         return Decimal(0)
 
-    async def _fetch_earn(self, today: date) -> list[Snapshot]:
-        """Fetch earn account balances with APY as separate snapshots."""
-        snapshots: list[Snapshot] = []
+    async def _fetch_earn_raw(self) -> list[RawBalance]:
+        """Fetch earn account balances with APY as separate raw balances."""
+        raw: list[RawBalance] = []
 
         # Savings
         try:
@@ -134,15 +134,10 @@ class OkxCollector(BaseCollector):
                     continue
                 apr = await self._fetch_savings_apr(ticker, amount)
                 apy = apr_to_apy(apr)
-                price = await self._pricing.get_price_usd(ticker)
-                snapshots.append(
-                    Snapshot(
-                        date=today,
-                        source=self.source_name,
+                raw.append(
+                    RawBalance(
                         asset=ticker,
                         amount=amount,
-                        usd_value=amount * price,
-                        price=price,
                         apy=apy,
                     )
                 )
@@ -159,51 +154,39 @@ class OkxCollector(BaseCollector):
                     continue
                 est_apr = Decimal(str(item.get("estApr", "0")))
                 apy = apr_to_apy(est_apr)
-                price = await self._pricing.get_price_usd(ticker)
-                snapshots.append(
-                    Snapshot(
-                        date=today,
-                        source=self.source_name,
+                raw.append(
+                    RawBalance(
                         asset=ticker,
                         amount=amount,
-                        usd_value=amount * price,
-                        price=price,
                         apy=apy,
                     )
                 )
         except httpx.HTTPStatusError:
             logger.warning("OKX: failed to fetch staking balances")
 
-        return snapshots
+        return raw
 
-    async def fetch_balances(self) -> list[Snapshot]:
+    async def fetch_raw_balances(self) -> list[RawBalance]:
         """Fetch trading + funding + earn account balances."""
         totals: dict[str, Decimal] = {}
         await self._fetch_trading(totals)
         await self._fetch_funding(totals)
 
-        today = self._pricing.today()
-        snapshots: list[Snapshot] = []
+        raw: list[RawBalance] = []
         for ticker, amount in totals.items():
-            price = await self._pricing.get_price_usd(ticker)
-            usd_value = amount * price
-            snapshots.append(
-                Snapshot(
-                    date=today,
-                    source=self.source_name,
+            raw.append(
+                RawBalance(
                     asset=ticker,
                     amount=amount,
-                    usd_value=usd_value,
-                    price=price,
                 )
             )
 
-        # Earn accounts are separate — append as distinct snapshots with APY
-        earn_snapshots = await self._fetch_earn(today)
-        snapshots.extend(earn_snapshots)
+        # Earn accounts are separate — append as distinct raw balances with APY
+        earn_raw = await self._fetch_earn_raw()
+        raw.extend(earn_raw)
 
-        logger.info("OKX: found %d non-zero balances", len(snapshots))
-        return snapshots
+        logger.info("OKX: found %d non-zero balances", len(raw))
+        return raw
 
     async def fetch_transactions(self, since: date | None = None) -> list[Transaction]:
         """Fetch recent bills/transactions from OKX."""

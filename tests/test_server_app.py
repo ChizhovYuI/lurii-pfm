@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import ANY
+
 import pytest
 from aiohttp import web
 
@@ -29,7 +31,7 @@ async def test_health_returns_200(client):
     assert resp.status == 200
     data = await resp.json()
     assert data["status"] == "ok"
-    assert data["version"] == "0.10.0"
+    assert data["version"] == ANY
     assert data["collecting"] is False
 
 

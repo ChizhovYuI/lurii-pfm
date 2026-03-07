@@ -13,7 +13,7 @@ import httpx
 from pfm.collectors import register_collector
 from pfm.collectors._retry import RateLimiter, retry
 from pfm.collectors.base import BaseCollector
-from pfm.db.models import Snapshot, Transaction, TransactionType
+from pfm.db.models import RawBalance, Transaction, TransactionType
 
 if TYPE_CHECKING:
     from pfm.pricing.coingecko import PricingService
@@ -71,9 +71,8 @@ class YoCollector(BaseCollector):
             return [row for row in data if isinstance(row, dict)]
         return []
 
-    async def fetch_balances(self) -> list[Snapshot]:
+    async def fetch_raw_balances(self) -> list[RawBalance]:
         """Fetch current vault position balances for a user."""
-        today = self._pricing.today()
         vault = await self._get_vault()
         history_rows = await self._get_history(limit=1000)
         derived_holding = _derive_share_holding_from_history(vault, history_rows)
@@ -90,14 +89,11 @@ class YoCollector(BaseCollector):
             if not zero_symbol:
                 return []
             return [
-                Snapshot(
-                    date=today,
-                    source=self.source_name,
+                RawBalance(
                     asset=zero_symbol,
                     amount=Decimal(0),
-                    usd_value=Decimal(0),
-                    price=Decimal(0),
                     apy=apy,
+                    price=Decimal(0),
                     raw_json=json.dumps(
                         {
                             "derivedFrom": "history",
@@ -109,36 +105,27 @@ class YoCollector(BaseCollector):
                 )
             ]
 
-        snapshots: list[Snapshot] = []
+        raw: list[RawBalance] = []
         for holding in holdings:
             symbol = holding.symbol.upper()
             amount = holding.amount
             if not symbol or amount <= 0:
                 continue
 
-            price = holding.price_usd
-            if price <= 0:
-                try:
-                    price = await self._pricing.get_price_usd(symbol)
-                except ValueError:
-                    logger.warning("yo: cannot price %s, skipping", symbol)
-                    continue
+            price = holding.price_usd if holding.price_usd > 0 else None
 
-            snapshots.append(
-                Snapshot(
-                    date=today,
-                    source=self.source_name,
+            raw.append(
+                RawBalance(
                     asset=symbol,
                     amount=amount,
-                    usd_value=amount * price,
-                    price=price,
                     apy=apy,
+                    price=price,
                     raw_json=json.dumps(holding.raw),
                 )
             )
 
-        logger.info("yo: found %d non-zero balances", len(snapshots))
-        return snapshots
+        logger.info("yo: found %d non-zero balances", len(raw))
+        return raw
 
     async def fetch_transactions(self, since: date | None = None) -> list[Transaction]:
         """Fetch user vault history and map it to normalized transaction rows."""

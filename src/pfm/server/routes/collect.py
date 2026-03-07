@@ -12,9 +12,11 @@ from aiohttp import web
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from pfm.collectors.base import BaseCollector
     from pfm.db.models import Source
     from pfm.db.repository import Repository
     from pfm.db.source_store import SourceStore
+    from pfm.pricing.coingecko import PricingService
 
 from pfm.server.serializers import collector_result_to_dict
 
@@ -56,8 +58,7 @@ async def start_collection(request: web.Request) -> web.Response:
 
 async def _run_collection(app: web.Application, source_name: str | None) -> None:
     """Background task: collect from sources, analyze, broadcast events."""
-    from pfm.collectors import COLLECTOR_REGISTRY
-    from pfm.db.models import CollectorResult
+    from pfm.collectors.pipeline import run_parallel_pipeline
     from pfm.db.source_store import SourceNotFoundError, SourceStore
 
     broadcaster = app["broadcaster"]
@@ -88,51 +89,27 @@ async def _run_collection(app: web.Application, source_name: str | None) -> None
             await _cleanup_disabled_snapshots(store, repo, sources)
 
         if not sources:
-            await broadcaster.broadcast(
-                {
-                    "type": "collection_completed",
-                    "results": [],
-                }
-            )
+            await broadcaster.broadcast({"type": "collection_completed", "results": []})
             return
 
-        results: list[CollectorResult] = []
+        collectors = await _build_collectors(sources, pricing, db_path)
+        total = len(collectors)
 
-        for i, src in enumerate(sources):
-            collector_cls = COLLECTOR_REGISTRY.get(src.type)
-            if collector_cls is None:
-                logger.warning("No collector registered for type '%s'", src.type)
-                continue
-
+        async def _on_progress(current: float, total: float, message: str) -> None:
             await broadcaster.broadcast(
-                {
-                    "type": "collection_progress",
-                    "source": src.name,
-                    "current": i + 1,
-                    "total": len(sources),
-                }
+                {"type": "collection_progress", "current": current, "total": total, "message": message}
             )
 
-            creds = json.loads(src.credentials)
-            collector = collector_cls(pricing, **creds)
-            collector.instance_name = src.name
-            await _inject_apy_rules(collector, src, db_path)
-            try:
-                result = await collector.collect(repo)
-                results.append(result)
-            except Exception as exc:
-                logger.exception("Unhandled collector error from '%s'", src.name)
-                results.append(
-                    CollectorResult(
-                        source=src.name,
-                        snapshots_count=0,
-                        transactions_count=0,
-                        errors=[f"Unhandled collector error: {exc}"],
-                        duration_seconds=0.0,
-                    ),
-                )
+        await _on_progress(0, 1, f"Fetching from {total} source(s)...")
 
-        # Auto-run analyze after collection
+        results = await run_parallel_pipeline(collectors, pricing, repo, on_progress=_on_progress)
+
+        ok_count = sum(1 for r in results if not r.errors)
+        err_count = sum(1 for r in results if r.errors)
+        summary = f"Done. {ok_count} ok"
+        if err_count:
+            summary += f". {err_count} error{'s' if err_count != 1 else ''}"
+
         try:
             await _run_analyze(repo)
             await broadcaster.broadcast({"type": "snapshot_updated"})
@@ -143,19 +120,37 @@ async def _run_collection(app: web.Application, source_name: str | None) -> None
             {
                 "type": "collection_completed",
                 "results": [collector_result_to_dict(r) for r in results],
+                "message": summary,
             }
         )
 
     except Exception as exc:
         logger.exception("Collection background task failed")
-        await broadcaster.broadcast(
-            {
-                "type": "collection_failed",
-                "error": str(exc),
-            }
-        )
+        await broadcaster.broadcast({"type": "collection_failed", "error": str(exc)})
     finally:
         app["collecting"] = False
+
+
+async def _build_collectors(
+    sources: list[Source],
+    pricing: PricingService,
+    db_path: str | Path,
+) -> list[tuple[Source, BaseCollector]]:
+    """Create and configure collector instances from source configs."""
+    from pfm.collectors import COLLECTOR_REGISTRY
+
+    collectors: list[tuple[Source, BaseCollector]] = []
+    for src in sources:
+        collector_cls = COLLECTOR_REGISTRY.get(src.type)
+        if collector_cls is None:
+            logger.warning("No collector registered for type '%s'", src.type)
+            continue
+        creds = json.loads(src.credentials)
+        collector = collector_cls(pricing, **creds)
+        collector.instance_name = src.name
+        await _inject_apy_rules(collector, src, db_path)
+        collectors.append((src, collector))
+    return collectors
 
 
 async def _cleanup_disabled_snapshots(

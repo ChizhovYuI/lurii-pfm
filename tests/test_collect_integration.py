@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from pfm.cli import _collect_async
 from pfm.collectors.base import BaseCollector
-from pfm.db.models import Snapshot, Transaction, TransactionType, init_db
+from pfm.db.models import RawBalance, Transaction, TransactionType, init_db
 from pfm.db.repository import Repository
 from pfm.db.source_store import SourceStore
 
@@ -25,14 +25,12 @@ class _FakeWiseCollector(BaseCollector):
         super().__init__(pricing)
         self._api_token = api_token
 
-    async def fetch_balances(self) -> list[Snapshot]:
+    async def fetch_raw_balances(self) -> list[RawBalance]:
         return [
-            Snapshot(
-                date=self._pricing.today(),
-                source=self.source_name,
+            RawBalance(
                 asset="USD",
                 amount=Decimal(100),
-                usd_value=Decimal(100),
+                price=Decimal(1),
                 raw_json=f'{{"api_token":"{self._api_token}"}}',
             )
         ]
@@ -58,14 +56,12 @@ class _FakeLobstrCollector(BaseCollector):
         super().__init__(pricing)
         self._stellar_address = stellar_address
 
-    async def fetch_balances(self) -> list[Snapshot]:
+    async def fetch_raw_balances(self) -> list[RawBalance]:
         return [
-            Snapshot(
-                date=self._pricing.today(),
-                source=self.source_name,
+            RawBalance(
                 asset="XLM",
                 amount=Decimal(50),
-                usd_value=Decimal(5),
+                price=Decimal("0.1"),
                 raw_json=f'{{"address":"{self._stellar_address}"}}',
             )
         ]
@@ -93,11 +89,11 @@ async def test_collect_async_runs_all_enabled_sources(tmp_path):
 
     settings = SimpleNamespace(database_path=db_path, coingecko_api_key="")
     registry = {"wise": _FakeWiseCollector, "lobstr": _FakeLobstrCollector}
-    with patch("pfm.cli.get_settings", return_value=settings), patch("pfm.cli.COLLECTOR_REGISTRY", registry):
+    with patch("pfm.cli.get_settings", return_value=settings), patch("pfm.collectors.COLLECTOR_REGISTRY", registry):
         results = await _collect_async(None)
 
     assert len(results) == 2
-    assert {r.source for r in results} == {"wise", "lobstr"}
+    assert {r.source for r in results} == {"wise-main", "lobstr-main"}
 
     async with Repository(db_path) as repo:
         snapshots = await repo.get_latest_snapshots()
@@ -119,11 +115,11 @@ async def test_collect_async_source_filter_runs_one_source(tmp_path):
 
     settings = SimpleNamespace(database_path=db_path, coingecko_api_key="")
     registry = {"wise": _FakeWiseCollector, "lobstr": _FakeLobstrCollector}
-    with patch("pfm.cli.get_settings", return_value=settings), patch("pfm.cli.COLLECTOR_REGISTRY", registry):
+    with patch("pfm.cli.get_settings", return_value=settings), patch("pfm.collectors.COLLECTOR_REGISTRY", registry):
         results = await _collect_async("wise-main")
 
     assert len(results) == 1
-    assert results[0].source == "wise"
+    assert results[0].source == "wise-main"
 
     async with Repository(db_path) as repo:
         snapshots = await repo.get_latest_snapshots()
@@ -132,8 +128,8 @@ async def test_collect_async_source_filter_runs_one_source(tmp_path):
     assert snapshots[0].source_name == "wise-main"
 
 
-async def test_collect_async_runs_sources_sequentially(tmp_path):
-    db_path = tmp_path / "collect-sequential.db"
+async def test_collect_async_fetches_balances_in_parallel(tmp_path):
+    db_path = tmp_path / "collect-parallel.db"
     await init_db(db_path)
     store = SourceStore(db_path)
     await store.add("wise-main", "wise", {"api_token": "wise-token"})
@@ -148,7 +144,7 @@ async def test_collect_async_runs_sources_sequentially(tmp_path):
             super().__init__(pricing)
             self._api_token = api_token
 
-        async def fetch_balances(self) -> list[Snapshot]:
+        async def fetch_raw_balances(self) -> list[RawBalance]:
             events.append("wise-start")
             await asyncio.sleep(0.02)
             events.append("wise-end")
@@ -164,7 +160,7 @@ async def test_collect_async_runs_sources_sequentially(tmp_path):
             super().__init__(pricing)
             self._stellar_address = stellar_address
 
-        async def fetch_balances(self) -> list[Snapshot]:
+        async def fetch_raw_balances(self) -> list[RawBalance]:
             events.append("lobstr-start")
             return []
 
@@ -173,8 +169,9 @@ async def test_collect_async_runs_sources_sequentially(tmp_path):
 
     settings = SimpleNamespace(database_path=db_path, coingecko_api_key="")
     registry = {"wise": _SlowWiseCollector, "lobstr": _FastLobstrCollector}
-    with patch("pfm.cli.get_settings", return_value=settings), patch("pfm.cli.COLLECTOR_REGISTRY", registry):
+    with patch("pfm.cli.get_settings", return_value=settings), patch("pfm.collectors.COLLECTOR_REGISTRY", registry):
         results = await _collect_async(None)
 
     assert len(results) == 2
-    assert events == ["wise-start", "wise-end", "lobstr-start"]
+    # With parallel fetch, lobstr-start should appear before wise-end
+    assert events == ["wise-start", "lobstr-start", "wise-end"]

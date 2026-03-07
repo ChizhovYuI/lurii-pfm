@@ -10,7 +10,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from pfm.collectors._retry import is_dns_resolution_error
-from pfm.db.models import CollectorResult, Snapshot, Transaction
+from pfm.db.models import CollectorResult, RawBalance, Snapshot, Transaction
 
 if TYPE_CHECKING:
     from datetime import date
@@ -32,8 +32,8 @@ def _format_fetch_error(source_name: str, stage: str, exc: Exception) -> tuple[s
 class BaseCollector(ABC):
     """Base class for all source collectors.
 
-    Subclasses must set `source_name` and implement `fetch_balances` and
-    `fetch_transactions`.
+    Subclasses must set ``source_name`` and implement ``fetch_raw_balances``
+    and ``fetch_transactions``.
     """
 
     source_name: str = ""
@@ -44,9 +44,49 @@ class BaseCollector(ABC):
         # Defaults to the collector type name for backwards compatibility.
         self.instance_name = self.source_name
 
+    # ── Raw balance API (new) ─────────────────────────────────────────
+
     @abstractmethod
+    async def fetch_raw_balances(self) -> list[RawBalance]:
+        """Fetch current balances from the source without pricing."""
+
+    def _build_snapshots(
+        self,
+        raw_balances: list[RawBalance],
+        prices: dict[str, Decimal],
+    ) -> list[Snapshot]:
+        """Convert raw balances into priced Snapshot objects."""
+        today = self._pricing.today()
+        instance_name = self.instance_name or self.source_name
+        snapshots: list[Snapshot] = []
+        for rb in raw_balances:
+            price = rb.price if rb.price is not None else prices.get(rb.asset, Decimal(0))
+            snapshots.append(
+                Snapshot(
+                    date=rb.date or today,
+                    source=self.source_name,
+                    source_name=instance_name,
+                    asset=rb.asset,
+                    amount=rb.amount,
+                    usd_value=rb.amount * price,
+                    price=price,
+                    apy=rb.apy,
+                    raw_json=rb.raw_json,
+                )
+            )
+        return snapshots
+
+    # ── Legacy fetch_balances (concrete) ──────────────────────────────
+
     async def fetch_balances(self) -> list[Snapshot]:
-        """Fetch current balances from the source."""
+        """Fetch balances with pricing (batch CoinGecko call).
+
+        Delegates to ``fetch_raw_balances`` and batch-prices the result.
+        """
+        raw = await self.fetch_raw_balances()
+        tickers = list({rb.asset for rb in raw if rb.price is None})
+        prices = await self._pricing.get_prices_usd(tickers) if tickers else {}
+        return self._build_snapshots(raw, prices)
 
     @abstractmethod
     async def fetch_transactions(self, since: date | None = None) -> list[Transaction]:

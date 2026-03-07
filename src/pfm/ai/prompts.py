@@ -25,6 +25,10 @@ Rules:
 - If data is missing or noisy, state that clearly.
 - Include concrete numbers and percentages from the provided data.
 - Give enough detail to explain reasoning and actions.
+- When recent transactions are provided, use them to explain asset movements.
+  Correlated withdrawals and deposits across sources (e.g. GBP withdrawal from Wise
+  + USDC deposit to OKX at similar amounts) indicate inter-account transfers with
+  currency conversion — not market gains/losses. Do not flag these as anomalies.
 """.strip()
 
 WEEKLY_REPORT_USER_PROMPT_TEMPLATE = """
@@ -36,10 +40,9 @@ Top holdings:
 
 Allocation by category:
 {allocation_by_category}
-{extra_sections}
-Risk metrics:
+{extra_sections}Risk metrics:
 {risk_metrics}
-
+{transactions_section}
 Data warnings:
 {warnings}
 
@@ -73,6 +76,7 @@ class AnalyticsSummary:
     warnings: tuple[str, ...] = ()
     earn_positions: str = ""
     weekly_pnl: str = ""
+    recent_transactions: str = ""
 
 
 def render_weekly_report_user_prompt(analytics: AnalyticsSummary) -> str:
@@ -93,6 +97,14 @@ def render_weekly_report_user_prompt(analytics: AnalyticsSummary) -> str:
             extra_parts.append(f"7-Day portfolio change:\n{_pretty_json(pnl)}")
     extra_sections = "\n".join(extra_parts) + "\n" if extra_parts else ""
 
+    transactions_section = ""
+    if analytics.recent_transactions:
+        txs = _compact_recent_transactions(analytics.recent_transactions)
+        if txs:
+            transactions_section = (
+                "\nRecent transactions (last 7 days, deposits/withdrawals/transfers):\n" f"{_pretty_json(txs)}\n"
+            )
+
     return WEEKLY_REPORT_USER_PROMPT_TEMPLATE.format(
         as_of_date=analytics.as_of_date.isoformat(),
         net_worth_usd=_fmt_usd(analytics.net_worth_usd),
@@ -100,6 +112,7 @@ def render_weekly_report_user_prompt(analytics: AnalyticsSummary) -> str:
         allocation_by_category=_pretty_json(allocation_by_category),
         extra_sections=extra_sections,
         risk_metrics=_pretty_json(risk_metrics),
+        transactions_section=transactions_section,
         warnings=warnings_text,
     )
 
@@ -247,3 +260,38 @@ def _compact_weekly_pnl(raw: str) -> dict[str, object] | None:
                 if isinstance(item, dict)
             ][:3]
     return result
+
+
+def _compact_recent_transactions(raw: str) -> list[dict[str, object]]:
+    """Compact recent transactions for the AI prompt.
+
+    Groups by (date, source, type, asset) and sums amounts to avoid duplicates.
+    Filters out tiny amounts (< $10 equivalent).
+    """
+    rows = _parse_list(raw)
+    # Deduplicate by grouping
+    grouped: dict[tuple[str, ...], Decimal] = {}
+    for row in rows:
+        key = (
+            str(row.get("date", "")),
+            str(row.get("source", "")),
+            str(row.get("type", "")),
+            str(row.get("asset", "")),
+        )
+        grouped[key] = grouped.get(key, Decimal(0)) + _to_decimal(row.get("amount", 0))
+
+    compact: list[dict[str, object]] = []
+    for (tx_date, source, tx_type, asset), amount in grouped.items():
+        if amount < 10:  # noqa: PLR2004
+            continue
+        compact.append(
+            {
+                "date": tx_date,
+                "source": source,
+                "type": tx_type,
+                "asset": asset,
+                "amount": str(amount.quantize(Decimal("0.01"))),
+            }
+        )
+    compact.sort(key=lambda r: str(r.get("date", "")), reverse=True)
+    return compact[:30]

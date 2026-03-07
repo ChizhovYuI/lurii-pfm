@@ -15,7 +15,7 @@ from pfm.collectors import register_collector
 from pfm.collectors._auth import sign_binance
 from pfm.collectors._retry import RateLimiter, retry
 from pfm.collectors.base import BaseCollector
-from pfm.db.models import Snapshot, Transaction, TransactionType
+from pfm.db.models import RawBalance, Transaction, TransactionType
 
 if TYPE_CHECKING:
     from pfm.pricing.coingecko import PricingService
@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _RATE_LIMITER = RateLimiter(requests_per_minute=600.0)
+_CLOCK_DRIFT_LOG_THRESHOLD_MS = 500
 
 
 @register_collector
@@ -31,6 +32,7 @@ class BinanceCollector(BaseCollector):
 
     source_name = "binance"
     _base_url = "https://api.binance.com"
+    _server_time_path = "/api/v3/time"
 
     def __init__(
         self,
@@ -47,11 +49,27 @@ class BinanceCollector(BaseCollector):
             headers={"X-MBX-APIKEY": api_key},
             timeout=30.0,
         )
+        self._time_offset_ms = 0
+        self._time_synced = False
+
+    async def _sync_server_time(self) -> None:
+        """Fetch exchange server time and compute clock offset to prevent 400 errors."""
+        try:
+            resp = await self._client.get(self._server_time_path)
+            resp.raise_for_status()
+            server_time = resp.json()["serverTime"]
+            local_time = int(time.time() * 1000)
+            self._time_offset_ms = server_time - local_time
+            if abs(self._time_offset_ms) > _CLOCK_DRIFT_LOG_THRESHOLD_MS:
+                logger.info("%s: server clock offset: %dms", self.source_name, self._time_offset_ms)
+        except (httpx.HTTPError, KeyError):
+            logger.warning("%s: failed to sync server time, using local clock", self.source_name)
+        self._time_synced = True
 
     def _signed_params(self, params: dict[str, str] | None = None) -> dict[str, str]:
         """Add timestamp and signature to request params."""
         p = dict(params or {})
-        p["timestamp"] = str(int(time.time() * 1000))
+        p["timestamp"] = str(int(time.time() * 1000) + self._time_offset_ms)
         query = "&".join(f"{k}={v}" for k, v in p.items())
         p["signature"] = sign_binance(query, self._api_secret)
         return p
@@ -59,17 +77,18 @@ class BinanceCollector(BaseCollector):
     @retry()
     async def _get(self, path: str, params: dict[str, str] | None = None) -> Any:  # noqa: ANN401
         """Make a signed GET request."""
+        if not self._time_synced:
+            await self._sync_server_time()
         await _RATE_LIMITER.acquire()
         signed = self._signed_params(params)
         resp = await self._client.get(path, params=signed)
         resp.raise_for_status()
         return resp.json()
 
-    async def fetch_balances(self) -> list[Snapshot]:
+    async def fetch_raw_balances(self) -> list[RawBalance]:
         """Fetch spot account balances."""
-        today = self._pricing.today()
         data = await self._get("/api/v3/account")
-        snapshots: list[Snapshot] = []
+        raw: list[RawBalance] = []
 
         for bal in data.get("balances", []):
             free = Decimal(str(bal.get("free", "0")))
@@ -80,27 +99,16 @@ class BinanceCollector(BaseCollector):
             if total == 0 or not ticker:
                 continue
 
-            try:
-                price = await self._pricing.get_price_usd(ticker)
-            except ValueError:
-                logger.warning("Binance: cannot price %s, skipping", ticker)
-                continue
-
-            usd_value = total * price
-            snapshots.append(
-                Snapshot(
-                    date=today,
-                    source=self.source_name,
+            raw.append(
+                RawBalance(
                     asset=ticker,
                     amount=total,
-                    usd_value=usd_value,
-                    price=price,
                     raw_json=json.dumps(bal),
                 )
             )
 
-        logger.info("Binance: found %d non-zero balances", len(snapshots))
-        return snapshots
+        logger.info("Binance: found %d non-zero balances", len(raw))
+        return raw
 
     async def fetch_transactions(self, since: date | None = None) -> list[Transaction]:
         """Fetch deposit and withdrawal history."""

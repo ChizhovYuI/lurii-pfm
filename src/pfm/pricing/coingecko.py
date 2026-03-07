@@ -138,9 +138,10 @@ class PricingService:
             prices = await self._fetch_crypto_prices_batch(crypto_to_fetch)
             results.update(prices)
 
-        # Fetch fiat one by one (different endpoint)
-        for fiat in fiat_to_fetch:
-            results[fiat] = await self._fetch_fiat_rate(fiat)
+        # Batch fetch fiat
+        if fiat_to_fetch:
+            rates = await self._fetch_fiat_rates_batch(fiat_to_fetch)
+            results.update(rates)
 
         return results
 
@@ -301,6 +302,31 @@ class PricingService:
         await self._save_persisted_cache(ticker, rate)
         logger.debug("Fetched fiat rate 1 %s = $%s", ticker, rate)
         return rate
+
+    async def _fetch_fiat_rates_batch(self, tickers: list[str]) -> dict[str, Decimal]:
+        """Fetch multiple fiat-to-USD rates in one call via the BTC bridge."""
+        currencies = ",".join(["usd"] + [t.lower() for t in tickers])
+        data = await self._request_json(
+            "/simple/price",
+            {"ids": "bitcoin", "vs_currencies": currencies},
+        )
+        btc_usd_raw = data.get("bitcoin", {}).get("usd")
+        if btc_usd_raw is None:
+            logger.warning("CoinGecko: BTC/USD not available for fiat batch")
+            return {}
+
+        btc_usd = Decimal(str(btc_usd_raw))
+        results: dict[str, Decimal] = {}
+        for t in tickers:
+            btc_fiat = data.get("bitcoin", {}).get(t.lower())
+            if btc_fiat is None or Decimal(str(btc_fiat)) == 0:
+                logger.warning("CoinGecko: no fiat rate for %s", t)
+                continue
+            rate = btc_usd / Decimal(str(btc_fiat))
+            self._set_cache(t, rate)
+            await self._save_persisted_cache(t, rate)
+            results[t] = rate
+        return results
 
     async def _resolve_coingecko_id(self, ticker: str) -> str | None:  # noqa: C901
         """Best-effort resolve a CoinGecko coin id from a ticker symbol."""

@@ -13,7 +13,7 @@ import httpx
 from pfm.collectors import register_collector
 from pfm.collectors._retry import retry
 from pfm.collectors.base import BaseCollector
-from pfm.db.models import Snapshot, Transaction, TransactionType
+from pfm.db.models import RawBalance, Transaction, TransactionType
 
 if TYPE_CHECKING:
     from pfm.pricing.coingecko import PricingService
@@ -49,11 +49,10 @@ class LobstrCollector(BaseCollector):
         resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]
 
-    async def fetch_balances(self) -> list[Snapshot]:
+    async def fetch_raw_balances(self) -> list[RawBalance]:
         """Fetch all Stellar account balances."""
         account = await self._get_account()
-        today = self._pricing.today()
-        snapshots: list[Snapshot] = []
+        raw: list[RawBalance] = []
 
         for bal in account.get("balances", []):
             amount = Decimal(bal["balance"])
@@ -61,23 +60,17 @@ class LobstrCollector(BaseCollector):
                 continue
 
             ticker = self._parse_ticker(bal)
-            price = await self._pricing.get_price_usd(ticker)
-            usd_value = amount * price
 
-            snapshots.append(
-                Snapshot(
-                    date=today,
-                    source=self.source_name,
+            raw.append(
+                RawBalance(
                     asset=ticker,
                     amount=amount,
-                    usd_value=usd_value,
-                    price=price,
                     raw_json=json.dumps(bal),
                 )
             )
 
-        logger.info("Lobstr: found %d non-zero balances", len(snapshots))
-        return snapshots
+        logger.info("Lobstr: found %d non-zero balances", len(raw))
+        return raw
 
     async def fetch_transactions(self, since: date | None = None) -> list[Transaction]:
         """Fetch recent payments from Stellar Horizon."""

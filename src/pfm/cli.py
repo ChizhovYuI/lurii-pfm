@@ -7,7 +7,7 @@ import json
 import logging
 import re
 import sys
-from datetime import date, timedelta
+from datetime import date
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -17,7 +17,6 @@ import httpx
 from pfm import __version__
 from pfm.ai.providers.ollama import OllamaProvider
 from pfm.ai.providers.registry import get_provider_names
-from pfm.collectors import COLLECTOR_REGISTRY
 from pfm.config import get_settings
 from pfm.db.ai_store import AIProviderStore
 from pfm.db.gemini_store import GeminiStore
@@ -672,7 +671,12 @@ def collect(source_name: str | None) -> None:
 
 
 async def _collect_async(source_name: str | None) -> list[CollectorResult]:
-    """Run collection for enabled sources (or a single named source)."""
+    """Run collection: parallel raw fetch, batch pricing, save snapshots."""
+    from pfm.collectors.pipeline import run_parallel_pipeline
+    from pfm.db.repository import Repository
+    from pfm.pricing import PricingService
+    from pfm.server.routes.collect import _build_collectors
+
     settings = get_settings()
     store = SourceStore(settings.database_path)
 
@@ -691,51 +695,25 @@ async def _collect_async(source_name: str | None) -> list[CollectorResult]:
             click.echo("No enabled sources. Run 'pfm source add' first.")
             return []
 
-    # Late imports to avoid circular dependencies and keep startup fast
-    from pfm.db.repository import Repository
-    from pfm.pricing import PricingService
-
     pricing = PricingService(
         api_key=settings.coingecko_api_key,
         cache_db_path=settings.database_path,
     )
-    results: list[CollectorResult] = []
 
     try:
         async with Repository(settings.database_path) as repo:
-            for src in sources_to_run:
-                collector_cls = COLLECTOR_REGISTRY.get(src.type)
-                if collector_cls is None:
-                    msg = f"No collector registered for type '{src.type}'"
-                    logger.warning(msg)
-                    click.echo(f"Skipping '{src.name}': {msg}", err=True)
-                    continue
+            collectors = await _build_collectors(sources_to_run, pricing, settings.database_path)
+            click.echo(f"Fetching raw balances from {len(collectors)} source(s) in parallel...")
 
-                creds = json.loads(src.credentials)
-                collector = collector_cls(pricing, **creds)
-                collector.instance_name = src.name
-                click.echo(f"Collecting: {src.name} ({src.type})...")
-                try:
-                    result = await collector.collect(repo)
-                except BaseException as exc:
-                    logger.exception("Unhandled collector exception from '%s'", src.name)
-                    results.append(
-                        CollectorResult(
-                            source=src.name,
-                            snapshots_count=0,
-                            transactions_count=0,
-                            errors=[f"Unhandled collector error: {exc}"],
-                            duration_seconds=0.0,
-                        )
-                    )
-                    continue
+            results = await run_parallel_pipeline(collectors, pricing, repo)
 
+            for (src, collector), _result in zip(collectors, results, strict=True):
+                click.echo(f"Processing: {src.name} ({src.type})...")
                 _print_kbank_statement_freshness(
                     source_type=src.type,
                     collector=collector,
                     today=pricing.today(),
                 )
-                results.append(result)
     finally:
         await pricing.close()
 
@@ -787,11 +765,11 @@ def _print_kbank_statement_freshness(*, source_type: str, collector: object, tod
         )
         return
 
-    click.secho(f"  KBank statement date: {statement_date.isoformat()}", fg="cyan")
-    oldest_acceptable = today - timedelta(days=1)
-    if statement_date < oldest_acceptable:
+    age_days = (today - statement_date).days
+    click.secho(f"  KBank statement date: {statement_date.isoformat()} ({age_days}d ago)", fg="cyan")
+    if age_days >= 3:  # noqa: PLR2004
         click.secho(
-            f"    Statement is older than yesterday ({oldest_acceptable.isoformat()}).",
+            f"    Statement is {age_days} days old (3+ days is stale).",
             fg="yellow",
         )
         click.secho(

@@ -12,7 +12,7 @@ import httpx
 
 from pfm.collectors import register_collector
 from pfm.collectors.binance import BinanceCollector
-from pfm.db.models import Snapshot, Transaction, TransactionType
+from pfm.db.models import RawBalance, Transaction, TransactionType
 
 if TYPE_CHECKING:
     from pfm.pricing.coingecko import PricingService
@@ -48,11 +48,10 @@ class BinanceThCollector(BinanceCollector):
             timeout=30.0,
         )
 
-    async def fetch_balances(self) -> list[Snapshot]:
+    async def fetch_raw_balances(self) -> list[RawBalance]:
         """Fetch spot account balances via /api/v1/accountV2."""
-        today = self._pricing.today()
         data = await self._get("/api/v1/accountV2")
-        snapshots: list[Snapshot] = []
+        raw: list[RawBalance] = []
 
         for bal in data.get("balances", []):
             free = Decimal(str(bal.get("free", "0")))
@@ -63,27 +62,16 @@ class BinanceThCollector(BinanceCollector):
             if total == 0 or not ticker:
                 continue
 
-            try:
-                price = await self._pricing.get_price_usd(ticker)
-            except ValueError:
-                logger.warning("Binance TH: cannot price %s, skipping", ticker)
-                continue
-
-            usd_value = total * price
-            snapshots.append(
-                Snapshot(
-                    date=today,
-                    source=self.source_name,
+            raw.append(
+                RawBalance(
                     asset=ticker,
                     amount=total,
-                    usd_value=usd_value,
-                    price=price,
                     raw_json=json.dumps(bal),
                 )
             )
 
-        logger.info("Binance TH: found %d non-zero balances", len(snapshots))
-        return snapshots
+        logger.info("Binance TH: found %d non-zero balances", len(raw))
+        return raw
 
     async def fetch_transactions(self, since: date | None = None) -> list[Transaction]:
         """Fetch deposit and withdrawal history via /api/v1 endpoints."""

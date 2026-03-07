@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from pfm.server.serializers import _str_decimal
+
+_MIN_TX_AMOUNT = 10
 
 if TYPE_CHECKING:
     from datetime import date
@@ -98,6 +101,26 @@ async def build_analytics_summary(
             }
         )
 
+    # Recent transactions (last 7 days) for AI context on fund movements
+    recent_transactions = ""
+    tx_start = snapshot_date - timedelta(days=7)
+    txs = await repo.get_transactions(start=tx_start, end=snapshot_date)
+    move_types = {"deposit", "withdrawal", "transfer"}
+    move_txs = [t for t in txs if t.tx_type in move_types and t.amount >= _MIN_TX_AMOUNT]
+    if move_txs:
+        recent_transactions = json.dumps(
+            [
+                {
+                    "date": t.date.isoformat(),
+                    "source": t.source,
+                    "type": t.tx_type,
+                    "asset": t.asset,
+                    "amount": _str_decimal(t.amount),
+                }
+                for t in move_txs
+            ]
+        )
+
     return AnalyticsSummary(
         as_of_date=snapshot_date,
         net_worth_usd=net_worth,
@@ -164,4 +187,5 @@ async def build_analytics_summary(
         warnings=tuple(warnings),
         earn_positions=earn_positions,
         weekly_pnl=weekly_pnl,
+        recent_transactions=recent_transactions,
     )

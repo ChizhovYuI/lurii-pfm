@@ -25,6 +25,9 @@ class MockCollector(BaseCollector):
         self._fail_balances = fail_balances
         self._fail_transactions = fail_transactions
 
+    async def fetch_raw_balances(self):
+        return []
+
     async def fetch_balances(self):
         if self._fail_balances:
             msg = "balance fetch failed"

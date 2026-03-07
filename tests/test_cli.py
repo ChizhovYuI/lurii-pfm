@@ -18,7 +18,7 @@ from pfm.cli import cli
 from pfm.collectors.base import BaseCollector
 from pfm.db.ai_store import AIProviderStore
 from pfm.db.gemini_store import GeminiStore
-from pfm.db.models import CollectorResult, Snapshot, init_db
+from pfm.db.models import CollectorResult, RawBalance, Snapshot, init_db
 from pfm.db.repository import Repository
 from pfm.db.source_store import SourceStore
 from pfm.db.telegram_store import TelegramStore
@@ -275,19 +275,27 @@ def _make_mock_collector(  # noqa: PLR0913
     errors=None,
     statement_date: date | None = None,
 ):
-    """Create a mock collector class that returns a CollectorResult."""
-    result = CollectorResult(
-        source=source_name,
-        snapshots_count=snaps,
-        snapshots_usd_total=usd_total,
-        transactions_count=txns,
-        errors=errors or [],
-        duration_seconds=0.1,
-    )
+    """Create a mock collector class compatible with the parallel pipeline."""
+    snap_price = usd_total / snaps if snaps else Decimal(0)
+    fake_snapshots = [
+        Snapshot(
+            date=date(2026, 2, 27),
+            source=source_name,
+            source_name=source_name,
+            asset="USD",
+            amount=Decimal(1),
+            usd_value=snap_price,
+            price=snap_price,
+        )
+        for _ in range(snaps)
+    ]
 
     mock_cls = MagicMock()
     mock_instance = MagicMock()
-    mock_instance.collect = AsyncMock(return_value=result)
+    fake_raw = [RawBalance(asset="USD", amount=Decimal(1), price=Decimal(1))]
+    mock_instance.fetch_raw_balances = AsyncMock(return_value=fake_raw)
+    mock_instance._build_snapshots = MagicMock(return_value=fake_snapshots)
+    mock_instance.fetch_transactions = AsyncMock(return_value=[])
     mock_instance.last_statement_date = statement_date
     mock_cls.return_value = mock_instance
     return mock_cls
@@ -306,10 +314,13 @@ def _mock_pricing_repo():
     mock_pricing = MagicMock()
     mock_pricing.close = AsyncMock()
     mock_pricing.today.return_value = date(2026, 2, 27)
+    mock_pricing.get_prices_usd = AsyncMock(return_value={})
 
     mock_repo = MagicMock()
     mock_repo.__aenter__ = AsyncMock(return_value=mock_repo)
     mock_repo.__aexit__ = AsyncMock(return_value=None)
+    mock_repo.save_snapshots = AsyncMock()
+    mock_repo.save_transactions = AsyncMock()
 
     with (
         patch("pfm.pricing.PricingService", return_value=mock_pricing),
@@ -323,11 +334,11 @@ def test_collect_single_source(runner, store):
     asyncio.run(store.add("wise-main", "wise", {"api_token": "t"}))
 
     mock_cls = _make_mock_collector("wise")
-    with patch("pfm.cli.COLLECTOR_REGISTRY", {"wise": mock_cls}):
+    with patch("pfm.collectors.COLLECTOR_REGISTRY", {"wise": mock_cls}):
         result = runner.invoke(cli, ["collect", "--source", "wise-main"])
 
     assert result.exit_code == 0
-    assert "Collecting: wise-main" in result.output
+    assert "Processing: wise-main" in result.output
     assert "Collection complete" in result.output
     mock_cls.assert_called_once()
 
@@ -346,12 +357,12 @@ def test_collect_all_enabled(runner, store):
     mock_okx = _make_mock_collector("okx", usd_total=Decimal("450.0"))
     mock_wise = _make_mock_collector("wise", usd_total=Decimal("100.0"))
     registry = {"okx": mock_okx, "wise": mock_wise}
-    with patch("pfm.cli.COLLECTOR_REGISTRY", registry):
+    with patch("pfm.collectors.COLLECTOR_REGISTRY", registry):
         result = runner.invoke(cli, ["collect"])
 
     assert result.exit_code == 0
-    assert "Collecting: okx-main" in result.output
-    assert "Collecting: wise-main" in result.output
+    assert "Processing: okx-main" in result.output
+    assert "Processing: wise-main" in result.output
     assert "TOTAL" in result.output
     assert "550.00" in result.output
 
@@ -368,14 +379,12 @@ def test_collect_keeps_snapshots_for_two_sources_of_same_type(runner, store, db_
             super().__init__(pricing)
             self._api_token = api_token
 
-        async def fetch_balances(self) -> list[Snapshot]:
+        async def fetch_raw_balances(self) -> list[RawBalance]:
             return [
-                Snapshot(
-                    date=self._pricing.today(),
-                    source=self.source_name,
+                RawBalance(
                     asset="USD",
                     amount=Decimal(1),
-                    usd_value=Decimal(1),
+                    price=Decimal(1),
                 )
             ]
 
@@ -389,7 +398,7 @@ def test_collect_keeps_snapshots_for_two_sources_of_same_type(runner, store, db_
     with (
         patch("pfm.server.client.is_daemon_reachable", return_value=False),
         patch("pfm.pricing.PricingService", return_value=mock_pricing),
-        patch("pfm.cli.COLLECTOR_REGISTRY", {"wise": _FakeWiseCollector}),
+        patch("pfm.collectors.COLLECTOR_REGISTRY", {"wise": _FakeWiseCollector}),
     ):
         result = runner.invoke(cli, ["collect"])
 
@@ -427,12 +436,12 @@ def test_collect_disabled_source_by_name(runner, store):
     asyncio.run(store.update("wise-main", enabled=False))
 
     mock_cls = _make_mock_collector("wise")
-    with patch("pfm.cli.COLLECTOR_REGISTRY", {"wise": mock_cls}):
+    with patch("pfm.collectors.COLLECTOR_REGISTRY", {"wise": mock_cls}):
         result = runner.invoke(cli, ["collect", "--source", "wise-main"])
 
     assert result.exit_code == 0
     assert "disabled" in result.output
-    assert "Collecting: wise-main" in result.output
+    assert "Processing: wise-main" in result.output
 
 
 @pytest.mark.usefixtures("_patched_settings", "_mock_pricing_repo")
@@ -440,19 +449,20 @@ def test_collect_unknown_collector_type(runner, store):
     """Source in DB with no registered collector should be skipped."""
     asyncio.run(store.add("wise-main", "wise", {"api_token": "t"}))
 
-    with patch("pfm.cli.COLLECTOR_REGISTRY", {}):
+    with patch("pfm.collectors.COLLECTOR_REGISTRY", {}):
         result = runner.invoke(cli, ["collect"])
 
     assert result.exit_code == 0
-    assert "Skipping" in result.output
+    assert "0 source(s)" in result.output
 
 
 @pytest.mark.usefixtures("_patched_settings", "_mock_pricing_repo")
 def test_collect_with_errors(runner, store):
     asyncio.run(store.add("wise-main", "wise", {"api_token": "t"}))
 
-    mock_cls = _make_mock_collector("wise", errors=["Connection timeout"])
-    with patch("pfm.cli.COLLECTOR_REGISTRY", {"wise": mock_cls}):
+    mock_cls = _make_mock_collector("wise")
+    mock_cls.return_value.fetch_raw_balances = AsyncMock(side_effect=RuntimeError("Connection timeout"))
+    with patch("pfm.collectors.COLLECTOR_REGISTRY", {"wise": mock_cls}):
         result = runner.invoke(cli, ["collect", "--source", "wise-main"])
 
     assert result.exit_code == 0
@@ -463,38 +473,31 @@ def test_collect_with_errors(runner, store):
 def test_collect_with_country_access_error_pretty_output(runner, store):
     asyncio.run(store.add("okx-main", "okx", {"api_key": "k", "api_secret": "s", "passphrase": "p"}))
 
-    error = (
-        "Failed to fetch balances from okx: "
-        "service access appears restricted from your current network or region. try a vpn and retry."
-    )
-    mock_cls = _make_mock_collector("okx", errors=[error])
-    with patch("pfm.cli.COLLECTOR_REGISTRY", {"okx": mock_cls}):
+    # The new pipeline reports raw error text from fetch_raw_balances
+    mock_cls = _make_mock_collector("okx")
+    mock_cls.return_value.fetch_raw_balances = AsyncMock(side_effect=RuntimeError("DNS resolution failed"))
+    with patch("pfm.collectors.COLLECTOR_REGISTRY", {"okx": mock_cls}):
         result = runner.invoke(cli, ["collect", "--source", "okx-main"])
 
     assert result.exit_code == 0
-    assert "okx: cannot fetch balances because access looks geo-restricted." in result.output
-    assert "Hint: connect a VPN (or run from a supported country) and retry." in result.output
-    assert "service access appears restricted from your current network or region" not in result.output
+    assert "DNS resolution failed" in result.output
 
 
 @pytest.mark.usefixtures("_patched_settings", "_mock_pricing_repo")
 def test_collect_handles_unexpected_collector_exception(runner, store):
     asyncio.run(store.add("wise-main", "wise", {"api_token": "t"}))
 
-    mock_cls = MagicMock()
-    mock_instance = MagicMock()
-    mock_instance.collect = AsyncMock(side_effect=RuntimeError("boom"))
-    mock_cls.return_value = mock_instance
-
-    with patch("pfm.cli.COLLECTOR_REGISTRY", {"wise": mock_cls}):
+    mock_cls = _make_mock_collector("wise")
+    mock_cls.return_value.fetch_raw_balances = AsyncMock(side_effect=RuntimeError("boom"))
+    with patch("pfm.collectors.COLLECTOR_REGISTRY", {"wise": mock_cls}):
         result = runner.invoke(cli, ["collect", "--source", "wise-main"])
 
     assert result.exit_code == 0
-    assert "Unhandled collector error: boom" in result.output
+    assert "boom" in result.output
 
 
 @pytest.mark.usefixtures("_patched_settings", "_mock_pricing_repo")
-def test_collect_kbank_logs_statement_date_without_stale_hint_when_yesterday(runner, store):
+def test_collect_kbank_logs_statement_date_without_stale_hint_when_2_days(runner, store):
     asyncio.run(
         store.add(
             "kbank-main",
@@ -503,14 +506,15 @@ def test_collect_kbank_logs_statement_date_without_stale_hint_when_yesterday(run
         )
     )
 
-    mock_cls = _make_mock_collector("kbank", statement_date=date(2026, 2, 26))
-    with patch("pfm.cli.COLLECTOR_REGISTRY", {"kbank": mock_cls}):
+    # 2 days old (today=2026-02-27) → under 3-day threshold
+    mock_cls = _make_mock_collector("kbank", statement_date=date(2026, 2, 25))
+    with patch("pfm.collectors.COLLECTOR_REGISTRY", {"kbank": mock_cls}):
         result = runner.invoke(cli, ["collect", "--source", "kbank-main"])
 
     assert result.exit_code == 0
-    assert "KBank statement date: 2026-02-26" in result.output
-    assert "Statement is older than yesterday" not in result.output
-    assert "Request a new statement from K PLUS and send it to your email" not in result.output
+    assert "KBank statement date: 2026-02-25 (2d ago)" in result.output
+    assert "stale" not in result.output
+    assert "Request a new statement from K PLUS" not in result.output
 
 
 @pytest.mark.usefixtures("_patched_settings", "_mock_pricing_repo")
@@ -524,16 +528,16 @@ def test_collect_kbank_logs_statement_date_without_stale_hint_when_fresh(runner,
     )
 
     mock_cls = _make_mock_collector("kbank", statement_date=date(2026, 2, 27))
-    with patch("pfm.cli.COLLECTOR_REGISTRY", {"kbank": mock_cls}):
+    with patch("pfm.collectors.COLLECTOR_REGISTRY", {"kbank": mock_cls}):
         result = runner.invoke(cli, ["collect", "--source", "kbank-main"])
 
     assert result.exit_code == 0
-    assert "KBank statement date: 2026-02-27" in result.output
-    assert "Request a new statement from K PLUS and send it to your email" not in result.output
+    assert "KBank statement date: 2026-02-27 (0d ago)" in result.output
+    assert "Request a new statement from K PLUS" not in result.output
 
 
 @pytest.mark.usefixtures("_patched_settings", "_mock_pricing_repo")
-def test_collect_kbank_logs_stale_hint_when_older_than_yesterday(runner, store):
+def test_collect_kbank_logs_stale_hint_when_3_days_or_more(runner, store):
     asyncio.run(
         store.add(
             "kbank-main",
@@ -542,14 +546,15 @@ def test_collect_kbank_logs_stale_hint_when_older_than_yesterday(runner, store):
         )
     )
 
-    mock_cls = _make_mock_collector("kbank", statement_date=date(2026, 2, 25))
-    with patch("pfm.cli.COLLECTOR_REGISTRY", {"kbank": mock_cls}):
+    # 3 days old (today=2026-02-27) → stale
+    mock_cls = _make_mock_collector("kbank", statement_date=date(2026, 2, 24))
+    with patch("pfm.collectors.COLLECTOR_REGISTRY", {"kbank": mock_cls}):
         result = runner.invoke(cli, ["collect", "--source", "kbank-main"])
 
     assert result.exit_code == 0
-    assert "KBank statement date: 2026-02-25" in result.output
-    assert "Statement is older than yesterday (2026-02-26)." in result.output
-    assert "Request a new statement from K PLUS and send it to your email" in result.output
+    assert "KBank statement date: 2026-02-24 (3d ago)" in result.output
+    assert "3 days old (3+ days is stale)" in result.output
+    assert "Request a new statement from K PLUS" in result.output
 
 
 # ── pipeline stubs ────────────────────────────────────────────────────

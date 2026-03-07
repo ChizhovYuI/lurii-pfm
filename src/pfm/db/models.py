@@ -28,6 +28,25 @@ class TransactionType(enum.StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class RawBalance:
+    """Unpriced balance from a source API.
+
+    Collectors return these from ``fetch_raw_balances()``.  The orchestrator
+    collects unique tickers and batch-fetches prices before building Snapshots.
+
+    When the source API already provides a USD price (e.g. IBKR, Rabby), set
+    *price* so the batch step skips the CoinGecko lookup for that asset.
+    """
+
+    asset: str
+    amount: Decimal
+    apy: Decimal = Decimal(0)
+    raw_json: str = ""
+    price: Decimal | None = None
+    date: date | None = None  # override snapshot date (default: today)
+
+
+@dataclass(frozen=True, slots=True)
 class Snapshot:
     """A point-in-time balance for a single asset from a single source."""
 

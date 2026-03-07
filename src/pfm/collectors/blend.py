@@ -14,7 +14,7 @@ from stellar_sdk.exceptions import SdkError
 from pfm.collectors import register_collector
 from pfm.collectors._math import apr_to_apy
 from pfm.collectors.base import BaseCollector
-from pfm.db.models import Snapshot
+from pfm.db.models import RawBalance
 
 if TYPE_CHECKING:
     from datetime import date
@@ -202,7 +202,7 @@ class BlendCollector(BaseCollector):
 
     # ── Public interface ───────────────────────────────────────────────
 
-    async def fetch_balances(self) -> list[Snapshot]:
+    async def fetch_raw_balances(self) -> list[RawBalance]:
         """Fetch Blend lending positions (supply + collateral) with APY."""
         if not self._pool_contract_id:
             logger.warning("Blend: pool contract ID not configured, skipping")
@@ -233,8 +233,7 @@ class BlendCollector(BaseCollector):
         except (httpx.HTTPStatusError, SdkError, ValueError, KeyError):
             backstop_rate = Decimal("0.20")
 
-        today = self._pricing.today()
-        snapshots: list[Snapshot] = []
+        raw: list[RawBalance] = []
 
         for idx, b_tokens in totals.items():
             if idx >= len(reserve_list):
@@ -250,25 +249,18 @@ class BlendCollector(BaseCollector):
             amount = Decimal(underlying_raw) / Decimal(scalar)
 
             ticker = self._resolve_ticker(asset_addr)
-            price = await self._pricing.get_price_usd(ticker)
-            usd_value = amount * price
-
             apy = self._compute_supply_apy(reserve, backstop_rate)
 
-            snapshots.append(
-                Snapshot(
-                    date=today,
-                    source=self.source_name,
+            raw.append(
+                RawBalance(
                     asset=ticker,
                     amount=amount,
-                    usd_value=usd_value,
-                    price=price,
                     apy=apy,
                 )
             )
 
-        logger.info("Blend: found %d positions", len(snapshots))
-        return snapshots
+        logger.info("Blend: found %d positions", len(raw))
+        return raw
 
     async def fetch_transactions(self, since: date | None = None) -> list[Transaction]:  # noqa: ARG002
         """Blend transactions tracked via balance diffs between snapshots."""

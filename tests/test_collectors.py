@@ -5,6 +5,7 @@ from __future__ import annotations
 import imaplib
 import json
 import logging
+import time
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -24,7 +25,7 @@ from pfm.collectors.lobstr import LobstrCollector
 from pfm.collectors.mexc import MexcCollector
 from pfm.collectors.okx import OkxCollector
 from pfm.collectors.wise import WiseCollector
-from pfm.db.models import Snapshot, Transaction, TransactionType
+from pfm.db.models import RawBalance, Transaction, TransactionType
 from pfm.pricing.coingecko import PricingService
 
 
@@ -172,6 +173,7 @@ async def test_lobstr_transactions_since_filter(pricing):
 
 async def test_binance_fetch_balances(pricing):
     collector = BinanceCollector(pricing, api_key="key", api_secret="secret")
+    collector._time_synced = True
     account_resp = _mock_response(
         {
             "balances": [
@@ -192,6 +194,7 @@ async def test_binance_fetch_balances(pricing):
 
 async def test_binance_fetch_balances_unknown_ticker(pricing):
     collector = BinanceCollector(pricing, api_key="key", api_secret="secret")
+    collector._time_synced = True
     account_resp = _mock_response(
         {
             "balances": [
@@ -202,11 +205,14 @@ async def test_binance_fetch_balances_unknown_ticker(pricing):
     collector._client.get = AsyncMock(return_value=account_resp)
 
     snapshots = await collector.fetch_balances()
-    assert len(snapshots) == 0  # skipped due to pricing failure
+    assert len(snapshots) == 1  # included with zero USD price
+    assert snapshots[0].asset == "UNKNOWNCOIN"
+    assert snapshots[0].usd_value == Decimal(0)
 
 
 async def test_binance_fetch_transactions(pricing):
     collector = BinanceCollector(pricing, api_key="key", api_secret="secret")
+    collector._time_synced = True
     deposits_resp = _mock_response(
         [
             {"coin": "BTC", "amount": "1.0", "insertTime": 1705276800000, "txId": "dep1"},
@@ -240,6 +246,7 @@ async def test_binance_fetch_transactions(pricing):
 
 async def test_binance_fetch_transactions_with_since(pricing):
     collector = BinanceCollector(pricing, api_key="key", api_secret="secret")
+    collector._time_synced = True
     collector._client.get = AsyncMock(return_value=_mock_response([]))
 
     await collector.fetch_transactions(since=date(2024, 1, 1))
@@ -248,6 +255,7 @@ async def test_binance_fetch_transactions_with_since(pricing):
 
 async def test_binance_deposit_http_error(pricing):
     collector = BinanceCollector(pricing, api_key="key", api_secret="secret")
+    collector._time_synced = True
 
     call_count = 0
 
@@ -283,6 +291,39 @@ async def test_binance_parse_deposit_empty():
 async def test_binance_parse_withdrawal_empty():
     tx = BinanceCollector._parse_withdrawal({"coin": "", "amount": "0"})
     assert tx is None
+
+
+async def test_binance_server_time_sync(pricing):
+    collector = BinanceCollector(pricing, api_key="key", api_secret="secret")
+    server_time_resp = _mock_response({"serverTime": int(time.time() * 1000) + 2000})
+    account_resp = _mock_response({"balances": [{"asset": "BTC", "free": "1.0", "locked": "0.0"}]})
+
+    async def mock_get(path, **kwargs):
+        if "time" in path:
+            return server_time_resp
+        return account_resp
+
+    collector._client.get = mock_get  # type: ignore[assignment]
+    raw = await collector.fetch_raw_balances()
+    assert collector._time_synced is True
+    assert abs(collector._time_offset_ms - 2000) < 200
+    assert len(raw) == 1
+
+
+async def test_binance_server_time_sync_failure_falls_back(pricing):
+    collector = BinanceCollector(pricing, api_key="key", api_secret="secret")
+    account_resp = _mock_response({"balances": [{"asset": "BTC", "free": "1.0", "locked": "0.0"}]})
+
+    async def mock_get(path, **kwargs):
+        if "time" in path:
+            raise httpx.ConnectError("timeout")
+        return account_resp
+
+    collector._client.get = mock_get  # type: ignore[assignment]
+    raw = await collector.fetch_raw_balances()
+    assert collector._time_synced is True
+    assert collector._time_offset_ms == 0
+    assert len(raw) == 1
 
 
 # ── Binance TH ────────────────────────────────────────────────────────
@@ -435,12 +476,11 @@ async def test_mexc_fetch_contract_balances(pricing):
             ],
         }
     )
-    snapshots = await collector._fetch_contract_balances(pricing.today())
-    assert len(snapshots) == 1
-    usdc = snapshots[0]
+    raw = await collector._fetch_contract_raw()
+    assert len(raw) == 1
+    usdc = raw[0]
     assert usdc.asset == "USDC"
     assert usdc.amount == Decimal("42.5")
-    assert usdc.usd_value == Decimal("42.5")
 
 
 async def test_mexc_fetch_earn_with_apy(pricing):
@@ -1368,15 +1408,13 @@ async def test_kbank_no_pdf_no_gmail_skips(pricing):
 
 async def test_kbank_converts_thb_to_usd(pricing):
     collector = KbankCollector(pricing)
-    fake_snapshot = Snapshot(
-        date=date(2024, 1, 15),
-        source="kbank",
+    fake_raw = RawBalance(
         asset="THB",
         amount=Decimal(1000),
-        usd_value=Decimal(0),
         raw_json="{}",
+        date=date(2024, 1, 15),
     )
-    with patch.object(collector, "_parse_pdf", return_value=([fake_snapshot], [])):
+    with patch.object(collector, "_parse_pdf", return_value=([fake_raw], [])):
         collector._pdf_path = Path("/tmp/fake.pdf")
         pricing._set_cache("THB", Decimal("0.028"))
         snapshots = await collector.fetch_balances()
@@ -1644,13 +1682,11 @@ async def test_kbank_fetch_transactions_with_cache(pricing):
 
 async def test_kbank_tracks_last_statement_date(pricing):
     collector = KbankCollector(pricing)
-    fake_snapshot = Snapshot(
-        date=date(2026, 2, 27),
-        source="kbank",
+    fake_raw = RawBalance(
         asset="THB",
         amount=Decimal(1000),
-        usd_value=Decimal(0),
         raw_json="{}",
+        date=date(2026, 2, 27),
     )
     fake_txs = [
         Transaction(
@@ -1670,12 +1706,12 @@ async def test_kbank_tracks_last_statement_date(pricing):
             usd_value=Decimal(0),
         ),
     ]
-    with patch.object(collector, "_parse_pdf", return_value=([fake_snapshot], fake_txs)):
+    with patch.object(collector, "_parse_pdf", return_value=([fake_raw], fake_txs)):
         collector._pdf_path = Path("/tmp/fake.pdf")
         pricing._set_cache("THB", Decimal("0.028"))
         await collector.fetch_balances()
 
-    # last_statement_date comes from the snapshot date (Period end date)
+    # last_statement_date comes from the RawBalance.date (Period end date)
     assert collector.last_statement_date == date(2026, 2, 27)
 
 

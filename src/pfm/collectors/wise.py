@@ -13,7 +13,7 @@ import httpx
 from pfm.collectors import register_collector
 from pfm.collectors._retry import retry
 from pfm.collectors.base import BaseCollector
-from pfm.db.models import Snapshot, Transaction, TransactionType
+from pfm.db.models import RawBalance, Transaction, TransactionType
 
 if TYPE_CHECKING:
     from pfm.pricing.coingecko import PricingService
@@ -79,12 +79,11 @@ class WiseCollector(BaseCollector):
         resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]
 
-    async def fetch_balances(self) -> list[Snapshot]:
+    async def fetch_raw_balances(self) -> list[RawBalance]:
         """Fetch balances from all Wise currency accounts."""
         profile_id = await self._get_profile_id()
         balances = await self._get_balances(profile_id)
-        today = self._pricing.today()
-        snapshots: list[Snapshot] = []
+        raw: list[RawBalance] = []
 
         for bal in balances:
             amount_data = bal.get("amount", {})
@@ -94,23 +93,16 @@ class WiseCollector(BaseCollector):
             if amount == 0 or not currency:
                 continue
 
-            price = await self._pricing.get_price_usd(currency)
-            usd_value = amount * price
-
-            snapshots.append(
-                Snapshot(
-                    date=today,
-                    source=self.source_name,
+            raw.append(
+                RawBalance(
                     asset=currency,
                     amount=amount,
-                    usd_value=usd_value,
-                    price=price,
                     raw_json=json.dumps(bal),
                 )
             )
 
-        logger.info("Wise: found %d non-zero balances", len(snapshots))
-        return snapshots
+        logger.info("Wise: found %d non-zero balances", len(raw))
+        return raw
 
     async def fetch_transactions(self, since: date | None = None) -> list[Transaction]:
         """Fetch recent transactions from Wise statement API."""

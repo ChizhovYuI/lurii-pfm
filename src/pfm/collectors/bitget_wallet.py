@@ -14,7 +14,8 @@ import httpx
 from pfm.collectors import register_collector
 from pfm.collectors._retry import RateLimiter, retry
 from pfm.collectors.base import BaseCollector
-from pfm.db.models import Snapshot, Transaction, TransactionType
+from pfm.db.apy_rules_store import compute_effective_apy
+from pfm.db.models import RawBalance, Transaction, TransactionType
 
 if TYPE_CHECKING:
     from pfm.db.apy_rules_store import ApyRule
@@ -224,16 +225,16 @@ class BitgetWalletCollector(BaseCollector):
         raw = int(result, 16)
         return Decimal(raw) / Decimal(10**decimals)
 
-    async def fetch_balances(self) -> list[Snapshot]:
+    async def fetch_raw_balances(self) -> list[RawBalance]:
         """Fetch Aave supply balances and SOL staking positions."""
-        snapshots: list[Snapshot] = []
-        snapshots.extend(await self._fetch_aave_balances())
-        snapshots.extend(await self._fetch_sol_staking())
-        if not snapshots:
+        raw: list[RawBalance] = []
+        raw.extend(await self._fetch_aave_raw())
+        raw.extend(await self._fetch_sol_staking_raw())
+        if not raw:
             logger.info("bitget_wallet: no positions for wallet=%s", self._wallet_address)
-        return snapshots
+        return raw
 
-    async def _fetch_aave_balances(self) -> list[Snapshot]:
+    async def _fetch_aave_raw(self) -> list[RawBalance]:
         """Fetch current wallet supply balances from Aave Base market."""
         markets = await self._fetch_base_markets()
         value = await self._graphql(
@@ -249,7 +250,7 @@ class BitgetWalletCollector(BaseCollector):
             msg = "Aave userSupplies payload is invalid"
             raise TypeError(msg)
 
-        snapshots: list[Snapshot] = []
+        raw: list[RawBalance] = []
         today = self._pricing.today()
         for row in value:
             if not isinstance(row, dict):
@@ -268,12 +269,7 @@ class BitgetWalletCollector(BaseCollector):
             amount = onchain_amount if onchain_amount and onchain_amount > 0 else graphql_amount
 
             if self.apy_rules:
-                from pfm.db.apy_rules_store import compute_effective_apy
-
                 apy = compute_effective_apy(apy, self.apy_rules, "aave", asset.lower(), amount, today)
-
-            price = await self._pricing.get_price_usd(asset)
-            usd_value = amount * price
 
             raw_payload: dict[str, Any] = {
                 "wallet_address": self._wallet_address,
@@ -284,24 +280,20 @@ class BitgetWalletCollector(BaseCollector):
                 "onchain_amount": str(onchain_amount) if onchain_amount else None,
             }
 
-            snapshots.append(
-                Snapshot(
-                    date=today,
-                    source=self.source_name,
+            raw.append(
+                RawBalance(
                     asset=asset,
                     amount=amount,
-                    usd_value=usd_value,
-                    price=price,
                     apy=apy,
                     raw_json=json.dumps(raw_payload),
                 )
             )
 
-        if not snapshots:
+        if not raw:
             logger.info("bitget_wallet: no Aave supply positions for wallet=%s", self._wallet_address)
-        return snapshots
+        return raw
 
-    async def _fetch_sol_staking(self) -> list[Snapshot]:
+    async def _fetch_sol_staking_raw(self) -> list[RawBalance]:
         """Fetch native SOL staking positions via Solana RPC."""
         if not self._solana_address:
             return []
@@ -355,10 +347,7 @@ class BitgetWalletCollector(BaseCollector):
             return []
 
         amount = Decimal(total_lamports) / Decimal(10**_SOL_DECIMALS)
-        price = await self._pricing.get_price_usd("SOL")
-        usd_value = amount * price
         apy = await self._fetch_validator_apy(voter) if voter else Decimal(0)
-        today = self._pricing.today()
 
         raw_payload: dict[str, Any] = {
             "solana_address": self._solana_address,
@@ -368,13 +357,9 @@ class BitgetWalletCollector(BaseCollector):
         }
 
         return [
-            Snapshot(
-                date=today,
-                source=self.source_name,
+            RawBalance(
                 asset="SOL",
                 amount=amount,
-                usd_value=usd_value,
-                price=price,
                 apy=apy,
                 raw_json=json.dumps(raw_payload),
             )

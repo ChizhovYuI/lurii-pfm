@@ -13,7 +13,7 @@ import httpx
 from pfm.collectors import register_collector
 from pfm.collectors._retry import retry
 from pfm.collectors.base import BaseCollector
-from pfm.db.models import Snapshot, Transaction, TransactionType
+from pfm.db.models import RawBalance, Transaction, TransactionType
 
 if TYPE_CHECKING:
     from pfm.pricing.coingecko import PricingService
@@ -108,11 +108,10 @@ class RevolutCollector(BaseCollector):
         resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]
 
-    async def fetch_balances(self) -> list[Snapshot]:
+    async def fetch_raw_balances(self) -> list[RawBalance]:
         """Fetch balances from all linked Revolut accounts."""
         account_ids = await self._get_account_ids()
-        today = self._pricing.today()
-        snapshots: list[Snapshot] = []
+        raw: list[RawBalance] = []
         seen_currencies: set[str] = set()
 
         for account_id in account_ids:
@@ -136,23 +135,16 @@ class RevolutCollector(BaseCollector):
                     continue
                 seen_currencies.add(currency)
 
-                price = await self._pricing.get_price_usd(currency)
-                usd_value = amount * price
-
-                snapshots.append(
-                    Snapshot(
-                        date=today,
-                        source=self.source_name,
+                raw.append(
+                    RawBalance(
                         asset=currency,
                         amount=amount,
-                        usd_value=usd_value,
-                        price=price,
                         raw_json=json.dumps(bal),
                     )
                 )
 
-        logger.info("Revolut: found %d non-zero balances", len(snapshots))
-        return snapshots
+        logger.info("Revolut: found %d non-zero balances", len(raw))
+        return raw
 
     async def fetch_transactions(self, since: date | None = None) -> list[Transaction]:
         """Fetch recent transactions from all linked Revolut accounts."""

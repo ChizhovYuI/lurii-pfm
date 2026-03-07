@@ -205,7 +205,7 @@ async def compute_risk_metrics(repo: Repository, snapshot_date: date) -> RiskMet
     )
 
 
-_KBANK_STALE_DAYS = 35
+_KBANK_STALE_DAYS = 3
 
 
 def compute_data_warnings(

@@ -48,6 +48,27 @@ def test_render_weekly_report_user_prompt_formats_analytics():
     assert "Currency exposure" not in prompt
 
 
+def test_render_weekly_report_user_prompt_with_transactions():
+    analytics = AnalyticsSummary(
+        as_of_date=date(2024, 1, 15),
+        net_worth_usd=Decimal("12345.67"),
+        allocation_by_asset='[{"asset":"BTC","usd_value":"7000","asset_type":"crypto","percentage":"56.7"}]',
+        allocation_by_source="[]",
+        allocation_by_category='[{"category":"crypto","usd_value":"7000"}]',
+        currency_exposure="[]",
+        risk_metrics="{}",
+        recent_transactions='[{"date":"2024-01-14","source":"wise","type":"withdrawal","asset":"GBP","amount":"5000"},'
+        '{"date":"2024-01-14","source":"okx","type":"deposit","asset":"USDC","amount":"6300"}]',
+    )
+
+    prompt = render_weekly_report_user_prompt(analytics)
+    assert "Recent transactions" in prompt
+    assert '"source": "wise"' in prompt
+    assert '"type": "withdrawal"' in prompt
+    assert '"asset": "GBP"' in prompt
+    assert '"source": "okx"' in prompt
+
+
 def test_render_weekly_report_user_prompt_limits_holdings():
     holdings = ",".join(
         f'{{"asset":"A{i}","usd_value":"{100 - i}","asset_type":"other","percentage":"1"}}' for i in range(1, 15)

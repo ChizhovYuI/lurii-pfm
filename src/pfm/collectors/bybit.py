@@ -16,7 +16,7 @@ from pfm.collectors._auth import sign_bybit
 from pfm.collectors._math import apr_to_apy
 from pfm.collectors._retry import RateLimiter, retry
 from pfm.collectors.base import BaseCollector
-from pfm.db.models import Snapshot, Transaction, TransactionType
+from pfm.db.models import RawBalance, Transaction, TransactionType
 
 if TYPE_CHECKING:
     from pfm.pricing.coingecko import PricingService
@@ -117,9 +117,9 @@ class BybitCollector(BaseCollector):
             ticker = str(item.get("coin", "")).upper()
             self._accumulate(totals, ticker, self._to_decimal(item.get("walletBalance", "0")))
 
-    async def _fetch_earn(self, today: date) -> list[Snapshot]:
-        """Fetch Bybit Earn positions with APY as separate snapshots."""
-        snapshots: list[Snapshot] = []
+    async def _fetch_earn_raw(self) -> list[RawBalance]:
+        """Fetch Bybit Earn positions with APY as separate raw balances."""
+        raw: list[RawBalance] = []
         for category in ("FlexibleSaving", "OnChain"):
             try:
                 data = await self._get(
@@ -148,59 +148,39 @@ class BybitCollector(BaseCollector):
                     apr = est_apr / 100 if est_apr > 1 else est_apr
 
                 apy = apr_to_apy(apr)
-                try:
-                    price = await self._pricing.get_price_usd(ticker)
-                except ValueError:
-                    logger.warning("Bybit: cannot price %s, skipping earn position", ticker)
-                    continue
-                snapshots.append(
-                    Snapshot(
-                        date=today,
-                        source=self.source_name,
+                raw.append(
+                    RawBalance(
                         asset=ticker,
                         amount=amount,
-                        usd_value=amount * price,
-                        price=price,
                         apy=apy,
                     )
                 )
 
-        return snapshots
+        return raw
 
-    async def fetch_balances(self) -> list[Snapshot]:
+    async def fetch_raw_balances(self) -> list[RawBalance]:
         """Fetch unified + funding + earn account balances."""
         totals: dict[str, Decimal] = {}
         await self._fetch_unified(totals)
         await self._fetch_funding(totals)
 
-        today = self._pricing.today()
-        snapshots: list[Snapshot] = []
+        raw: list[RawBalance] = []
         for ticker, amount in totals.items():
             if amount == 0:
                 continue
-            try:
-                price = await self._pricing.get_price_usd(ticker)
-            except ValueError:
-                logger.warning("Bybit: cannot price %s, skipping", ticker)
-                continue
-            usd_value = amount * price
-            snapshots.append(
-                Snapshot(
-                    date=today,
-                    source=self.source_name,
+            raw.append(
+                RawBalance(
                     asset=ticker,
                     amount=amount,
-                    usd_value=usd_value,
-                    price=price,
                 )
             )
 
-        # Earn accounts are separate — append as distinct snapshots with APY
-        earn_snapshots = await self._fetch_earn(today)
-        snapshots.extend(earn_snapshots)
+        # Earn accounts are separate — append as distinct raw balances with APY
+        earn_raw = await self._fetch_earn_raw()
+        raw.extend(earn_raw)
 
-        logger.info("Bybit: found %d non-zero balances", len(snapshots))
-        return snapshots
+        logger.info("Bybit: found %d non-zero balances", len(raw))
+        return raw
 
     async def fetch_transactions(self, since: date | None = None) -> list[Transaction]:
         """Fetch transaction log from Bybit."""

@@ -13,7 +13,7 @@ import httpx
 from pfm.collectors import register_collector
 from pfm.collectors._retry import RateLimiter, retry
 from pfm.collectors.base import BaseCollector
-from pfm.db.models import Snapshot, Transaction, TransactionType
+from pfm.db.models import RawBalance, Transaction, TransactionType
 
 if TYPE_CHECKING:
     from pfm.pricing.coingecko import PricingService
@@ -59,9 +59,8 @@ class RabbyCollector(BaseCollector):
         resp.raise_for_status()
         return resp.json()
 
-    async def fetch_balances(self) -> list[Snapshot]:
+    async def fetch_raw_balances(self) -> list[RawBalance]:
         """Fetch token balances from all EVM chains in Rabby wallet."""
-        today = self._pricing.today()
         data = await self._get(
             "/v1/user/token_list",
             params={"id": self._wallet_address, "is_all": "false"},
@@ -69,7 +68,7 @@ class RabbyCollector(BaseCollector):
         if not isinstance(data, list):
             return []
 
-        snapshots: list[Snapshot] = []
+        raw: list[RawBalance] = []
         for row in data:
             if not isinstance(row, dict):
                 continue
@@ -81,29 +80,20 @@ class RabbyCollector(BaseCollector):
             if amount <= 0:
                 continue
 
-            price = _to_decimal(row.get("price", "0"))
-            if price <= 0:
-                try:
-                    price = await self._pricing.get_price_usd(symbol)
-                except ValueError:
-                    logger.warning("Rabby: cannot price %s, skipping", symbol)
-                    continue
-            usd_value = amount * price
+            api_price = _to_decimal(row.get("price", "0"))
+            price = api_price if api_price > 0 else None
 
-            snapshots.append(
-                Snapshot(
-                    date=today,
-                    source=self.source_name,
+            raw.append(
+                RawBalance(
                     asset=symbol,
                     amount=amount,
-                    usd_value=usd_value,
                     price=price,
                     raw_json=json.dumps(row),
                 )
             )
 
-        logger.info("Rabby: found %d non-zero balances", len(snapshots))
-        return snapshots
+        logger.info("Rabby: found %d non-zero balances", len(raw))
+        return raw
 
     async def fetch_transactions(self, since: date | None = None) -> list[Transaction]:
         """Fetch recent wallet history and normalize key transaction types."""
