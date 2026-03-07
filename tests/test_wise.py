@@ -18,7 +18,7 @@ def _mock_response(payload: object) -> MagicMock:
     return resp
 
 
-async def test_wise_collect_persists_snapshots_and_transactions(repo, pricing):
+async def test_wise_collect_persists_snapshots(repo, pricing):
     pricing._set_cache("GBP", Decimal("1.25"))
     pricing.today = lambda: date(2024, 1, 15)  # type: ignore[assignment]
 
@@ -34,41 +34,14 @@ async def test_wise_collect_persists_snapshots_and_transactions(repo, pricing):
                     {"amount": {"value": 0, "currency": "EUR"}},
                 ]
             )
-        if "balance-statements" in path:
-            return _mock_response(
-                {
-                    "transactions": [
-                        {
-                            "amount": {"value": 100},
-                            "date": "2024-01-15T00:00:00Z",
-                            "type": "CREDIT",
-                            "referenceNumber": "ref-1",
-                        },
-                        {
-                            "amount": {"value": -50},
-                            "date": "2024-01-14T00:00:00Z",
-                            "type": "DEBIT",
-                            "referenceNumber": "ref-2",
-                        },
-                        {
-                            "amount": {"value": 0},
-                            "date": "2024-01-14T00:00:00Z",
-                            "type": "CREDIT",
-                            "referenceNumber": "ref-3",
-                        },
-                    ]
-                }
-            )
         return _mock_response({})
 
     collector._client.get = mock_get  # type: ignore[assignment]
 
     result = await collector.collect(repo)
     assert result.snapshots_count == 1
-    assert result.transactions_count == 2
+    assert result.transactions_count == 0
     assert result.errors == []
 
     snapshots = await repo.get_latest_snapshots()
-    transactions = await repo.get_transactions(source="wise")
     assert len(snapshots) == 1
-    assert len(transactions) == 2

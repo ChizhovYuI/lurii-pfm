@@ -32,6 +32,7 @@ from pfm.pricing.coingecko import PricingService
 @pytest.fixture
 def pricing():
     p = PricingService()
+    p._coins_by_symbol = {}
     p._set_cache("BTC", Decimal(50000))
     p._set_cache("ETH", Decimal(3000))
     p._set_cache("XLM", Decimal("0.10"))
@@ -341,30 +342,28 @@ async def test_binance_th_transactions_fallback_to_sapi(pricing):
 
     async def mock_get(path, params=None):
         called_paths.append(path)
-        if path == "/api/v1/capital/deposit/hisrec":
+        if path == "/api/v1/capital/withdraw/history":
             response = MagicMock()
             response.status_code = 404
             raise httpx.HTTPStatusError("404", request=MagicMock(), response=response)
-        if path == "/sapi/v1/capital/deposit/hisrec":
+        if path == "/sapi/v1/capital/withdraw/history":
             return [
                 {
                     "coin": "USDC",
                     "amount": "10",
-                    "insertTime": "1705276800000",
-                    "txId": "dep-1",
+                    "applyTime": "2024-01-15T00:00:00",
+                    "id": "wd-1",
                 }
             ]
-        if path == "/api/v1/capital/withdraw/history":
-            return []
         raise AssertionError(f"Unexpected path: {path}")
 
     collector._get = mock_get  # type: ignore[assignment]
 
     txs = await collector.fetch_transactions()
     assert len(txs) == 1
-    assert txs[0].tx_type == TransactionType.DEPOSIT
-    assert "/api/v1/capital/deposit/hisrec" in called_paths
-    assert "/sapi/v1/capital/deposit/hisrec" in called_paths
+    assert txs[0].tx_type == TransactionType.WITHDRAWAL
+    assert "/api/v1/capital/withdraw/history" in called_paths
+    assert "/sapi/v1/capital/withdraw/history" in called_paths
 
 
 async def test_binance_th_transactions_404_on_all_paths_is_clean_skip(pricing, caplog):
@@ -661,6 +660,28 @@ async def test_okx_transactions_since_filter(pricing):
     assert len(txs) == 1
 
 
+async def test_okx_domain_fallback(pricing):
+    """On 401 from www.okx.com, collector switches to my.okx.com."""
+    collector = OkxCollector(pricing, api_key="key", api_secret="secret", passphrase="pass")
+    assert not collector._domain_resolved
+
+    ok_resp = _mock_response({"data": [{"details": [{"ccy": "BTC", "eq": "1.0"}]}]})
+    fail_resp = httpx.Response(401, request=httpx.Request("GET", "https://www.okx.com/api/v5/account/balance"))
+
+    collector._client.get = AsyncMock(return_value=fail_resp)
+
+    fallback_client = MagicMock(spec=httpx.AsyncClient)
+    fallback_client.get = AsyncMock(return_value=ok_resp)
+    fallback_client.base_url = httpx.URL("https://my.okx.com")
+
+    with patch("pfm.collectors.okx.httpx.AsyncClient", return_value=fallback_client):
+        data = await collector._get("/api/v5/account/balance")
+
+    assert data["data"][0]["details"][0]["ccy"] == "BTC"
+    assert collector._domain_resolved
+    assert "my.okx.com" in str(collector._client.base_url)
+
+
 # ── Bybit ─────────────────────────────────────────────────────────────
 
 
@@ -909,113 +930,11 @@ async def test_wise_no_profiles_raises(pricing):
         await collector._get_profile_id()
 
 
-async def test_wise_fetch_transactions(pricing):
+async def test_wise_fetch_transactions_returns_empty(pricing):
+    """Wise personal token lacks statement permissions — always empty."""
     collector = WiseCollector(pricing, api_token="token")
-    pricing._set_cache("GBP", Decimal("1.25"))
-
-    async def mock_get(path, **kwargs):
-        if "balance-statements" in path:
-            return _mock_response(
-                {
-                    "transactions": [
-                        {
-                            "amount": {"value": 100},
-                            "date": "2024-01-15T00:00:00Z",
-                            "type": "CREDIT",
-                            "referenceNumber": "ref1",
-                        },
-                        {
-                            "amount": {"value": -50},
-                            "date": "2024-01-14T00:00:00Z",
-                            "type": "DEBIT",
-                            "referenceNumber": "ref2",
-                        },
-                        {
-                            "amount": {"value": 0},
-                            "date": "2024-01-13T00:00:00Z",
-                            "type": "CREDIT",
-                            "referenceNumber": "ref3",
-                        },
-                    ]
-                }
-            )
-        if "/v4/profiles" in path:
-            return _mock_response(
-                [
-                    {"amount": {"value": 500, "currency": "GBP"}, "id": 1},
-                ]
-            )
-        if "/v1/profiles" in path:
-            return _mock_response([{"id": 123, "type": "personal"}])
-        return _mock_response({})
-
-    collector._client.get = mock_get  # type: ignore[assignment]
-
     txs = await collector.fetch_transactions()
-    assert len(txs) == 2  # zero amount excluded
-
-
-async def test_wise_fetch_transactions_statement_api_unavailable_stops_early(pricing, caplog):
-    collector = WiseCollector(pricing, api_token="token")
-    statement_calls = 0
-
-    async def mock_get(path, **kwargs):
-        nonlocal statement_calls
-        if "balance-statements" in path:
-            statement_calls += 1
-            response = MagicMock()
-            response.status_code = 403
-            raise httpx.HTTPStatusError("403", request=MagicMock(), response=response)
-        if "/v1/profiles" in path:
-            return _mock_response([{"id": 123, "type": "personal"}])
-        if "/v4/profiles" in path:
-            return _mock_response(
-                [
-                    {"amount": {"value": 500, "currency": "GBP"}, "id": 1},
-                    {"amount": {"value": 700, "currency": "USD"}, "id": 2},
-                ]
-            )
-        return _mock_response({})
-
-    collector._client.get = mock_get  # type: ignore[assignment]
-    caplog.set_level(logging.INFO)
-
-    txs = await collector.fetch_transactions()
-
     assert txs == []
-    assert statement_calls == 1
-    assert "Wise: statement API unavailable (HTTP 403)." in caplog.text
-    assert "Failed to get statement for GBP balance" not in caplog.text
-
-
-async def test_wise_parse_transaction_types():
-    # CREDIT -> DEPOSIT
-    tx = WiseCollector._parse_transaction(
-        {"amount": {"value": 100}, "date": "2024-01-15", "type": "CREDIT", "referenceNumber": "r1"}, "GBP"
-    )
-    assert tx is not None
-    assert tx.tx_type == TransactionType.DEPOSIT
-
-    # DEBIT -> WITHDRAWAL
-    tx = WiseCollector._parse_transaction(
-        {"amount": {"value": -50}, "date": "2024-01-15", "type": "DEBIT", "referenceNumber": "r2"}, "GBP"
-    )
-    assert tx is not None
-    assert tx.tx_type == TransactionType.WITHDRAWAL
-
-    # CONVERSION -> TRADE
-    tx = WiseCollector._parse_transaction(
-        {"amount": {"value": 100}, "date": "2024-01-15", "type": "CONVERSION", "referenceNumber": "r3"}, "GBP"
-    )
-    assert tx is not None
-    assert tx.tx_type == TransactionType.TRADE
-
-    # Unknown -> TRANSFER
-    tx = WiseCollector._parse_transaction(
-        {"amount": {"value": 100}, "date": "2024-01-15", "type": "OTHER", "referenceNumber": "r4"}, "GBP"
-    )
-    assert tx is not None
-    assert tx.tx_type == TransactionType.TRANSFER
 
 
 # ── IBKR ──────────────────────────────────────────────────────────────

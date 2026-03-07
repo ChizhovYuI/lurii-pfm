@@ -50,7 +50,9 @@ async def repo(tmp_path):
 
 @pytest.fixture
 def pricing():
-    return PricingService()
+    svc = PricingService()
+    svc._coins_by_symbol = {}
+    return svc
 
 
 async def test_collect_saves_snapshots(repo, pricing):

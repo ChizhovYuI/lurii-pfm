@@ -36,7 +36,9 @@ async def repo(tmp_path: Path) -> AsyncGenerator[Repository]:
 @pytest.fixture
 def pricing() -> PricingService:
     """Pricing service for testing (uses cache, no real API calls)."""
-    return PricingService()
+    svc = PricingService()
+    svc._coins_by_symbol = {}
+    return svc
 
 
 @pytest.fixture(autouse=True)

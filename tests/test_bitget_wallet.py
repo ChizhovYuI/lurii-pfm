@@ -67,6 +67,7 @@ def _mock_response(json_data: object) -> MagicMock:
 
 def _pricing() -> PricingService:
     pricing = PricingService()
+    pricing._coins_by_symbol = {}
     pricing._set_cache("USDC", Decimal(1))
     pricing._set_cache("SOL", Decimal(130))
     pricing.today = lambda: date(2024, 1, 15)  # type: ignore[assignment]

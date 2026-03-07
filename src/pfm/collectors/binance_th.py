@@ -31,7 +31,6 @@ class BinanceThCollector(BinanceCollector):
 
     source_name = "binance_th"
     _base_url = "https://api.binance.th"
-    _DEPOSIT_ENDPOINTS = ("/api/v1/capital/deposit/hisrec", "/sapi/v1/capital/deposit/hisrec")
     _WITHDRAW_ENDPOINTS = ("/api/v1/capital/withdraw/history", "/sapi/v1/capital/withdraw/history")
 
     def __init__(
@@ -81,12 +80,6 @@ class BinanceThCollector(BinanceCollector):
             since_dt = datetime(since.year, since.month, since.day, tzinfo=UTC)
             params["startTime"] = str(int(since_dt.timestamp() * 1000))
 
-        deposits = await self._fetch_with_fallback(self._DEPOSIT_ENDPOINTS, params, "deposits")
-        for dep in deposits:
-            tx = self._parse_deposit_th(dep)
-            if tx:
-                transactions.append(tx)
-
         withdrawals = await self._fetch_with_fallback(self._WITHDRAW_ENDPOINTS, params, "withdrawals")
         for wd in withdrawals:
             tx = self._parse_withdrawal_th(wd)
@@ -127,30 +120,6 @@ class BinanceThCollector(BinanceCollector):
                 )
                 return []
         return []
-
-    @staticmethod
-    def _parse_deposit_th(dep: dict[str, Any]) -> Transaction | None:
-        ticker = str(dep.get("coin", "")).upper()
-        amount = Decimal(str(dep.get("amount", "0")))
-        if not ticker or amount == 0:
-            return None
-
-        ts_ms = dep.get("insertTime", 0)
-        try:
-            tx_date = datetime.fromtimestamp(int(ts_ms) / 1000, tz=UTC).date()
-        except (ValueError, OSError):
-            tx_date = datetime.now(tz=UTC).date()
-
-        return Transaction(
-            date=tx_date,
-            source="binance_th",
-            tx_type=TransactionType.DEPOSIT,
-            asset=ticker,
-            amount=amount,
-            usd_value=Decimal(0),
-            tx_id=str(dep.get("txId", "")),
-            raw_json=json.dumps(dep),
-        )
 
     @staticmethod
     def _parse_withdrawal_th(wd: dict[str, Any]) -> Transaction | None:

@@ -9,12 +9,19 @@ import httpx
 import pytest
 
 from pfm.db.models import init_db
-from pfm.pricing.coingecko import STABLECOINS, TICKER_TO_COINGECKO, PricingService
+from pfm.pricing.coingecko import STABLECOINS, PricingService
 
 
 @pytest.fixture
 def pricing():
-    return PricingService()
+    svc = PricingService()
+    # Pre-populate coins map so tests don't trigger /coins/list HTTP call
+    svc._coins_by_symbol = {
+        "BTC": ["bitcoin"],
+        "ETH": ["ethereum"],
+        "XLM": ["stellar"],
+    }
+    return svc
 
 
 async def test_usd_returns_one(pricing):
@@ -37,13 +44,34 @@ async def test_unknown_ticker_raises(pricing):
         await pricing.get_price_usd("FAKECOIN123XYZ")
 
 
-async def test_unknown_ticker_resolves_via_search(pricing):
+async def test_unique_symbol_resolves_from_coins_list(pricing):
+    """Single match in coins list resolves without /search."""
+    pricing._coins_by_symbol["ETC"] = ["ethereum-classic"]
+
+    price_resp = MagicMock(spec=httpx.Response)
+    price_resp.status_code = 200
+    price_resp.headers = {}
+    price_resp.json.return_value = {"ethereum-classic": {"usd": 30}}
+    price_resp.raise_for_status = MagicMock()
+
+    pricing._client.get = AsyncMock(return_value=price_resp)
+
+    price = await pricing.get_price_usd("ETC")
+    assert price == Decimal(30)
+    assert pricing._client.get.await_count == 1  # only /simple/price, no /search
+
+
+async def test_ambiguous_symbol_falls_back_to_search(pricing):
+    """Multiple matches in coins list triggers /search for disambiguation."""
+    pricing._coins_by_symbol["ETC"] = ["ethereum-classic", "eternal-token"]
+
     search_resp = MagicMock(spec=httpx.Response)
     search_resp.status_code = 200
     search_resp.headers = {}
     search_resp.json.return_value = {
         "coins": [
             {"id": "ethereum-classic", "symbol": "etc", "market_cap_rank": 40},
+            {"id": "eternal-token", "symbol": "etc", "market_cap_rank": 9999},
         ]
     }
     search_resp.raise_for_status = MagicMock()
@@ -71,11 +99,31 @@ async def test_convert_to_usd_with_cached_price(pricing):
     assert result == Decimal(100000)
 
 
-def test_ticker_mapping_has_common_assets():
-    assert "BTC" in TICKER_TO_COINGECKO
-    assert "ETH" in TICKER_TO_COINGECKO
-    assert "XLM" in TICKER_TO_COINGECKO
-    assert "USDC" in TICKER_TO_COINGECKO  # mapped but short-circuited for stablecoins
+async def test_coins_list_loaded_lazily(pricing):
+    """Coins map is fetched from /coins/list on first resolution."""
+    pricing._coins_by_symbol = None  # reset to trigger fetch
+
+    coins_list_resp = MagicMock(spec=httpx.Response)
+    coins_list_resp.status_code = 200
+    coins_list_resp.headers = {}
+    coins_list_resp.json.return_value = [
+        {"id": "bitcoin", "symbol": "btc", "name": "Bitcoin"},
+        {"id": "ethereum", "symbol": "eth", "name": "Ethereum"},
+    ]
+    coins_list_resp.raise_for_status = MagicMock()
+
+    price_resp = MagicMock(spec=httpx.Response)
+    price_resp.status_code = 200
+    price_resp.headers = {}
+    price_resp.json.return_value = {"bitcoin": {"usd": 60000}}
+    price_resp.raise_for_status = MagicMock()
+
+    pricing._client.get = AsyncMock(side_effect=[coins_list_resp, price_resp])
+
+    price = await pricing.get_price_usd("BTC")
+    assert price == Decimal(60000)
+    assert pricing._coins_by_symbol is not None
+    assert "BTC" in pricing._coins_by_symbol
 
 
 async def test_get_prices_usd_batch(pricing):
@@ -138,6 +186,7 @@ async def test_persistent_cache_write_through(tmp_path):
     ok_resp.raise_for_status = MagicMock()
 
     pricing1 = PricingService(cache_db_path=db_path)
+    pricing1._coins_by_symbol = {"BTC": ["bitcoin"]}
     pricing1._client.get = AsyncMock(return_value=ok_resp)  # type: ignore[assignment]
     fetched = await pricing1.get_price_usd("BTC")
     await pricing1.close()

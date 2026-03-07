@@ -24,7 +24,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_BASE_URL = "https://www.okx.com"
+_OKX_DOMAINS = ("https://www.okx.com", "https://my.okx.com")
+_HTTP_UNAUTHORIZED = 401
 _RATE_LIMITER = RateLimiter(requests_per_minute=300.0)  # 10 req/2s
 
 
@@ -46,7 +47,8 @@ class OkxCollector(BaseCollector):
         self._api_key = api_key
         self._api_secret = api_secret
         self._passphrase = passphrase
-        self._client = httpx.AsyncClient(base_url=_BASE_URL, timeout=30.0)
+        self._client = httpx.AsyncClient(base_url=_OKX_DOMAINS[0], timeout=30.0)
+        self._domain_resolved = False
 
     def _sign_request(self, method: str, path: str, body: str = "") -> dict[str, str]:
         """Generate signed headers for OKX API."""
@@ -62,14 +64,29 @@ class OkxCollector(BaseCollector):
 
     @retry()
     async def _get(self, path: str, params: dict[str, str] | None = None) -> dict[str, Any]:
-        """Make a signed GET request to OKX API."""
+        """Make a signed GET request to OKX API.
+
+        On first call, if the primary domain returns 401, the method
+        automatically retries with the fallback domain and locks the
+        working domain for all subsequent requests.
+        """
         await _RATE_LIMITER.acquire()
         query = ""
         if params:
             query = "?" + "&".join(f"{k}={v}" for k, v in params.items())
         headers = self._sign_request("GET", path + query)
         resp = await self._client.get(path, params=params, headers=headers)
+
+        if resp.status_code == _HTTP_UNAUTHORIZED and not self._domain_resolved:
+            fallback = _OKX_DOMAINS[1]
+            logger.info("OKX: 401 on %s, trying %s", self._client.base_url, fallback)
+            self._client = httpx.AsyncClient(base_url=fallback, timeout=30.0)
+            await _RATE_LIMITER.acquire()
+            headers = self._sign_request("GET", path + query)
+            resp = await self._client.get(path, params=params, headers=headers)
+
         resp.raise_for_status()
+        self._domain_resolved = True
         return resp.json()  # type: ignore[no-any-return]
 
     @staticmethod

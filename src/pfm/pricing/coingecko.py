@@ -17,31 +17,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Map common ticker symbols to CoinGecko IDs
-TICKER_TO_COINGECKO: dict[str, str] = {
-    "BTC": "bitcoin",
-    "ETH": "ethereum",
-    "XLM": "stellar",
-    "XRP": "ripple",
-    "SOL": "solana",
-    "USDC": "usd-coin",
-    "USDT": "tether",
-    "DAI": "dai",
-    "BNB": "binancecoin",
-    "DOGE": "dogecoin",
-    "ADA": "cardano",
-    "DOT": "polkadot",
-    "AVAX": "avalanche-2",
-    "MATIC": "matic-network",
-    "LINK": "chainlink",
-    "UNI": "uniswap",
-    "AAVE": "aave",
-    "ATOM": "cosmos",
-    "NEAR": "near",
-    "ARB": "arbitrum",
-    "OP": "optimism",
-}
-
 # Stablecoins pegged to USD — skip API call
 STABLECOINS: frozenset[str] = frozenset({"USDC", "USDT", "DAI", "BUSD", "TUSD", "USDP", "FDUSD"})
 
@@ -73,6 +48,7 @@ class PricingService:
         self._cache: dict[str, tuple[Decimal, datetime]] = {}
         self._cache_ttl_seconds: float = 3600.0  # 1 hour
         self._resolved_symbol_ids: dict[str, str] = {}
+        self._coins_by_symbol: dict[str, list[str]] | None = None
 
     async def close(self) -> None:
         """Close the HTTP client."""
@@ -169,12 +145,13 @@ class PricingService:
             await asyncio.sleep(_RATE_LIMIT_DELAY - elapsed)
         self._last_request_time = time.monotonic()
 
-    async def _request_json(self, path: str, params: dict[str, str]) -> dict[str, Any]:
-        """Request JSON from CoinGecko with serialized rate limiting and 429 backoff."""
+    async def _request(self, path: str, params: dict[str, str] | None = None) -> httpx.Response:
+        """Rate-limited HTTP GET with 429 retry."""
+        effective_params = params or {}
         for attempt in range(_MAX_429_RETRIES + 1):
             async with self._request_lock:
                 await self._rate_limit()
-                resp = await self._client.get(path, params=params)
+                resp = await self._client.get(path, params=effective_params)
 
             if resp.status_code == _HTTP_STATUS_TOO_MANY_REQUESTS and attempt < _MAX_429_RETRIES:
                 retry_after_header = resp.headers.get("Retry-After")
@@ -185,11 +162,38 @@ class PricingService:
                 continue
 
             resp.raise_for_status()
-            data: dict[str, Any] = resp.json()
-            return data
+            return resp
 
         msg = "CoinGecko request failed after retries"
         raise RuntimeError(msg)
+
+    async def _request_json(self, path: str, params: dict[str, str]) -> dict[str, Any]:
+        """Request JSON dict from CoinGecko."""
+        resp = await self._request(path, params)
+        data: dict[str, Any] = resp.json()
+        return data
+
+    async def _ensure_coins_map(self) -> dict[str, list[str]]:
+        """Fetch /coins/list once and build symbol → [coin_ids] map."""
+        if self._coins_by_symbol is not None:
+            return self._coins_by_symbol
+
+        try:
+            resp = await self._request("/coins/list")
+            raw: list[dict[str, str]] = resp.json()
+            symbol_map: dict[str, list[str]] = {}
+            for coin in raw:
+                symbol = coin.get("symbol", "").upper()
+                coin_id = coin.get("id", "")
+                if symbol and coin_id:
+                    symbol_map.setdefault(symbol, []).append(coin_id)
+            self._coins_by_symbol = symbol_map
+            logger.info("CoinGecko: loaded %d coins, %d unique symbols", len(raw), len(symbol_map))
+        except (httpx.HTTPStatusError, RuntimeError):
+            logger.warning("CoinGecko: failed to fetch coins list, falling back to /search")
+            self._coins_by_symbol = {}
+
+        return self._coins_by_symbol
 
     async def _get_persisted_cache(self, ticker: str) -> Decimal | None:
         """Read recent cached price from SQLite, if configured."""
@@ -228,9 +232,9 @@ class PricingService:
 
     async def _fetch_crypto_price(self, ticker: str) -> Decimal:
         """Fetch a single crypto price from CoinGecko."""
-        coingecko_id = TICKER_TO_COINGECKO.get(ticker) or await self._resolve_coingecko_id(ticker)
+        coingecko_id = await self._resolve_coingecko_id(ticker)
         if not coingecko_id:
-            msg = f"Unknown crypto ticker: {ticker}. Add it to TICKER_TO_COINGECKO mapping."
+            msg = f"Unknown crypto ticker: {ticker}"
             raise ValueError(msg)
 
         data = await self._request_json(
@@ -253,7 +257,7 @@ class PricingService:
         """Fetch multiple crypto prices in a single API call."""
         id_to_ticker: dict[str, str] = {}
         for t in tickers:
-            cg_id = TICKER_TO_COINGECKO.get(t) or await self._resolve_coingecko_id(t)
+            cg_id = await self._resolve_coingecko_id(t)
             if cg_id:
                 id_to_ticker[cg_id] = t
             else:
@@ -328,11 +332,32 @@ class PricingService:
             results[t] = rate
         return results
 
-    async def _resolve_coingecko_id(self, ticker: str) -> str | None:  # noqa: C901
-        """Best-effort resolve a CoinGecko coin id from a ticker symbol."""
+    async def _resolve_coingecko_id(self, ticker: str) -> str | None:
+        """Resolve ticker symbol to CoinGecko coin ID.
+
+        Uses the cached /coins/list for fast lookup.  Falls back to
+        /search only when a symbol maps to multiple coin IDs (rare).
+        """
         if ticker in self._resolved_symbol_ids:
             return self._resolved_symbol_ids[ticker]
 
+        coins_map = await self._ensure_coins_map()
+        ids = coins_map.get(ticker, [])
+
+        if len(ids) == 1:
+            self._resolved_symbol_ids[ticker] = ids[0]
+            return ids[0]
+
+        if ids:
+            # Multiple matches — use /search for market-cap ranking
+            coin_id = await self._search_coingecko_id(ticker)
+            if coin_id:
+                return coin_id
+
+        return None
+
+    async def _search_coingecko_id(self, ticker: str) -> str | None:
+        """Disambiguate a ticker via /search using market-cap rank."""
         data = await self._request_json("/search", {"query": ticker})
         coins = data.get("coins", [])
         if not isinstance(coins, list):
