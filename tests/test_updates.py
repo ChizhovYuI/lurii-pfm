@@ -397,3 +397,34 @@ async def test_install_flow_persists_progress_and_versions(client, db_path, monk
     assert state["installed_versions"] == {"pfm": _TEST_PFM_VERSION, "app": _TEST_APP_VERSION}
     assert any(progress == 0.33 for _, progress, _ in seen_states)
     assert any(progress == 0.66 for _, progress, _ in seen_states)
+
+
+async def test_force_check_updates_clears_stale_error_state(client, db_path, monkeypatch):
+    await updates_mod._save_install_state(
+        db_path,
+        {
+            "status": "error",
+            "progress": 0.0,
+            "message": "[Errno 2] No such file or directory",
+            "target": "all",
+            "installed_versions": {},
+            "updated_at": "2026-03-08T00:00:00+00:00",
+        },
+    )
+
+    async def fake_exec(*cmd: str) -> int:
+        return 0
+
+    monkeypatch.setattr(updates_mod, "_exec", fake_exec)
+    monkeypatch.setattr(
+        updates_mod,
+        "_fetch_latest_tag",
+        AsyncMock(side_effect=[__version__, _TEST_APP_VERSION]),
+    )
+
+    resp = await client.post("/api/v1/updates/check")
+
+    assert resp.status == 200
+    state = await updates_mod._load_install_state(db_path)
+    assert state["status"] == "idle"
+    assert state["message"] == ""

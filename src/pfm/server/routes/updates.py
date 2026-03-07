@@ -146,6 +146,13 @@ async def _reset_install_state(db_path: Path) -> dict[str, Any]:
     return await _save_install_state(db_path, state)
 
 
+async def _clear_error_install_state_if_present(db_path: Path) -> dict[str, Any]:
+    state = await _load_install_state(db_path)
+    if state["status"] != "error":
+        return state
+    return await _reset_install_state(db_path)
+
+
 async def reconcile_interrupted_install_state(db_path: Path) -> dict[str, Any]:
     state = await _load_install_state(db_path)
     if state["status"] != "installing":
@@ -368,7 +375,7 @@ async def force_check_updates(request: web.Request) -> web.Response:
     await _exec(_BREW, "update")
     _cache["data"] = None
     result = await _get_updates()
-    state = await _load_install_state(request.app["db_path"])
+    state = await _clear_error_install_state_if_present(request.app["db_path"])
     result["restart_pending"] = state["status"] == "installed" or _has_running_version_mismatch(result)
     return web.json_response(result)
 
