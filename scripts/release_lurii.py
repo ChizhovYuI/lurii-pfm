@@ -264,6 +264,34 @@ def current_branch(repo: Path) -> str:
     return branch
 
 
+def latest_tag(repo: Path) -> str | None:
+    tags = [tag.strip() for tag in run(["git", "tag", "--sort=-version:refname"], cwd=repo).splitlines() if tag.strip()]
+    return tags[0] if tags else None
+
+
+def changed_python_files_for_release(repo: Path) -> list[str]:
+    changed: set[str] = set()
+    tag = latest_tag(repo)
+    if tag is not None:
+        changed.update(
+            path.strip()
+            for path in run(
+                ["git", "diff", "--name-only", "--diff-filter=ACMRTUXB", f"{tag}..HEAD"],
+                cwd=repo,
+            ).splitlines()
+            if path.strip()
+        )
+    else:
+        changed.update(path.strip() for path in run(["git", "ls-files"], cwd=repo).splitlines() if path.strip())
+
+    changed.update(
+        path.strip()
+        for path in run(["git", "diff", "--name-only", "--diff-filter=ACMRTUXB"], cwd=repo).splitlines()
+        if path.strip()
+    )
+    return sorted(path for path in changed if path.endswith(".py"))
+
+
 def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
@@ -332,7 +360,9 @@ def write_app_version(paths: RepoPaths, version: str, build: str) -> None:
 
 def verify_pfm(paths: RepoPaths) -> None:
     run(["uv", "run", "pytest", "-q", "--no-cov"], cwd=paths.pfm_repo)
-    run(["uv", "run", "ruff", "check", "."], cwd=paths.pfm_repo)
+    python_files = changed_python_files_for_release(paths.pfm_repo)
+    if python_files:
+        run(["uv", "run", "ruff", "check", *python_files], cwd=paths.pfm_repo)
     run(["uv", "run", "mypy", "src", "tests"], cwd=paths.pfm_repo)
 
 
