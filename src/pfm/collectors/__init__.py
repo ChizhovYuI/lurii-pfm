@@ -30,6 +30,7 @@ from pfm.collectors import (  # noqa: E402
     okx,
     rabby,
     revolut,
+    trading212,
     wise,
     yo,
 )
@@ -50,6 +51,7 @@ __all__ = [
     "rabby",
     "register_collector",
     "revolut",
+    "trading212",
     "wise",
     "yo",
 ]

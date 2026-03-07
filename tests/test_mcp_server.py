@@ -80,6 +80,7 @@ class TestGetTransactions:
             Transaction(
                 date=date(2024, 1, 15),
                 source="wise",
+                source_name="wise-main",
                 tx_type=TransactionType.WITHDRAWAL,
                 asset="GBP",
                 amount=Decimal(5000),
@@ -88,6 +89,7 @@ class TestGetTransactions:
                 counterparty_amount=Decimal(0),
                 tx_id="tx1",
                 raw_json="",
+                trade_side="",
             ),
         ]
 
@@ -101,9 +103,12 @@ class TestGetTransactions:
         assert parsed["count"] == 1
         tx = parsed["transactions"][0]
         assert tx["source"] == "wise"
+        assert tx["source_name"] == "wise-main"
         assert tx["type"] == "withdrawal"
         assert tx["asset"] == "GBP"
         assert tx["amount"] == "5000.00"
+        assert tx["trade_side"] is None
+        mock_repo.get_transactions.assert_awaited_once_with(source="wise", source_name=None, start=None, end=None)
 
 
 class TestGetPnl:

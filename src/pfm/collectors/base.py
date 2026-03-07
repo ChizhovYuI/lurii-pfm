@@ -6,6 +6,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from dataclasses import replace
+from datetime import timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -37,6 +38,7 @@ class BaseCollector(ABC):
     """
 
     source_name: str = ""
+    incremental_history_overlap_days: int = 0
 
     def __init__(self, pricing: PricingService) -> None:
         self._pricing = pricing
@@ -92,6 +94,21 @@ class BaseCollector(ABC):
     async def fetch_transactions(self, since: date | None = None) -> list[Transaction]:
         """Fetch transaction history from the source."""
 
+    async def resolve_transactions_since(self, repo: Repository, since: date | None = None) -> date | None:
+        """Resolve incremental history lower bound for collectors that support it."""
+        if since is not None or self.incremental_history_overlap_days <= 0:
+            return since
+
+        latest = await repo.get_latest_transaction_date(self.instance_name or self.source_name)
+        if latest is None:
+            return None
+        return latest - timedelta(days=self.incremental_history_overlap_days)
+
+    def normalize_transactions(self, transactions: list[Transaction]) -> list[Transaction]:
+        """Populate source instance name on collector-produced transactions."""
+        instance_name = self.instance_name or self.source_name
+        return [tx if tx.source_name else replace(tx, source_name=instance_name or tx.source) for tx in transactions]
+
     async def collect(self, repo: Repository, since: date | None = None) -> CollectorResult:
         """Run the full collection cycle: fetch, save, return summary.
 
@@ -140,7 +157,8 @@ class BaseCollector(ABC):
             return result
 
         try:
-            transactions = await self.fetch_transactions(since=since)
+            effective_since = await self.resolve_transactions_since(repo, since)
+            transactions = self.normalize_transactions(await self.fetch_transactions(since=effective_since))
             if transactions:
                 await repo.save_transactions(transactions)
                 result.transactions_count = len(transactions)

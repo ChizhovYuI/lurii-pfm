@@ -23,6 +23,56 @@ async def test_init_db(tmp_path):
     assert db_path.exists()
 
 
+async def test_init_db_migrates_legacy_transactions_schema(tmp_path):
+    db_path = tmp_path / "legacy.db"
+    async with aiosqlite.connect(str(db_path)) as db:
+        await db.execute(
+            """
+            CREATE TABLE transactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                source TEXT NOT NULL,
+                tx_type TEXT NOT NULL,
+                asset TEXT NOT NULL,
+                amount TEXT NOT NULL,
+                usd_value TEXT NOT NULL,
+                counterparty_asset TEXT NOT NULL DEFAULT '',
+                counterparty_amount TEXT NOT NULL DEFAULT '0',
+                tx_id TEXT NOT NULL DEFAULT '',
+                raw_json TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
+        await db.executemany(
+            (
+                "INSERT INTO transactions "
+                "(date, source, tx_type, asset, amount, usd_value, tx_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)"
+            ),
+            [
+                ("2024-01-10", "wise", "deposit", "EUR", "100", "110", "dup"),
+                ("2024-01-11", "wise", "deposit", "EUR", "100", "110", "dup"),
+            ],
+        )
+        await db.commit()
+
+    await init_db(db_path)
+
+    async with aiosqlite.connect(str(db_path)) as db:
+        cursor = await db.execute("PRAGMA table_info(transactions)")
+        columns = {row[1] for row in await cursor.fetchall()}
+        assert "source_name" in columns
+        assert "trade_side" in columns
+
+        cursor = await db.execute(
+            "SELECT source, source_name, tx_id, COUNT(*) FROM transactions GROUP BY source, source_name, tx_id"
+        )
+        rows = await cursor.fetchall()
+
+    assert rows == [("wise", "wise", "dup", 1)]
+
+
 async def test_save_and_get_snapshot(repo):
     snapshot = Snapshot(
         date=date(2024, 1, 15),
@@ -205,15 +255,19 @@ async def test_save_and_get_transaction(repo):
     tx = Transaction(
         date=date(2024, 1, 15),
         source="test",
+        source_name="test-main",
         tx_type=TransactionType.TRADE,
         asset="BTC",
         amount=Decimal("0.5"),
         usd_value=Decimal(22500),
+        trade_side="buy",
     )
     await repo.save_transaction(tx)
     results = await repo.get_transactions(source="test")
     assert len(results) == 1
     assert results[0].tx_type == TransactionType.TRADE
+    assert results[0].source_name == "test-main"
+    assert results[0].trade_side == "buy"
 
 
 async def test_get_transactions_with_filters(repo):
@@ -221,6 +275,7 @@ async def test_get_transactions_with_filters(repo):
         Transaction(
             date=date(2024, 1, 10),
             source="a",
+            source_name="a-main",
             tx_type=TransactionType.DEPOSIT,
             asset="BTC",
             amount=Decimal(1),
@@ -229,6 +284,7 @@ async def test_get_transactions_with_filters(repo):
         Transaction(
             date=date(2024, 1, 20),
             source="b",
+            source_name="b-main",
             tx_type=TransactionType.WITHDRAWAL,
             asset="ETH",
             amount=Decimal(2),
@@ -246,6 +302,110 @@ async def test_get_transactions_with_filters(repo):
     results = await repo.get_transactions(start=date(2024, 1, 15))
     assert len(results) == 1
     assert results[0].source == "b"
+
+
+async def test_get_transactions_filters_by_source_name(repo):
+    txs = [
+        Transaction(
+            date=date(2024, 1, 10),
+            source="trading212",
+            source_name="t212-main",
+            tx_type=TransactionType.DEPOSIT,
+            asset="EUR",
+            amount=Decimal(10),
+            usd_value=Decimal(11),
+            tx_id="tx-a",
+        ),
+        Transaction(
+            date=date(2024, 1, 11),
+            source="trading212",
+            source_name="t212-alt",
+            tx_type=TransactionType.DEPOSIT,
+            asset="EUR",
+            amount=Decimal(20),
+            usd_value=Decimal(22),
+            tx_id="tx-b",
+        ),
+    ]
+    await repo.save_transactions(txs)
+
+    results = await repo.get_transactions(source_name="t212-main")
+    assert len(results) == 1
+    assert results[0].source_name == "t212-main"
+
+
+async def test_save_transactions_ignores_duplicate_tx_id_per_source_name(repo):
+    tx = Transaction(
+        date=date(2024, 1, 10),
+        source="trading212",
+        source_name="t212-main",
+        tx_type=TransactionType.DEPOSIT,
+        asset="EUR",
+        amount=Decimal(10),
+        usd_value=Decimal(11),
+        tx_id="dup-id",
+    )
+    await repo.save_transactions([tx, tx])
+    results = await repo.get_transactions(source_name="t212-main")
+    assert len(results) == 1
+
+
+async def test_duplicate_tx_id_allowed_for_different_source_names(repo):
+    txs = [
+        Transaction(
+            date=date(2024, 1, 10),
+            source="trading212",
+            source_name="t212-main",
+            tx_type=TransactionType.DEPOSIT,
+            asset="EUR",
+            amount=Decimal(10),
+            usd_value=Decimal(11),
+            tx_id="shared-id",
+        ),
+        Transaction(
+            date=date(2024, 1, 10),
+            source="trading212",
+            source_name="t212-alt",
+            tx_type=TransactionType.DEPOSIT,
+            asset="EUR",
+            amount=Decimal(10),
+            usd_value=Decimal(11),
+            tx_id="shared-id",
+        ),
+    ]
+    await repo.save_transactions(txs)
+    results = await repo.get_transactions(source="trading212")
+    assert len(results) == 2
+
+
+async def test_get_latest_transaction_date_by_source_name(repo):
+    await repo.save_transactions(
+        [
+            Transaction(
+                date=date(2024, 1, 10),
+                source="trading212",
+                source_name="t212-main",
+                tx_type=TransactionType.DEPOSIT,
+                asset="EUR",
+                amount=Decimal(10),
+                usd_value=Decimal(11),
+                tx_id="tx-1",
+            ),
+            Transaction(
+                date=date(2024, 1, 20),
+                source="trading212",
+                source_name="t212-main",
+                tx_type=TransactionType.DEPOSIT,
+                asset="EUR",
+                amount=Decimal(20),
+                usd_value=Decimal(22),
+                tx_id="tx-2",
+            ),
+        ]
+    )
+
+    latest = await repo.get_latest_transaction_date("t212-main")
+    assert latest == date(2024, 1, 20)
 
 
 async def test_save_and_get_price(repo):

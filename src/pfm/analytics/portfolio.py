@@ -33,7 +33,7 @@ _CRYPTO_SOURCES: frozenset[str] = frozenset(
     {"okx", "binance", "binance_th", "bybit", "mexc", "mexc_earn", "lobstr", "rabby"}
 )
 _FIAT_SOURCES: frozenset[str] = frozenset({"wise", "kbank"})
-_STOCK_SOURCES: frozenset[str] = frozenset({"ibkr"})
+_STOCK_SOURCES: frozenset[str] = frozenset({"ibkr", "trading212"})
 _DEFI_SOURCES: frozenset[str] = frozenset({"blend", "yo", "bitget_wallet"})
 
 

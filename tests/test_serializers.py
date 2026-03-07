@@ -123,8 +123,14 @@ class TestAssetTypeForSnapshot:
     def test_stock(self):
         assert asset_type_for_snapshot("ibkr", "AAPL") == "stocks"
 
+    def test_trading212_stock(self):
+        assert asset_type_for_snapshot("trading212", "LHAd_EQ") == "stocks"
+
     def test_ibkr_fiat(self):
         assert asset_type_for_snapshot("ibkr", "USD") == "fiat"
+
+    def test_trading212_fiat(self):
+        assert asset_type_for_snapshot("trading212", "EUR") == "fiat"
 
     def test_crypto(self):
         assert asset_type_for_snapshot("okx", "BTC") == "crypto"

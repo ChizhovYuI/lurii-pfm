@@ -84,6 +84,67 @@ async def test_compute_pnl_all_time_with_cost_basis(repo):
     assert result.top_gainers[0].cost_basis_value == Decimal(260)
 
 
+async def test_compute_pnl_sell_trade_keeps_average_cost(repo):
+    await repo.save_snapshots(
+        [
+            Snapshot(date=date(2024, 1, 1), source="s", asset="BTC", amount=Decimal(0), usd_value=Decimal(0)),
+            Snapshot(date=date(2024, 1, 15), source="s", asset="BTC", amount=Decimal(1), usd_value=Decimal(130)),
+        ]
+    )
+    await repo.save_transactions(
+        [
+            Transaction(
+                date=date(2024, 1, 5),
+                source="s",
+                source_name="s-main",
+                tx_type=TransactionType.TRADE,
+                asset="BTC",
+                amount=Decimal(2),
+                usd_value=Decimal(240),
+                trade_side="buy",
+            ),
+            Transaction(
+                date=date(2024, 1, 10),
+                source="s",
+                source_name="s-main",
+                tx_type=TransactionType.TRADE,
+                asset="BTC",
+                amount=Decimal(1),
+                usd_value=Decimal(150),
+                trade_side="sell",
+            ),
+        ]
+    )
+
+    result = await compute_pnl(repo, date(2024, 1, 15), PnlPeriod.ALL_TIME)
+    assert result.top_gainers[0].cost_basis_value == Decimal(120)
+
+
+async def test_compute_pnl_trade_without_trade_side_keeps_legacy_behavior(repo):
+    await repo.save_snapshots(
+        [
+            Snapshot(date=date(2024, 1, 1), source="s", asset="BTC", amount=Decimal(0), usd_value=Decimal(0)),
+            Snapshot(date=date(2024, 1, 15), source="s", asset="BTC", amount=Decimal(1), usd_value=Decimal(130)),
+        ]
+    )
+    await repo.save_transactions(
+        [
+            Transaction(
+                date=date(2024, 1, 5),
+                source="s",
+                tx_type=TransactionType.TRADE,
+                asset="BTC",
+                amount=Decimal(1),
+                usd_value=Decimal(120),
+                trade_side="",
+            ),
+        ]
+    )
+
+    result = await compute_pnl(repo, date(2024, 1, 15), PnlPeriod.ALL_TIME)
+    assert result.top_gainers[0].cost_basis_value == Decimal(120)
+
+
 async def test_compute_pnl_no_data(repo):
     result = await compute_pnl(repo, date(2024, 1, 15), PnlPeriod.MONTHLY)
     assert result.start_date is None

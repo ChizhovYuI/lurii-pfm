@@ -53,6 +53,7 @@ async def init_encrypted_db(path: Path, key_hex: str) -> None:
         _migrate_snapshots_apy,
         _migrate_snapshots_price,
         _migrate_snapshots_source_name,
+        _migrate_transactions_source_name_and_trade_side,
     )
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -62,6 +63,7 @@ async def init_encrypted_db(path: Path, key_hex: str) -> None:
         await _migrate_snapshots_price(conn)
         await _migrate_snapshots_apy(conn)
         await _migrate_snapshots_source_name(conn)
+        await _migrate_transactions_source_name_and_trade_side(conn)
         await conn.execute("DROP TABLE IF EXISTS raw_responses")
         await conn.commit()
     logger.info("Initialized encrypted database at %s", path)

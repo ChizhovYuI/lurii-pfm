@@ -185,6 +185,12 @@ async def _compute_average_cost_basis(repo: Repository, as_of: date) -> dict[str
 
         current_qty = position_qty.get(tx.asset, Decimal(0))
         current_avg = avg_cost.get(tx.asset, Decimal(0))
+        trade_side = tx.trade_side.lower()
+
+        if tx.tx_type == TransactionType.TRADE and trade_side == "sell":
+            new_qty = current_qty - tx.amount
+            position_qty[tx.asset] = new_qty if new_qty > 0 else Decimal(0)
+            continue
 
         if tx.tx_type in {
             TransactionType.DEPOSIT,

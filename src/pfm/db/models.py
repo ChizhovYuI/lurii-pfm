@@ -77,6 +77,8 @@ class Transaction:
     counterparty_amount: Decimal = Decimal(0)
     tx_id: str = ""
     raw_json: str = ""
+    source_name: str = ""
+    trade_side: str = ""
     id: int | None = None
     created_at: datetime | None = None
 
@@ -151,12 +153,14 @@ CREATE TABLE IF NOT EXISTS transactions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     date TEXT NOT NULL,
     source TEXT NOT NULL,
+    source_name TEXT NOT NULL DEFAULT '',
     tx_type TEXT NOT NULL,
     asset TEXT NOT NULL,
     amount TEXT NOT NULL,
     usd_value TEXT NOT NULL,
     counterparty_asset TEXT NOT NULL DEFAULT '',
     counterparty_amount TEXT NOT NULL DEFAULT '0',
+    trade_side TEXT NOT NULL DEFAULT '',
     tx_id TEXT NOT NULL DEFAULT '',
     raw_json TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -257,6 +261,37 @@ async def _migrate_snapshots_source_name(db: aiosqlite.Connection) -> None:
     )
 
 
+async def _migrate_transactions_source_name_and_trade_side(db: aiosqlite.Connection) -> None:
+    """Add transaction instance metadata, backfill source names, and dedupe by tx_id."""
+    cursor = await db.execute("PRAGMA table_info(transactions)")
+    columns = {row[1] for row in await cursor.fetchall()}
+    if "source_name" not in columns:
+        await db.execute("ALTER TABLE transactions ADD COLUMN source_name TEXT NOT NULL DEFAULT ''")
+    if "trade_side" not in columns:
+        await db.execute("ALTER TABLE transactions ADD COLUMN trade_side TEXT NOT NULL DEFAULT ''")
+
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_transactions_source_name_date ON transactions(source_name, date)")
+
+    await db.execute("UPDATE transactions SET source_name = source WHERE source_name = '' OR source_name IS NULL")
+    await db.execute(
+        "UPDATE transactions "
+        "SET source_name = (SELECT MIN(name) FROM sources WHERE type = transactions.source) "
+        "WHERE (source_name = source OR source_name = '' OR source_name IS NULL) "
+        "  AND (SELECT COUNT(*) FROM sources WHERE type = transactions.source) = 1"
+    )
+
+    await db.execute(
+        "DELETE FROM transactions "
+        "WHERE tx_id != '' AND id NOT IN ("
+        "  SELECT MIN(id) FROM transactions WHERE tx_id != '' GROUP BY source_name, tx_id"
+        ")"
+    )
+    await db.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_source_name_tx_id_unique "
+        "ON transactions(source_name, tx_id) WHERE tx_id != ''"
+    )
+
+
 async def init_db(path: Path, *, key_hex: str | None = None) -> None:
     """Create database and all tables if they don't exist.
 
@@ -273,5 +308,6 @@ async def init_db(path: Path, *, key_hex: str | None = None) -> None:
             await _migrate_snapshots_price(db)
             await _migrate_snapshots_apy(db)
             await _migrate_snapshots_source_name(db)
+            await _migrate_transactions_source_name_and_trade_side(db)
             await db.execute("DROP TABLE IF EXISTS raw_responses")
             await db.commit()

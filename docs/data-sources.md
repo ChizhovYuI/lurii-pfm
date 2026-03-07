@@ -21,6 +21,7 @@ Overview of all financial data sources, recommended integration method, and acce
 | 11 | Rabby Wallet | EVM wallet | ETH, stablecoins, ERC-20 tokens | DeBank OpenAPI (`all_token_list`) |
 | 12 | yo.xyz | DeFi vault | Vault shares + underlying assets | yo.xyz REST API (`/vault`, `/history`) |
 | 13 | Bitget Wallet | EVM + Solana wallet | USDC/USDT (Aave), SOL (staking) | Aave GraphQL + Solana RPC + Stakewiz |
+| 14 | Trading 212 | Broker (stocks/ETFs + cash) | EUR cash, equities | Invest API (`/equity/account/*`, `/equity/history/*`) |
 
 ## Money Flow
 
@@ -589,6 +590,42 @@ Rate limits: Aave GraphQL 180 req/min. Solana public RPC has standard rate limit
 
 ---
 
+## 14. Trading 212
+
+**Method:** Trading 212 Invest API with API key + API secret
+
+PFM reads:
+- Current cash balance from `GET /api/v0/equity/account/summary`
+- Open stock positions from `GET /api/v0/equity/positions`
+- Full history from `GET /api/v0/equity/history/orders`
+- Cash ledger from `GET /api/v0/equity/history/transactions`
+- Dividend payouts from `GET /api/v0/equity/history/dividends`
+
+### Endpoints
+
+| Purpose | Endpoint | Rate Limit |
+|---------|----------|------------|
+| Account summary | `GET /api/v0/equity/account/summary` | standard account data |
+| Open positions | `GET /api/v0/equity/positions` | standard account data |
+| Historical orders | `GET /api/v0/equity/history/orders` | 6 req/min |
+| Cash transactions | `GET /api/v0/equity/history/transactions` | 6 req/min |
+| Dividends | `GET /api/v0/equity/history/dividends` | 6 req/min |
+
+### Setup
+
+1. Log in to [Trading 212](https://www.trading212.com/)
+2. Open Invest API settings
+3. Create an API key with account data and history access
+4. Add to pfm: `pfm source add` → select `trading212` → enter API key and API secret
+
+### Notes
+
+- Trading 212 returns balances in account currency (for example `EUR`), so PFM converts cash and order values to USD internally
+- Stock positions are priced from Trading 212 payloads directly, not CoinGecko
+- History endpoints are paginated with `nextPagePath`; first full sync may be slow because of the 6 req/min history limit
+
+---
+
 ## Summary: Integration Complexity
 
 | Source | Complexity | Auth | Real-time? |
@@ -606,6 +643,7 @@ Rate limits: Aave GraphQL 180 req/min. Solana public RPC has standard rate limit
 | Rabby Wallet | Low | DeBank AccessKey | Yes |
 | yo.xyz | Medium | Wallet + vault params | Yes |
 | Bitget Wallet | Low | Public addresses | Yes |
+| Trading 212 | Medium | API key + secret | Yes |
 
 ### Recommended Implementation Order
 

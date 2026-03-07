@@ -194,10 +194,10 @@ class Repository:
     # ── Transactions ──────────────────────────────────────────────────
 
     _TX_INSERT_SQL = (
-        "INSERT INTO transactions "
-        "(date, source, tx_type, asset, amount, usd_value, "
-        "counterparty_asset, counterparty_amount, tx_id, raw_json) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        "INSERT OR IGNORE INTO transactions "
+        "(date, source, source_name, tx_type, asset, amount, usd_value, "
+        "counterparty_asset, counterparty_amount, trade_side, tx_id, raw_json) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
 
     @staticmethod
@@ -205,32 +205,37 @@ class Repository:
         return (
             str(tx.date),
             tx.source,
+            tx.source_name or tx.source,
             tx.tx_type.value,
             tx.asset,
             str(tx.amount),
             str(tx.usd_value),
             tx.counterparty_asset,
             str(tx.counterparty_amount),
+            tx.trade_side,
             tx.tx_id,
             tx.raw_json,
         )
 
     async def save_transaction(self, tx: Transaction) -> None:
         """Save a single transaction."""
-        await self._db.execute(self._TX_INSERT_SQL, self._tx_to_row(tx))
+        normalized = tx if tx.source_name else replace(tx, source_name=tx.source)
+        await self._db.execute(self._TX_INSERT_SQL, self._tx_to_row(normalized))
         await self._db.commit()
 
     async def save_transactions(self, txs: list[Transaction]) -> None:
         """Save multiple transactions atomically."""
+        normalized = [tx if tx.source_name else replace(tx, source_name=tx.source) for tx in txs]
         await self._db.executemany(
             self._TX_INSERT_SQL,
-            [self._tx_to_row(tx) for tx in txs],
+            [self._tx_to_row(tx) for tx in normalized],
         )
         await self._db.commit()
 
     async def get_transactions(
         self,
         source: str | None = None,
+        source_name: str | None = None,
         start: date | None = None,
         end: date | None = None,
     ) -> list[Transaction]:
@@ -241,6 +246,9 @@ class Repository:
         if source is not None:
             query += " AND source = ?"
             params.append(source)
+        if source_name is not None:
+            query += " AND source_name = ?"
+            params.append(source_name)
         if start is not None:
             query += " AND date >= ?"
             params.append(str(start))
@@ -248,17 +256,30 @@ class Repository:
             query += " AND date <= ?"
             params.append(str(end))
 
-        query += " ORDER BY date DESC"
+        query += " ORDER BY date DESC, id DESC"
         cursor = await self._db.execute(query, params)
         rows = await cursor.fetchall()
         return [self._row_to_transaction(row) for row in rows]
 
+    async def get_latest_transaction_date(self, source_name: str) -> date | None:
+        """Return the latest transaction date for a specific configured source."""
+        cursor = await self._db.execute(
+            "SELECT MAX(date) FROM transactions WHERE source_name = ?",
+            (source_name,),
+        )
+        row = await cursor.fetchone()
+        if row is None or row[0] is None:
+            return None
+        return date.fromisoformat(str(row[0]))
+
     @staticmethod
     def _row_to_transaction(row: aiosqlite.Row) -> Transaction:
+        columns = row.keys()
         return Transaction(
             id=row["id"],
             date=date.fromisoformat(row["date"]),
             source=row["source"],
+            source_name=row["source_name"] if "source_name" in columns and row["source_name"] else row["source"],
             tx_type=TransactionType(row["tx_type"]),
             asset=row["asset"],
             amount=Decimal(row["amount"]),
@@ -267,6 +288,7 @@ class Repository:
             counterparty_amount=Decimal(row["counterparty_amount"]),
             tx_id=row["tx_id"],
             raw_json=row["raw_json"],
+            trade_side=row["trade_side"] if "trade_side" in columns else "",
         )
 
     # ── Prices ────────────────────────────────────────────────────────

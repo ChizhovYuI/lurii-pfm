@@ -124,7 +124,8 @@ async def _process_single(
     dns_blocked = isinstance(raw, Exception) and is_dns_resolution_error(raw)
     if not dns_blocked:
         try:
-            transactions = await collector.fetch_transactions()
+            effective_since = await collector.resolve_transactions_since(repo)
+            transactions = collector.normalize_transactions(await collector.fetch_transactions(since=effective_since))
             if transactions:
                 await repo.save_transactions(transactions)
                 result.transactions_count = len(transactions)

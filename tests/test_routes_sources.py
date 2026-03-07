@@ -41,7 +41,7 @@ async def test_list_source_types(client):
     assert resp.status == 200
     data = await resp.json()
     # Should return all configured source types
-    assert len(data) == 16
+    assert len(data) == 17
     expected_types = {
         "okx",
         "binance",
@@ -57,6 +57,7 @@ async def test_list_source_types(client):
         "ibkr",
         "rabby",
         "revolut",
+        "trading212",
         "emcd",
         "yo",
     }
@@ -103,6 +104,15 @@ async def test_list_source_types_mexc_earn_uid_field(client):
     assert "uid" in fields
     assert fields["uid"]["required"] is True
     assert fields["uid"]["secret"] is False
+
+
+async def test_list_source_types_trading212_fields(client):
+    resp = await client.get("/api/v1/source-types")
+    data = await resp.json()
+    fields = {field["name"]: field for field in data["trading212"]["fields"]}
+    assert set(fields) == {"api_key", "api_secret"}
+    assert fields["api_key"]["secret"] is True
+    assert fields["api_secret"]["secret"] is True
 
 
 async def test_list_sources_empty(client):

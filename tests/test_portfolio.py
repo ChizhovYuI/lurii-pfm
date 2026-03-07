@@ -114,6 +114,21 @@ async def test_compute_allocation_by_category(repo):
     assert by_bucket["fiat"] == Decimal(145)
 
 
+async def test_compute_allocation_by_category_trading212(repo):
+    target_date = date(2024, 1, 15)
+    await repo.save_snapshots(
+        [
+            Snapshot(target_date, "trading212", "LHAd_EQ", Decimal("1.5"), Decimal("120")),
+            Snapshot(target_date, "trading212", "EUR", Decimal("50"), Decimal("55")),
+        ]
+    )
+
+    rows = await compute_allocation_by_category(repo, target_date)
+    by_bucket = {row.bucket: row.usd_value for row in rows}
+    assert by_bucket["stocks"] == Decimal("120")
+    assert by_bucket["fiat"] == Decimal("55")
+
+
 async def test_compute_currency_exposure(repo):
     target_date = date(2024, 1, 15)
     await repo.save_snapshots(

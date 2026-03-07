@@ -307,9 +307,10 @@ async def get_pnl(
 
 
 @mcp.tool()
-async def get_transactions(
+async def get_transactions(  # noqa: PLR0913
     ctx: Context[ServerSession, AppContext],
     source: str | None = None,
+    source_name: str | None = None,
     start: str | None = None,
     end: str | None = None,
     limit: int = 50,
@@ -317,7 +318,8 @@ async def get_transactions(
     """Get transaction history with optional filters.
 
     Args:
-        source: Filter by source name (e.g. "wise", "okx").
+        source: Filter by source type (e.g. "wise", "okx").
+        source_name: Filter by configured source instance name (e.g. "wise-main").
         start: Start date in YYYY-MM-DD format.
         end: End date in YYYY-MM-DD format.
         limit: Maximum number of transactions to return (default 50, max 100).
@@ -329,17 +331,19 @@ async def get_transactions(
     end_date = date.fromisoformat(end) if end else None
     capped_limit = min(limit, _MAX_TRANSACTIONS)
 
-    txs = await repo.get_transactions(source=source, start=start_date, end=end_date)
+    txs = await repo.get_transactions(source=source, source_name=source_name, start=start_date, end=end_date)
     data = [
         {
             "date": t.date.isoformat(),
             "source": t.source,
+            "source_name": t.source_name or t.source,
             "type": t.tx_type.value,
             "asset": t.asset,
             "amount": _dec2(t.amount),
             "usd_value": _dec2(t.usd_value),
             "counterparty_asset": t.counterparty_asset or None,
             "counterparty_amount": _dec2(t.counterparty_amount) if t.counterparty_amount else None,
+            "trade_side": t.trade_side or None,
         }
         for t in txs[:capped_limit]
     ]

@@ -156,6 +156,59 @@ async def test_init_db_with_key(tmp_path):
     assert "snapshots" in tables
 
 
+async def test_init_encrypted_db_migrates_legacy_transactions_schema(tmp_path):
+    """Existing encrypted DBs gain transaction source metadata on init."""
+    db = tmp_path / "legacy-enc.db"
+    conn = connect_encrypted(db, TEST_KEY)
+    async with conn:
+        await conn.execute(
+            """
+            CREATE TABLE transactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                source TEXT NOT NULL,
+                tx_type TEXT NOT NULL,
+                asset TEXT NOT NULL,
+                amount TEXT NOT NULL,
+                usd_value TEXT NOT NULL,
+                counterparty_asset TEXT NOT NULL DEFAULT '',
+                counterparty_amount TEXT NOT NULL DEFAULT '0',
+                tx_id TEXT NOT NULL DEFAULT '',
+                raw_json TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
+        await conn.executemany(
+            (
+                "INSERT INTO transactions "
+                "(date, source, tx_type, asset, amount, usd_value, tx_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)"
+            ),
+            [
+                ("2024-01-10", "wise", "deposit", "EUR", "100", "110", "dup"),
+                ("2024-01-11", "wise", "deposit", "EUR", "100", "110", "dup"),
+            ],
+        )
+        await conn.commit()
+
+    await init_encrypted_db(db, TEST_KEY)
+
+    conn = connect_encrypted(db, TEST_KEY)
+    async with conn:
+        cursor = await conn.execute("PRAGMA table_info(transactions)")
+        columns = {row[1] for row in await cursor.fetchall()}
+        assert "source_name" in columns
+        assert "trade_side" in columns
+
+        cursor = await conn.execute(
+            "SELECT source, source_name, tx_id, COUNT(*) FROM transactions GROUP BY source, source_name, tx_id"
+        )
+        rows = await cursor.fetchall()
+
+    assert rows == [("wise", "wise", "dup", 1)]
+
+
 # ── migrate_to_encrypted ───────────────────────────────────────────
 
 

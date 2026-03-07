@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 from decimal import Decimal
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 from unittest.mock import patch
 
 from pfm.cli import _collect_async
@@ -76,6 +77,41 @@ class _FakeLobstrCollector(BaseCollector):
                 amount=Decimal(5),
                 usd_value=Decimal("0.5"),
                 tx_id="lobstr-tx",
+            )
+        ]
+
+
+class _FakeTrading212Collector(BaseCollector):
+    source_name = "trading212"
+    incremental_history_overlap_days = 7
+    since_calls: ClassVar[list[date | None]] = []
+
+    def __init__(self, pricing, *, api_key: str, api_secret: str) -> None:
+        super().__init__(pricing)
+        self._api_key = api_key
+        self._api_secret = api_secret
+
+    async def fetch_raw_balances(self) -> list[RawBalance]:
+        return [
+            RawBalance(
+                asset="EUR",
+                amount=Decimal(100),
+                price=Decimal("1.1"),
+                raw_json=f'{{"api_key":"{self._api_key}","api_secret":"{self._api_secret}"}}',
+            )
+        ]
+
+    async def fetch_transactions(self, since: date | None = None) -> list[Transaction]:
+        type(self).since_calls.append(since)
+        return [
+            Transaction(
+                date=self._pricing.today(),
+                source=self.source_name,
+                tx_type=TransactionType.DEPOSIT,
+                asset="EUR",
+                amount=Decimal(10),
+                usd_value=Decimal(11),
+                tx_id="t212-shared-tx",
             )
         ]
 
@@ -175,3 +211,46 @@ async def test_collect_async_fetches_balances_in_parallel(tmp_path):
     assert len(results) == 2
     # With parallel fetch, lobstr-start should appear before wise-end
     assert events == ["wise-start", "lobstr-start", "wise-end"]
+
+
+async def test_collect_async_trading212_dedupes_repeated_history(tmp_path):
+    db_path = tmp_path / "collect-trading212-dedupe.db"
+    await init_db(db_path)
+    store = SourceStore(db_path)
+    await store.add("t212-main", "trading212", {"api_key": "api", "api_secret": "secret"})
+
+    settings = SimpleNamespace(database_path=db_path, coingecko_api_key="")
+    registry = {"trading212": _FakeTrading212Collector}
+    _FakeTrading212Collector.since_calls = []
+
+    with patch("pfm.cli.get_settings", return_value=settings), patch("pfm.collectors.COLLECTOR_REGISTRY", registry):
+        await _collect_async(None)
+        await _collect_async(None)
+
+    async with Repository(db_path) as repo:
+        transactions = await repo.get_transactions(source_name="t212-main")
+
+    assert len(transactions) == 1
+    assert _FakeTrading212Collector.since_calls[0] is None
+    assert _FakeTrading212Collector.since_calls[1] == transactions[0].date - timedelta(days=7)
+
+
+async def test_collect_async_trading212_keeps_histories_separate_by_source_name(tmp_path):
+    db_path = tmp_path / "collect-trading212-sources.db"
+    await init_db(db_path)
+    store = SourceStore(db_path)
+    await store.add("t212-main", "trading212", {"api_key": "api-main", "api_secret": "secret-main"})
+    await store.add("t212-alt", "trading212", {"api_key": "api-alt", "api_secret": "secret-alt"})
+
+    settings = SimpleNamespace(database_path=db_path, coingecko_api_key="")
+    registry = {"trading212": _FakeTrading212Collector}
+    _FakeTrading212Collector.since_calls = []
+
+    with patch("pfm.cli.get_settings", return_value=settings), patch("pfm.collectors.COLLECTOR_REGISTRY", registry):
+        await _collect_async(None)
+
+    async with Repository(db_path) as repo:
+        transactions = await repo.get_transactions(source="trading212")
+
+    assert len(transactions) == 2
+    assert {tx.source_name for tx in transactions} == {"t212-main", "t212-alt"}

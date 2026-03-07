@@ -230,6 +230,19 @@ SOURCE_TYPES: dict[str, list[CredentialField]] = {
         CredentialField("secret_key", "GoCardless Secret Key"),
         CredentialField("requisition_id", "GoCardless Requisition ID", secret=False),
     ],
+    "trading212": [
+        CredentialField(
+            "api_key",
+            "API Key",
+            tip=(
+                "1. Log in to trading212.com\n"
+                "2. Open Invest API settings\n"
+                "3. Create an API key with account data and history access\n"
+                "4. Copy API Key and API Secret"
+            ),
+        ),
+        CredentialField("api_secret", "API Secret"),
+    ],
     "yo": [
         CredentialField(
             "network",
