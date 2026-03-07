@@ -363,7 +363,7 @@ def verify_pfm(paths: RepoPaths) -> None:
     python_files = changed_python_files_for_release(paths.pfm_repo)
     if python_files:
         run(["uv", "run", "ruff", "check", *python_files], cwd=paths.pfm_repo)
-    run(["uv", "run", "mypy", "src", "tests"], cwd=paths.pfm_repo)
+        run(["uv", "run", "mypy", *python_files], cwd=paths.pfm_repo)
 
 
 def verify_app(paths: RepoPaths) -> None:
