@@ -29,6 +29,8 @@ _REPOS = {
 _CACHE_TTL = 3600  # 1 hour
 _BREW = "/opt/homebrew/bin/brew"
 _LAUNCHD_LABEL = "finance.lurii.pfm"
+_PFM_FORMULA = "lurii-pfm"
+_APP_CASK = "lurii-finance"
 
 # Module-level mutable cache container (single-process server).
 _cache: dict[str, Any] = {"data": None, "ts": 0.0}
@@ -164,11 +166,17 @@ async def reconcile_interrupted_install_state(db_path: Path) -> dict[str, Any]:
 
 def _extract_installed_versions(updates: dict[str, Any]) -> dict[str, str]:
     versions: dict[str, str] = {}
+    pfm_installed = updates.get("pfm", {}).get("installed")
+    app_installed = updates.get("app", {}).get("installed")
     pfm_latest = updates.get("pfm", {}).get("latest")
     app_latest = updates.get("app", {}).get("latest")
-    if isinstance(pfm_latest, str) and pfm_latest:
+    if isinstance(pfm_installed, str) and pfm_installed:
+        versions["pfm"] = pfm_installed
+    elif isinstance(pfm_latest, str) and pfm_latest:
         versions["pfm"] = pfm_latest
-    if isinstance(app_latest, str) and app_latest:
+    if isinstance(app_installed, str) and app_installed:
+        versions["app"] = app_installed
+    elif isinstance(app_latest, str) and app_latest:
         versions["app"] = app_latest
     return versions
 
@@ -197,7 +205,7 @@ async def _fetch_latest_tag(repo: str) -> str | None:
             resp.raise_for_status()
             tag: str = resp.json().get("tag_name", "")
             return tag.lstrip("v") if tag else None
-    except (httpx.HTTPStatusError, httpx.RequestError):
+    except (httpx.HTTPStatusError, httpx.RequestError, OSError):
         logger.debug("Failed to fetch latest release for %s", repo)
         return None
 
@@ -205,31 +213,144 @@ async def _fetch_latest_tag(repo: str) -> str | None:
 _HTTP_NOT_FOUND = 404
 
 
+async def _brew_info_json(*args: str) -> dict[str, Any] | None:
+    """Return parsed ``brew info --json=v2`` output, or ``None`` on failure."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            _BREW,
+            "info",
+            "--json=v2",
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except OSError:
+        logger.debug("Failed to execute brew info for %s", " ".join(args))
+        return None
+
+    stdout, stderr = await proc.communicate()
+    rc = proc.returncode or 0
+    if rc != 0:
+        logger.info("brew info: exit=%d stdout=%s stderr=%s", rc, stdout.decode()[:200], stderr.decode()[:200])
+        return None
+
+    try:
+        data = json.loads(stdout.decode())
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        logger.warning("Invalid JSON from brew info for %s", " ".join(args))
+        return None
+
+    return data if isinstance(data, dict) else None
+
+
+def _extract_formula_installed_version(payload: object, formula_name: str) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+
+    formulae = payload.get("formulae")
+    if not isinstance(formulae, list):
+        return None
+
+    for entry in formulae:
+        if not isinstance(entry, dict) or entry.get("name") != formula_name:
+            continue
+        linked_keg = entry.get("linked_keg")
+        if isinstance(linked_keg, str) and linked_keg:
+            return linked_keg
+        installed = entry.get("installed")
+        if isinstance(installed, list):
+            for keg in installed:
+                version = keg.get("version") if isinstance(keg, dict) else None
+                if isinstance(version, str) and version:
+                    return version
+    return None
+
+
+def _extract_cask_installed_version(payload: object, cask_token: str) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+
+    casks = payload.get("casks")
+    if not isinstance(casks, list):
+        return None
+
+    for entry in casks:
+        if not isinstance(entry, dict) or entry.get("token") != cask_token:
+            continue
+        installed = entry.get("installed")
+        if isinstance(installed, str) and installed:
+            return installed
+        bundle_short_version = entry.get("bundle_short_version")
+        if isinstance(bundle_short_version, str) and bundle_short_version:
+            return bundle_short_version
+    return None
+
+
+async def _get_locally_installed_versions() -> dict[str, str | None]:
+    pfm_info, app_info = await asyncio.gather(
+        _brew_info_json(_PFM_FORMULA),
+        _brew_info_json("--cask", _APP_CASK),
+    )
+    return {
+        "pfm": _extract_formula_installed_version(pfm_info, _PFM_FORMULA),
+        "app": _extract_cask_installed_version(app_info, _APP_CASK),
+    }
+
+
+def _has_running_version_mismatch(updates: dict[str, Any]) -> bool:
+    pfm = updates.get("pfm", {})
+    installed = pfm.get("installed")
+    current = pfm.get("current")
+    return isinstance(installed, str) and isinstance(current, str) and bool(installed) and installed != current
+
+
 async def _get_updates() -> dict[str, Any]:
     """Return current and latest versions, with 1-hour cache."""
     now = time.monotonic()
-    if _cache["data"] is not None and (now - _cache["ts"]) < _CACHE_TTL:
-        return _cache["data"]  # type: ignore[no-any-return]
+    cached = _cache["data"]
+    if cached is None or (now - _cache["ts"]) >= _CACHE_TTL:
+        pfm_latest, app_latest = await asyncio.gather(
+            _fetch_latest_tag(_REPOS["pfm"]),
+            _fetch_latest_tag(_REPOS["app"]),
+        )
 
-    pfm_latest, app_latest = await asyncio.gather(
-        _fetch_latest_tag(_REPOS["pfm"]),
-        _fetch_latest_tag(_REPOS["app"]),
-    )
+        cached = {
+            "pfm": {
+                "current": __version__,
+                "latest": pfm_latest,
+                "update_available": pfm_latest is not None and pfm_latest != __version__,
+            },
+            "app": {
+                "latest": app_latest,
+            },
+        }
+        _cache["data"] = cached
+        _cache["ts"] = now
 
-    result: dict[str, Any] = {
+    installed_versions = await _get_locally_installed_versions()
+    if not isinstance(cached, dict):
+        return {
+            "pfm": {
+                "current": __version__,
+                "latest": None,
+                "installed": installed_versions.get("pfm"),
+                "update_available": False,
+            },
+            "app": {
+                "latest": None,
+                "installed": installed_versions.get("app"),
+            },
+        }
+    return {
         "pfm": {
-            "current": __version__,
-            "latest": pfm_latest,
-            "update_available": pfm_latest is not None and pfm_latest != __version__,
+            **cached["pfm"],
+            "installed": installed_versions.get("pfm"),
         },
         "app": {
-            "latest": app_latest,
+            **cached["app"],
+            "installed": installed_versions.get("app"),
         },
     }
-
-    _cache["data"] = result
-    _cache["ts"] = now
-    return result
 
 
 @routes.get("/api/v1/updates")
@@ -237,7 +358,7 @@ async def check_updates(request: web.Request) -> web.Response:
     """Return current and latest versions for pfm and the macOS app."""
     result = await _get_updates()
     state = await _load_install_state(request.app["db_path"])
-    result["restart_pending"] = state["status"] == "installed"
+    result["restart_pending"] = state["status"] == "installed" or _has_running_version_mismatch(result)
     return web.json_response(result)
 
 
@@ -248,7 +369,7 @@ async def force_check_updates(request: web.Request) -> web.Response:
     _cache["data"] = None
     result = await _get_updates()
     state = await _load_install_state(request.app["db_path"])
-    result["restart_pending"] = state["status"] == "installed"
+    result["restart_pending"] = state["status"] == "installed" or _has_running_version_mismatch(result)
     return web.json_response(result)
 
 

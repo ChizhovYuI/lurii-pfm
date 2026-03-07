@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path as RealPath
-from unittest.mock import AsyncMock, patch
+from typing import Any
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -12,6 +13,9 @@ from pfm import __version__
 from pfm.db.models import init_db
 from pfm.server.app import create_app
 from pfm.server.routes import updates as updates_mod
+
+_TEST_PFM_VERSION = "9.9.9"
+_TEST_APP_VERSION = "8.8.8"
 
 
 @pytest.fixture
@@ -35,7 +39,15 @@ def _clear_cache():
     updates_mod._set_cached_install_state(updates_mod._default_install_state())
 
 
-async def _wait_for_status(db_path, expected_status: str):
+@pytest.fixture(autouse=True)
+def _mock_installed_versions(monkeypatch):
+    async def fake_get_locally_installed_versions() -> dict[str, str | None]:
+        return {"pfm": None, "app": None}
+
+    monkeypatch.setattr(updates_mod, "_get_locally_installed_versions", fake_get_locally_installed_versions)
+
+
+async def _wait_for_status(db_path: RealPath, expected_status: str) -> dict[str, Any]:
     for _ in range(200):
         state = await updates_mod._load_install_state(db_path)
         if state["status"] == expected_status:
@@ -49,7 +61,7 @@ async def test_fetch_latest_tag_parses_tag(client):
 
     mock_resp = AsyncMock(spec=httpx.Response)
     mock_resp.status_code = 200
-    mock_resp.raise_for_status = AsyncMock()
+    mock_resp.raise_for_status = Mock()
     mock_resp.json.return_value = {"tag_name": "v1.2.3"}
 
     mock_client = AsyncMock()
@@ -80,8 +92,22 @@ async def test_fetch_latest_tag_returns_none_on_404(client):
     assert result is None
 
 
+async def test_fetch_latest_tag_returns_none_on_oserror(client):
+    with patch("pfm.server.routes.updates.httpx.AsyncClient", side_effect=FileNotFoundError("missing cert bundle")):
+        result = await updates_mod._fetch_latest_tag("ChizhovYuI/lurii-pfm")
+
+    assert result is None
+
+
 async def test_check_updates_returns_versions(client):
-    with patch.object(updates_mod, "_fetch_latest_tag", new_callable=AsyncMock) as mock:
+    with (
+        patch.object(updates_mod, "_fetch_latest_tag", new_callable=AsyncMock) as mock,
+        patch.object(
+            updates_mod,
+            "_get_locally_installed_versions",
+            new=AsyncMock(return_value={"pfm": __version__, "app": _TEST_APP_VERSION}),
+        ),
+    ):
         mock.side_effect = lambda repo: "0.15.0" if "pfm" in repo else "1.9"
         resp = await client.get("/api/v1/updates")
 
@@ -89,18 +115,33 @@ async def test_check_updates_returns_versions(client):
     data = await resp.json()
     assert data["pfm"]["current"] == __version__
     assert data["pfm"]["latest"] == "0.15.0"
+    assert data["pfm"]["installed"] == __version__
     assert data["app"]["latest"] == "1.9"
+    assert data["app"]["installed"] == _TEST_APP_VERSION
     assert data["restart_pending"] is False
 
 
 async def test_check_updates_caches_result(client):
-    with patch.object(updates_mod, "_fetch_latest_tag", new_callable=AsyncMock) as mock:
+    with (
+        patch.object(updates_mod, "_fetch_latest_tag", new_callable=AsyncMock) as mock,
+        patch.object(
+            updates_mod,
+            "_get_locally_installed_versions",
+            new=AsyncMock(
+                side_effect=[
+                    {"pfm": _TEST_PFM_VERSION, "app": _TEST_APP_VERSION},
+                    {"pfm": _TEST_PFM_VERSION, "app": _TEST_APP_VERSION},
+                ]
+            ),
+        ) as mock_installed,
+    ):
         mock.return_value = __version__
         await client.get("/api/v1/updates")
         await client.get("/api/v1/updates")
 
     # Second call should use cache — only 2 calls total (pfm + app).
     assert mock.call_count == 2
+    assert mock_installed.await_count == 2
 
 
 async def test_install_unknown_target_returns_400(client):
@@ -118,7 +159,7 @@ async def test_install_no_body_defaults_to_all(client, db_path):
         with patch.object(updates_mod, "_get_updates", new_callable=AsyncMock) as mock_updates:
             mock_updates.return_value = {
                 "pfm": {"current": __version__, "latest": __version__, "update_available": False},
-                "app": {"latest": "2.9.1"},
+                "app": {"latest": _TEST_APP_VERSION},
             }
             resp = await client.post("/api/v1/updates/install")
             assert resp.status == 202
@@ -134,8 +175,8 @@ async def test_install_returns_202(client, db_path):
 
         with patch.object(updates_mod, "_get_updates", new_callable=AsyncMock) as mock_updates:
             mock_updates.return_value = {
-                "pfm": {"current": __version__, "latest": "0.20.1", "update_available": False},
-                "app": {"latest": "2.9.1"},
+                "pfm": {"current": __version__, "latest": _TEST_PFM_VERSION, "update_available": False},
+                "app": {"latest": _TEST_APP_VERSION},
             }
             resp = await client.post("/api/v1/updates/install", json={"target": "pfm"})
             state = await _wait_for_status(db_path, "installed")
@@ -154,7 +195,7 @@ async def test_install_status_returns_persisted_state(client, db_path):
             "progress": 1.0,
             "message": "Updates installed",
             "target": "all",
-            "installed_versions": {"app": "2.9.1"},
+            "installed_versions": {"app": _TEST_APP_VERSION},
             "updated_at": "2026-03-08T00:00:00+00:00",
         },
     )
@@ -166,7 +207,7 @@ async def test_install_status_returns_persisted_state(client, db_path):
     data = await resp.json()
     assert data["status"] == "installed"
     assert data["progress"] == 1.0
-    assert data["installed_versions"] == {"app": "2.9.1"}
+    assert data["installed_versions"] == {"app": _TEST_APP_VERSION}
 
 
 async def test_install_conflict_when_already_installing(client, db_path):
@@ -195,7 +236,7 @@ async def test_restart_returns_404_when_no_plist(client, db_path):
             "progress": 1.0,
             "message": "Updates installed",
             "target": "all",
-            "installed_versions": {"app": "2.9.1"},
+            "installed_versions": {"app": _TEST_APP_VERSION},
             "updated_at": "2026-03-08T00:00:00+00:00",
         },
     )
@@ -217,7 +258,7 @@ async def test_restart_resets_install_state(client, db_path):
             "progress": 1.0,
             "message": "Updates installed",
             "target": "all",
-            "installed_versions": {"app": "2.9.1"},
+            "installed_versions": {"app": _TEST_APP_VERSION},
             "updated_at": "2026-03-08T00:00:00+00:00",
         },
     )
@@ -254,7 +295,7 @@ async def test_check_updates_restart_pending_when_installed(client, db_path):
             "progress": 1.0,
             "message": "Updates installed",
             "target": "all",
-            "installed_versions": {"app": "2.9.1"},
+            "installed_versions": {"app": _TEST_APP_VERSION},
             "updated_at": "2026-03-08T00:00:00+00:00",
         },
     )
@@ -265,6 +306,25 @@ async def test_check_updates_restart_pending_when_installed(client, db_path):
         resp = await client.get("/api/v1/updates")
 
     data = await resp.json()
+    assert data["restart_pending"] is True
+
+
+async def test_check_updates_restart_pending_when_installed_formula_differs(client):
+    with (
+        patch.object(updates_mod, "_fetch_latest_tag", new_callable=AsyncMock) as mock,
+        patch.object(
+            updates_mod,
+            "_get_locally_installed_versions",
+            new=AsyncMock(return_value={"pfm": "9.9.9", "app": None}),
+        ),
+    ):
+        mock.return_value = __version__
+        resp = await client.get("/api/v1/updates")
+
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["pfm"]["current"] == __version__
+    assert data["pfm"]["installed"] == "9.9.9"
     assert data["restart_pending"] is True
 
 
@@ -321,8 +381,8 @@ async def test_install_flow_persists_progress_and_versions(client, db_path, monk
 
     mock_updates = AsyncMock(
         return_value={
-            "pfm": {"current": __version__, "latest": "0.20.1", "update_available": False},
-            "app": {"latest": "2.9.1"},
+            "pfm": {"current": __version__, "latest": _TEST_PFM_VERSION, "update_available": False},
+            "app": {"latest": _TEST_APP_VERSION},
         }
     )
 
@@ -334,6 +394,6 @@ async def test_install_flow_persists_progress_and_versions(client, db_path, monk
     assert resp.status == 202
     state = await _wait_for_status(db_path, "installed")
     assert state["progress"] == 1.0
-    assert state["installed_versions"] == {"pfm": "0.20.1", "app": "2.9.1"}
+    assert state["installed_versions"] == {"pfm": _TEST_PFM_VERSION, "app": _TEST_APP_VERSION}
     assert any(progress == 0.33 for _, progress, _ in seen_states)
     assert any(progress == 0.66 for _, progress, _ in seen_states)
