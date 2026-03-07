@@ -107,6 +107,16 @@ async def check_updates(request: web.Request) -> web.Response:  # noqa: ARG001
     return web.json_response(result)
 
 
+@routes.post("/api/v1/updates/check")
+async def force_check_updates(request: web.Request) -> web.Response:  # noqa: ARG001
+    """Run ``brew update`` and return fresh version info."""
+    await _exec(_BREW, "update")
+    _cache["data"] = None
+    result = await _get_updates()
+    result["restart_pending"] = _install_state["status"] == "installed"
+    return web.json_response(result)
+
+
 @routes.get("/api/v1/updates/status")
 async def get_install_status(request: web.Request) -> web.Response:  # noqa: ARG001
     """Return current install state so the UI can poll on reconnect."""
