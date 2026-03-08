@@ -16,6 +16,7 @@ from pfm.collectors.base import BaseCollector
 from pfm.db.models import Snapshot, Transaction, TransactionType, init_db
 from pfm.db.source_store import SourceStore
 from pfm.server.app import create_app
+from pfm.server.state import get_repo
 
 
 @pytest.fixture
@@ -258,7 +259,7 @@ async def test_delete_source_cascades_all_source_owned_state(client):
     store = SourceStore(client.app["db_path"])
     await store.add("wise-main", "wise", {"api_token": "test-token-123456"})
 
-    repo = client.app["repo"]
+    repo = get_repo(client.app)
     await repo.save_snapshots(
         [
             Snapshot(
@@ -351,7 +352,7 @@ async def test_delete_source_does_not_touch_other_source_instances(client):
     await store.add("wise-main", "wise", {"api_token": "token-main"})
     await store.add("wise-alt", "wise", {"api_token": "token-alt"})
 
-    repo = client.app["repo"]
+    repo = get_repo(client.app)
     await repo.save_snapshots(
         [
             Snapshot(

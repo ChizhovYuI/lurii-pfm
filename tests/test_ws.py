@@ -9,6 +9,7 @@ from aiohttp import WSMsgType
 
 from pfm.db.models import init_db
 from pfm.server.app import create_app
+from pfm.server.state import get_broadcaster
 from pfm.server.ws import EventBroadcaster
 
 
@@ -40,7 +41,7 @@ async def test_websocket_connect(client):
     """Test that a WebSocket client can connect and receive events."""
     async with client.ws_connect("/api/v1/ws") as ws:
         # The connection should be established
-        broadcaster = client.app["broadcaster"]
+        broadcaster = get_broadcaster(client.app)
         assert broadcaster.client_count == 1
 
         # Broadcast an event

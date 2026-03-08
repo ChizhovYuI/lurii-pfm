@@ -22,6 +22,7 @@ from pfm.server.connection_validation import (
 )
 from pfm.server.routes.collect import start_collection_task
 from pfm.server.serializers import source_to_dict
+from pfm.server.state import get_broadcaster, get_repo
 
 routes = web.RouteTableDef()
 logger = logging.getLogger(__name__)
@@ -123,13 +124,13 @@ async def get_source(request: web.Request) -> web.Response:
 async def delete_source(request: web.Request) -> web.Response:
     """Delete a source by name."""
     name = request.match_info["name"]
-    repo = request.app["repo"]
+    repo = get_repo(request.app)
     try:
         result = await repo.delete_source_cascade(name)
     except SourceNotFoundError:
         return web.json_response({"error": f"Source {name!r} not found"}, status=404)
 
-    await request.app["broadcaster"].broadcast({"type": "snapshot_updated"})
+    await get_broadcaster(request.app).broadcast({"type": "snapshot_updated"})
     return web.json_response(
         {
             "deleted": True,

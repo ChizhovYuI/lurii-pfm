@@ -9,6 +9,7 @@ from aiohttp import web
 
 from pfm.db.models import init_db
 from pfm.server.app import create_app
+from pfm.server.state import get_runtime_state
 
 
 @pytest.fixture
@@ -45,10 +46,11 @@ async def test_startup_and_cleanup(db_path):
     await site.start()
 
     # Verify resources are initialized
-    assert app.get("repo") is not None
-    assert app.get("pricing") is not None
-    assert app.get("broadcaster") is not None
-    assert app["collecting"] is False
+    state = get_runtime_state(app)
+    assert state.repo is not None
+    assert state.pricing is not None
+    assert state.broadcaster is not None
+    assert state.collecting is False
 
     await runner.cleanup()
 

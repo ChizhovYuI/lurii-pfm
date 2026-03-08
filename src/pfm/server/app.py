@@ -17,6 +17,7 @@ from pfm.server.middleware import (
     local_only_middleware,
 )
 from pfm.server.routes import setup_routes
+from pfm.server.state import RUNTIME_STATE, ServerRuntimeState, get_runtime_state
 from pfm.server.ws import EventBroadcaster
 
 if TYPE_CHECKING:
@@ -33,19 +34,20 @@ async def _on_startup(app: web.Application) -> None:
     from pfm.pricing.coingecko import PricingService
     from pfm.server.routes.updates import reconcile_interrupted_install_state
 
+    state = get_runtime_state(app)
     db_path: Path = app["db_path"]
-    key_hex: str | None = app.get("db_key") or os.environ.get("PFM_DB_KEY")
+    key_hex: str | None = state.db_key or os.environ.get("PFM_DB_KEY")
 
     if key_hex:
-        app["db_key"] = key_hex
+        state.db_key = key_hex
 
     encryption_enabled = app.get("encryption_enabled", False)
 
     if encryption_enabled and not key_hex:
         # Encryption is configured but no key provided — start locked.
-        app["db_locked"] = True
-        app["broadcaster"] = EventBroadcaster()
-        app["collecting"] = False
+        state.db_locked = True
+        state.broadcaster = EventBroadcaster()
+        state.collecting = False
         logger.warning("Encryption enabled but no key provided — starting in locked state")
         return
 
@@ -56,26 +58,26 @@ async def _on_startup(app: web.Application) -> None:
 
     repo = Repository(db_path, key_hex=key_hex)
     await repo.__aenter__()
-    app["repo"] = repo
+    state.repo = repo
 
     pricing = PricingService(
         api_key=settings.coingecko_api_key,
         cache_db_path=db_path,
     )
-    app["pricing"] = pricing
-    app["broadcaster"] = EventBroadcaster()
-    app["collecting"] = False
+    state.pricing = pricing
+    state.broadcaster = EventBroadcaster()
+    state.collecting = False
 
     from pfm.server.scheduler import run_daily_collector
 
-    app["_scheduler_task"] = asyncio.create_task(run_daily_collector(app))
+    state.scheduler_task = asyncio.create_task(run_daily_collector(app))
 
     logger.info("Startup complete — DB unlocked, services ready")
 
 
 async def _on_shutdown(app: web.Application) -> None:
     """Close WebSocket connections so handlers can exit before the shutdown timeout."""
-    broadcaster = app.get("broadcaster")
+    broadcaster = get_runtime_state(app).broadcaster
     if broadcaster is not None:
         logger.info("Closing %d WebSocket client(s)…", broadcaster.client_count)
         await broadcaster.close()
@@ -83,22 +85,27 @@ async def _on_shutdown(app: web.Application) -> None:
 
 async def _on_cleanup(app: web.Application) -> None:
     """Close shared resources and clear sensitive state."""
-    scheduler: asyncio.Task[None] | None = app.get("_scheduler_task")
+    state = get_runtime_state(app)
+    scheduler = state.scheduler_task
     if scheduler is not None:
         scheduler.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await scheduler
 
-    repo = app.get("repo")
+    repo = state.repo
     if repo is not None:
         await repo.__aexit__(None, None, None)
 
-    pricing = app.get("pricing")
+    pricing = state.pricing
     if pricing is not None:
         await pricing.close()
 
     # Clear key from memory
-    app.pop("db_key", None)
+    state.db_key = None
+    state.repo = None
+    state.pricing = None
+    state.broadcaster = None
+    state.scheduler_task = None
 
 
 def create_app(db_path: Path) -> web.Application:
@@ -107,10 +114,8 @@ def create_app(db_path: Path) -> web.Application:
         middlewares=[local_only_middleware, db_locked_middleware, api_logging_middleware, error_handling_middleware],
     )
     app["db_path"] = db_path
-    app["db_key"] = None
-    app["db_locked"] = False
-    app["generating_commentary"] = False
     app["encryption_enabled"] = False
+    app[RUNTIME_STATE] = ServerRuntimeState()
     app.on_startup.append(_on_startup)
     app.on_shutdown.append(_on_shutdown)
     app.on_cleanup.append(_on_cleanup)

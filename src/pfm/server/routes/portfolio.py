@@ -7,6 +7,7 @@ from datetime import date
 from aiohttp import web
 
 from pfm.server.serializers import _str_decimal, asset_type_for_snapshot, snapshot_to_dict
+from pfm.server.state import get_repo
 
 routes = web.RouteTableDef()
 
@@ -17,7 +18,7 @@ async def portfolio_summary(request: web.Request) -> web.Response:
     from pfm.analytics import compute_data_warnings, compute_net_worth
     from pfm.db.source_store import SourceStore
 
-    repo = request.app["repo"]
+    repo = get_repo(request.app)
     latest = await repo.get_latest_snapshots()
     if not latest:
         return web.json_response({"error": "No snapshots available"}, status=404)
@@ -54,7 +55,7 @@ async def portfolio_summary(request: web.Request) -> web.Response:
 @routes.get("/api/v1/portfolio/snapshots")
 async def portfolio_snapshots(request: web.Request) -> web.Response:
     """Return snapshots for a date range."""
-    repo = request.app["repo"]
+    repo = get_repo(request.app)
     start_str = request.query.get("start")
     end_str = request.query.get("end")
 
@@ -77,7 +78,7 @@ async def portfolio_snapshots(request: web.Request) -> web.Response:
 @routes.get("/api/v1/portfolio/holdings")
 async def portfolio_holdings(request: web.Request) -> web.Response:
     """Return latest snapshots as a holdings list."""
-    repo = request.app["repo"]
+    repo = get_repo(request.app)
     latest = await repo.get_latest_snapshots()
     if not latest:
         return web.json_response({"error": "No snapshots available"}, status=404)

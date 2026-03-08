@@ -8,6 +8,7 @@ import sqlite3
 from aiohttp import web
 
 from pfm import __version__
+from pfm.server.state import get_runtime_state
 
 logger = logging.getLogger(__name__)
 
@@ -17,12 +18,13 @@ routes = web.RouteTableDef()
 @routes.get("/api/v1/health")
 async def health(request: web.Request) -> web.Response:
     """Return server health status."""
+    state = get_runtime_state(request.app)
     return web.json_response(
         {
             "status": "ok",
             "version": __version__,
-            "collecting": request.app.get("collecting", False),
-            "locked": request.app.get("db_locked", False),
+            "collecting": state.collecting,
+            "locked": state.db_locked,
         }
     )
 
@@ -30,10 +32,11 @@ async def health(request: web.Request) -> web.Response:
 @routes.get("/api/v1/encryption/status")
 async def encryption_status(request: web.Request) -> web.Response:
     """Return encryption and lock state for the SwiftUI client."""
+    state = get_runtime_state(request.app)
     return web.json_response(
         {
             "encryption_enabled": request.app.get("encryption_enabled", False),
-            "locked": request.app.get("db_locked", False),
+            "locked": state.db_locked,
         }
     )
 
@@ -77,19 +80,20 @@ async def unlock(request: web.Request) -> web.Response:
     await init_db(db_path, key_hex=key_hex)
 
     settings = get_settings()
+    state = get_runtime_state(request.app)
 
     repo = Repository(db_path, key_hex=key_hex)
     await repo.__aenter__()
-    request.app["repo"] = repo
+    state.repo = repo
 
     pricing = PricingService(
         api_key=settings.coingecko_api_key,
         cache_db_path=db_path,
     )
-    request.app["pricing"] = pricing
+    state.pricing = pricing
 
-    request.app["db_key"] = key_hex
-    request.app["db_locked"] = False
+    state.db_key = key_hex
+    state.db_locked = False
 
     logger.info("Database unlocked successfully")
     return web.json_response({"status": "unlocked"})

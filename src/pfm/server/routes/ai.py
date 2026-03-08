@@ -18,6 +18,7 @@ from pfm.server.connection_validation import (
     validate_ai_provider_connection as run_ai_provider_validation,
 )
 from pfm.server.serializers import mask_secret
+from pfm.server.state import get_broadcaster, get_repo, get_runtime_state
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ routes = web.RouteTableDef()
 @routes.get("/api/v1/ai/commentary")
 async def get_commentary(request: web.Request) -> web.Response:
     """Read cached AI commentary for the latest snapshot date."""
-    repo = request.app["repo"]
+    repo = get_repo(request.app)
     latest = await repo.get_latest_snapshots()
     if not latest:
         return web.json_response({"error": "No snapshots available"}, status=404)
@@ -52,23 +53,24 @@ async def get_commentary(request: web.Request) -> web.Response:
 @routes.get("/api/v1/ai/commentary/status")
 async def commentary_status(request: web.Request) -> web.Response:
     """Return whether AI commentary generation is in progress."""
-    return web.json_response({"generating": request.app.get("generating_commentary", False)})
+    return web.json_response({"generating": get_runtime_state(request.app).generating_commentary})
 
 
 @routes.post("/api/v1/ai/commentary")
 async def generate_commentary(request: web.Request) -> web.Response:
     """Spawn background AI commentary generation. Returns 202 immediately."""
-    if request.app.get("generating_commentary"):
+    state = get_runtime_state(request.app)
+    if state.generating_commentary:
         return web.json_response({"error": "Commentary generation already in progress"}, status=409)
 
-    repo = request.app["repo"]
+    repo = get_repo(request.app)
     latest = await repo.get_latest_snapshots()
     if not latest:
         return web.json_response({"error": "No snapshots available"}, status=404)
 
-    request.app["generating_commentary"] = True
-    task = asyncio.ensure_future(_run_commentary(request.app))
-    request.app["_commentary_task"] = task
+    state.generating_commentary = True
+    task = asyncio.create_task(_run_commentary(request.app))
+    state.commentary_task = task
 
     return web.json_response({"status": "started"}, status=202)
 
@@ -78,9 +80,10 @@ async def _run_commentary(app: web.Application) -> None:
     from pfm.ai import generate_commentary_with_model
     from pfm.server.analytics_helper import build_analytics_summary
 
-    repo = app["repo"]
+    state = get_runtime_state(app)
+    repo = get_repo(app)
     db_path = app["db_path"]
-    broadcaster = app["broadcaster"]
+    broadcaster = get_broadcaster(app)
 
     try:
         await broadcaster.broadcast({"type": "commentary_started"})
@@ -121,7 +124,8 @@ async def _run_commentary(app: web.Application) -> None:
         logger.exception("AI commentary generation failed")
         await broadcaster.broadcast({"type": "commentary_failed", "error": str(exc)})
     finally:
-        app["generating_commentary"] = False
+        state.generating_commentary = False
+        state.commentary_task = None
 
 
 # ── Legacy single-provider endpoints (backward compat) ──────────────

@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 
 from aiohttp import web
 
+from pfm.server.state import get_runtime_state
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
@@ -38,7 +40,7 @@ async def db_locked_middleware(
     handler: Callable[[web.Request], Awaitable[web.StreamResponse]],
 ) -> web.StreamResponse:
     """Return 423 Locked for data endpoints when DB is locked."""
-    if request.app.get("db_locked") and request.path not in _UNLOCKED_PATHS:
+    if get_runtime_state(request.app).db_locked and request.path not in _UNLOCKED_PATHS:
         return web.json_response({"error": "Database is locked"}, status=423)
     return await handler(request)
 

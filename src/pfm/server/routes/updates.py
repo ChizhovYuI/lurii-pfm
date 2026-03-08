@@ -16,6 +16,7 @@ import httpx
 from aiohttp import web
 
 from pfm import __version__
+from pfm.server.state import get_broadcaster, get_runtime_state
 
 logger = logging.getLogger(__name__)
 
@@ -409,7 +410,7 @@ async def install_updates(request: web.Request) -> web.Response:
     if not commands:
         return web.json_response({"error": f"Unknown target: {target}"}, status=400)
 
-    broadcaster = request.app["broadcaster"]
+    broadcaster = get_broadcaster(request.app)
 
     await _save_install_state(
         db_path,
@@ -469,9 +470,10 @@ async def install_updates(request: web.Request) -> web.Response:
             )
             await broadcaster.broadcast({"type": "update_failed", "error": str(exc)})
 
+    state = get_runtime_state(request.app)
     task = asyncio.create_task(_run())
-    request.app.setdefault("_bg_tasks", set()).add(task)
-    task.add_done_callback(request.app["_bg_tasks"].discard)
+    state.bg_tasks.add(task)
+    task.add_done_callback(state.bg_tasks.discard)
     return web.json_response({"status": "started"}, status=202)
 
 

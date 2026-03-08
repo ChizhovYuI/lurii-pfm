@@ -12,6 +12,7 @@ from aiohttp import web
 
 from pfm.db.models import Snapshot, Source
 from pfm.db.source_store import SourceStore
+from pfm.server.state import get_pricing, get_repo
 
 if TYPE_CHECKING:
     from pfm.pricing.coingecko import PricingService
@@ -62,7 +63,7 @@ async def ingest_extension_snapshot(request: web.Request) -> web.Response:
     matched_source = matched_sources[0]
     assets = _resolve_assets(body)
     captured_date = _resolve_captured_date(body.get("capturedAt"))
-    pricing: PricingService = request.app["pricing"]
+    pricing: PricingService = get_pricing(request.app)
     snapshots = await _build_snapshots(
         assets,
         snapshot_date=captured_date,
@@ -71,7 +72,7 @@ async def ingest_extension_snapshot(request: web.Request) -> web.Response:
         pricing=pricing,
     )
 
-    repo = request.app["repo"]
+    repo = get_repo(request.app)
     await repo.save_snapshots(snapshots)
 
     return web.json_response(
@@ -171,7 +172,7 @@ async def _build_snapshots(
             try:
                 price = await pricing.get_price_usd(symbol)
                 usd_value = amount * price
-            except (ValueError, Exception):
+            except Exception:  # noqa: BLE001
                 logger.warning("ext_snapshot: cannot price %s, saving with usd_value=0", symbol)
                 price = Decimal(0)
         else:

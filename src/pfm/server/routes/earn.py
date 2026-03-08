@@ -7,6 +7,7 @@ from decimal import Decimal
 from aiohttp import web
 
 from pfm.server.serializers import _str_decimal, asset_type_for_snapshot
+from pfm.server.state import get_repo
 
 routes = web.RouteTableDef()
 
@@ -14,7 +15,7 @@ routes = web.RouteTableDef()
 @routes.get("/api/v1/earn/summary")
 async def earn_summary(request: web.Request) -> web.Response:
     """Return yield-earning positions and aggregate totals."""
-    repo = request.app["repo"]
+    repo = get_repo(request.app)
     latest = await repo.get_latest_snapshots()
     if not latest:
         return web.json_response({"error": "No snapshots available"}, status=404)

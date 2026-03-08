@@ -17,6 +17,7 @@ from pfm.db.apy_rules_store import (
     rule_to_dict,
 )
 from pfm.db.source_store import SourceNotFoundError, SourceStore
+from pfm.server.state import get_repo
 
 if TYPE_CHECKING:
     from datetime import date
@@ -138,7 +139,7 @@ async def _recalculate_snapshots(
         return
 
     start, end = date_range
-    repo = app["repo"]
+    repo = get_repo(app)
     snapshots = await repo.get_snapshots_by_source_name_and_date_range(source_name, start, end)
 
     updated = 0

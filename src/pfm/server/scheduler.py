@@ -7,6 +7,8 @@ import logging
 from datetime import UTC, datetime, time, timedelta
 from typing import TYPE_CHECKING
 
+from pfm.server.state import get_runtime_state
+
 if TYPE_CHECKING:
     from aiohttp import web
 
@@ -29,6 +31,7 @@ async def run_daily_collector(app: web.Application) -> None:
     from pfm.server.routes.collect import _run_collection
 
     logger.info("Scheduler started — daily collection at %s UTC", _TARGET_TIME.strftime("%H:%M"))
+    state = get_runtime_state(app)
 
     try:
         while True:
@@ -36,18 +39,18 @@ async def run_daily_collector(app: web.Application) -> None:
             logger.info("Next collection in %.0f s", delay)
             await asyncio.sleep(delay)
 
-            if app["collecting"]:
+            if state.collecting:
                 logger.warning("Scheduled collection skipped — already running")
                 continue
 
             logger.info("Scheduled daily collection started")
-            app["collecting"] = True
+            state.collecting = True
             try:
                 await _run_collection(app, source_name=None)
             except Exception:
                 # _run_collection handles its own errors; this catches
                 # failures before its try/finally (e.g. import errors).
                 logger.exception("Scheduled collection failed")
-                app["collecting"] = False
+                state.collecting = False
     except asyncio.CancelledError:
         logger.info("Scheduler stopped")

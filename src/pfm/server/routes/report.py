@@ -7,6 +7,7 @@ import logging
 from aiohttp import web
 
 from pfm.server.serializers import parse_cached_ai_commentary
+from pfm.server.state import get_repo
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +21,7 @@ async def send_report_notify(request: web.Request) -> web.Response:
     from pfm.server.analytics_helper import build_analytics_summary
 
     db_path = request.app["db_path"]
-    repo = request.app["repo"]
+    repo = get_repo(request.app)
 
     if not await is_telegram_configured(db_path=db_path):
         return web.json_response({"error": "Telegram is not configured"}, status=400)

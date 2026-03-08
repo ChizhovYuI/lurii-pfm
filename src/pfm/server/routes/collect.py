@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
+from pfm.server.state import get_broadcaster, get_pricing, get_repo, get_runtime_state
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -27,19 +29,20 @@ routes = web.RouteTableDef()
 
 def start_collection_task(app: web.Application, source_name: str | None) -> bool:
     """Start a background collection task if no collection is active."""
-    if app["collecting"]:
+    state = get_runtime_state(app)
+    if state.collecting:
         return False
 
-    app["collecting"] = True
+    state.collecting = True
     task = asyncio.create_task(_run_collection(app, source_name))
-    app["_collection_task"] = task
+    state.collection_task = task
     return True
 
 
 @routes.get("/api/v1/collect/status")
 async def collect_status(request: web.Request) -> web.Response:
     """Return current collection state."""
-    return web.json_response({"collecting": request.app["collecting"]})
+    return web.json_response({"collecting": get_runtime_state(request.app).collecting})
 
 
 @routes.post("/api/v1/collect")
@@ -68,10 +71,11 @@ async def _run_collection(app: web.Application, source_name: str | None) -> None
     from pfm.collectors.pipeline import run_parallel_pipeline
     from pfm.db.source_store import SourceNotFoundError, SourceStore
 
-    broadcaster = app["broadcaster"]
+    state = get_runtime_state(app)
+    broadcaster = get_broadcaster(app)
     db_path = app["db_path"]
-    repo = app["repo"]
-    pricing = app["pricing"]
+    repo = get_repo(app)
+    pricing = get_pricing(app)
 
     try:
         await broadcaster.broadcast({"type": "collection_started"})
@@ -135,7 +139,8 @@ async def _run_collection(app: web.Application, source_name: str | None) -> None
         logger.exception("Collection background task failed")
         await broadcaster.broadcast({"type": "collection_failed", "error": str(exc)})
     finally:
-        app["collecting"] = False
+        state.collecting = False
+        state.collection_task = None
 
 
 async def _build_collectors(

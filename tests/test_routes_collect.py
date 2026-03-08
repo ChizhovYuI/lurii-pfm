@@ -12,6 +12,7 @@ from pfm.db.models import CollectorResult, init_db
 from pfm.db.source_store import SourceStore
 from pfm.server.app import create_app
 from pfm.server.routes.collect import start_collection_task
+from pfm.server.state import get_runtime_state
 
 
 @pytest.fixture
@@ -50,12 +51,12 @@ async def test_collect_status_idle(client):
 
 async def test_collect_status_during_collection(client):
     """Test that collect status returns collecting=true during collection."""
-    client.app["collecting"] = True
+    get_runtime_state(client.app).collecting = True
     resp = await client.get("/api/v1/collect/status")
     assert resp.status == 200
     data = await resp.json()
     assert data == {"collecting": True}
-    client.app["collecting"] = False
+    get_runtime_state(client.app).collecting = False
 
 
 async def test_start_collection_task_sets_collecting_and_creates_task(client):
@@ -64,15 +65,16 @@ async def test_start_collection_task_sets_collecting_and_creates_task(client):
         started = start_collection_task(client.app, "wise-main")
 
         assert started is True
-        assert client.app["collecting"] is True
-        task = client.app.get("_collection_task")
+        state = get_runtime_state(client.app)
+        assert state.collecting is True
+        task = state.collection_task
         assert task is not None
         await asyncio.wait_for(task, timeout=5.0)
         async_mock.assert_awaited_once_with(client.app, "wise-main")
 
 
 async def test_start_collection_task_returns_false_when_busy(client):
-    client.app["collecting"] = True
+    get_runtime_state(client.app).collecting = True
 
     with patch("pfm.server.routes.collect._run_collection", AsyncMock()) as async_mock:
         started = start_collection_task(client.app, "wise-main")
@@ -102,17 +104,17 @@ async def test_collect_returns_202(client):
         assert data["status"] == "started"
 
         # Wait for background task to complete
-        task = client.app.get("_collection_task")
+        task = get_runtime_state(client.app).collection_task
         if task:
             await asyncio.wait_for(task, timeout=5.0)
 
 
 async def test_collect_rejects_concurrent(client):
     """Test that concurrent collection requests are rejected with 409."""
-    client.app["collecting"] = True
+    get_runtime_state(client.app).collecting = True
     resp = await client.post("/api/v1/collect", json={})
     assert resp.status == 409
-    client.app["collecting"] = False
+    get_runtime_state(client.app).collecting = False
 
 
 async def test_collect_with_source_filter(client):
@@ -132,6 +134,6 @@ async def test_collect_with_source_filter(client):
         resp = await client.post("/api/v1/collect", json={"source": "wise-main"})
         assert resp.status == 202
 
-        task = client.app.get("_collection_task")
+        task = get_runtime_state(client.app).collection_task
         if task:
             await asyncio.wait_for(task, timeout=5.0)

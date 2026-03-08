@@ -15,6 +15,7 @@ from pfm.db.encryption import (
 )
 from pfm.db.models import init_db
 from pfm.server.app import create_app
+from pfm.server.state import get_runtime_state
 
 # 256-bit test key (64 hex chars)
 TEST_KEY = "a" * 64
@@ -301,7 +302,7 @@ async def db_path(tmp_path):
 async def locked_client(aiohttp_client, db_path):
     """Client for an app that starts in locked state."""
     app = create_app(db_path)
-    app["db_locked"] = True
+    get_runtime_state(app).db_locked = True
     app["encryption_enabled"] = True
     return await aiohttp_client(app)
 
@@ -390,7 +391,7 @@ async def test_unlock_endpoint_wrong_key(aiohttp_client, tmp_path):
     await init_encrypted_db(db_path, TEST_KEY)
 
     app = create_app(db_path)
-    app["db_locked"] = True
+    get_runtime_state(app).db_locked = True
     app["encryption_enabled"] = True
     client = await aiohttp_client(app)
 
@@ -406,7 +407,7 @@ async def test_unlock_endpoint_success(aiohttp_client, tmp_path):
     await init_encrypted_db(db_path, TEST_KEY)
 
     app = create_app(db_path)
-    app["db_locked"] = True
+    get_runtime_state(app).db_locked = True
     app["encryption_enabled"] = True
     client = await aiohttp_client(app)
 
@@ -416,9 +417,10 @@ async def test_unlock_endpoint_success(aiohttp_client, tmp_path):
     assert data["status"] == "unlocked"
 
     # Verify the app state has been updated
-    assert app["db_locked"] is False
-    assert app["db_key"] == TEST_KEY
-    assert app.get("repo") is not None
+    state = get_runtime_state(app)
+    assert state.db_locked is False
+    assert state.db_key == TEST_KEY
+    assert state.repo is not None
 
     # Health should now show unlocked
     resp = await client.get("/api/v1/health")

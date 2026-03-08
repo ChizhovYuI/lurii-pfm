@@ -7,6 +7,7 @@ from datetime import date
 from aiohttp import web
 
 from pfm.server.serializers import _str_decimal
+from pfm.server.state import get_repo
 
 routes = web.RouteTableDef()
 
@@ -22,7 +23,7 @@ async def analytics_allocation(request: web.Request) -> web.Response:
     )
     from pfm.db.source_store import SourceStore
 
-    repo = request.app["repo"]
+    repo = get_repo(request.app)
     latest = await repo.get_latest_snapshots()
     if not latest:
         return web.json_response({"error": "No snapshots available"}, status=404)
@@ -78,7 +79,7 @@ async def analytics_exposure(request: web.Request) -> web.Response:
     """Return live-computed currency exposure."""
     from pfm.analytics import compute_currency_exposure
 
-    repo = request.app["repo"]
+    repo = get_repo(request.app)
     latest = await repo.get_latest_snapshots()
     if not latest:
         return web.json_response({"error": "No snapshots available"}, status=404)
@@ -104,7 +105,7 @@ async def analytics_exposure(request: web.Request) -> web.Response:
 @routes.get("/api/v1/analytics/yield")
 async def analytics_yield(request: web.Request) -> web.Response:
     """Compute yield for a source/asset over a date range."""
-    repo = request.app["repo"]
+    repo = get_repo(request.app)
     source = request.query.get("source")
     asset = request.query.get("asset")
     start_str = request.query.get("start")

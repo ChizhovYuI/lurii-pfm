@@ -10,6 +10,8 @@ from typing import Any
 
 from aiohttp import WSMsgType, web
 
+from pfm.server.state import get_broadcaster
+
 logger = logging.getLogger(__name__)
 
 _WS_CLOSE_TIMEOUT = 2.0
@@ -65,7 +67,7 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
     ws = web.WebSocketResponse(heartbeat=30.0)
     await ws.prepare(request)
 
-    broadcaster: EventBroadcaster = request.app["broadcaster"]
+    broadcaster: EventBroadcaster = get_broadcaster(request.app)
     broadcaster.register(ws)
 
     try:
