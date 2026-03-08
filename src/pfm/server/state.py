@@ -27,6 +27,8 @@ class ServerRuntimeState:
     commentary_completed_sections: int = 0
     commentary_total_sections: int = 0
     commentary_current_section: str | None = None
+    commentary_strategy: str | None = None
+    commentary_last_error: str | None = None
     bg_tasks: set[asyncio.Task[None]] = field(default_factory=set)
     db_locked: bool = False
     db_key: str | None = None

@@ -1,6 +1,7 @@
 """LLM provider registry."""
 
 from pfm.ai.providers import (
+    deepseek,
     gemini,
     grok,
     ollama,
@@ -10,6 +11,7 @@ from pfm.ai.providers.registry import PROVIDER_REGISTRY, get_provider_names, reg
 
 __all__ = [
     "PROVIDER_REGISTRY",
+    "deepseek",
     "gemini",
     "get_provider_names",
     "grok",

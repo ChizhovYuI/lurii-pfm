@@ -1116,6 +1116,7 @@ def test_ai_set_openrouter_picks_model_interactively(runner):
 def test_ai_providers_lists_all(runner):
     result = runner.invoke(cli, ["ai", "providers"])
     assert result.exit_code == 0
+    assert "deepseek" in result.output
     assert "gemini" in result.output
     assert "ollama" in result.output
     assert "openrouter" in result.output
@@ -1139,6 +1140,27 @@ def test_ai_set_prompts_for_key_when_required(runner, db_path):
     config = asyncio.run(_load())
     assert config is not None
     assert config.api_key == "my-api-key-for-gemini"
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_ai_set_deepseek_defaults_to_chat_model(runner, db_path):
+    result = runner.invoke(
+        cli,
+        ["ai", "set", "--provider", "deepseek"],
+        input="deepseek-secret-key\n",
+    )
+
+    assert result.exit_code == 0
+    assert "AI provider set to: deepseek" in result.output
+    assert "Model: deepseek-chat" in result.output
+
+    async def _load():
+        return await AIProviderStore(db_path).get_active()
+
+    config = asyncio.run(_load())
+    assert config is not None
+    assert config.type == "deepseek"
+    assert config.model == "deepseek-chat"
 
 
 # ── AI multi-provider commands ───────────────────────────────────────

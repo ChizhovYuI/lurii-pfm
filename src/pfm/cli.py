@@ -330,7 +330,7 @@ def gemini_clear() -> None:
 
 # ── AI provider config ───────────────────────────────────────────────
 
-_PROVIDERS_REQUIRING_API_KEY: frozenset[str] = frozenset({"gemini", "openrouter", "grok"})
+_PROVIDERS_REQUIRING_API_KEY: frozenset[str] = frozenset({"gemini", "deepseek", "openrouter", "grok"})
 
 
 _BYTES_GB = 1_000_000_000
@@ -342,6 +342,11 @@ _OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("google/gemini-2.5-flash-preview", "free, fast, 1M context"),
     ("anthropic/claude-sonnet-4", "paid, best quality"),
     ("openai/gpt-4.1-mini", "paid, fast, cheap"),
+]
+
+_DEEPSEEK_MODELS: list[tuple[str, str]] = [
+    ("deepseek-chat", "recommended for weekly reports"),
+    ("deepseek-reasoner", "advanced reasoning, slower and needs larger token budgets"),
 ]
 
 _OLLAMA_MODEL_HINTS: dict[str, str] = {
@@ -421,6 +426,21 @@ def _pick_openrouter_model() -> str:
     return _OPENROUTER_MODELS[choice - 1][0]
 
 
+def _pick_deepseek_model() -> str:
+    """Show curated DeepSeek model list and let the user pick one."""
+    click.echo("\nAvailable DeepSeek models:")
+    for i, (model_id, label) in enumerate(_DEEPSEEK_MODELS, 1):
+        click.echo(f"  {i}. {model_id:<25s} {label}")
+
+    choice: int = click.prompt(
+        "\nSelect model",
+        type=click.IntRange(1, len(_DEEPSEEK_MODELS)),
+        default=1,
+        show_default=True,
+    )
+    return _DEEPSEEK_MODELS[choice - 1][0]
+
+
 @cli.group("ai")
 def ai_group() -> None:
     """Manage AI provider configuration."""
@@ -431,7 +451,7 @@ def ai_group() -> None:
     "--provider",
     "provider_name",
     required=True,
-    type=click.Choice(["gemini", "ollama", "openrouter", "grok"]),
+    type=click.Choice(["gemini", "deepseek", "ollama", "openrouter", "grok"]),
     help="LLM provider to use.",
 )
 @click.option("--api-key", default=None, help="API key (prompted if required).")
@@ -453,6 +473,9 @@ def ai_set(provider_name: str, api_key: str | None, model: str, base_url: str) -
 
     if provider_name == "ollama" and not model:
         model = _pick_ollama_model(base_url or "http://localhost:11434")
+
+    if provider_name == "deepseek" and not model:
+        model = "deepseek-chat"
 
     if provider_name == "openrouter" and not model:
         model = _pick_openrouter_model()
@@ -944,6 +967,8 @@ async def _comment_async() -> bool:
         metric_payload["model"] = result.model
     if result.sections:
         metric_payload["sections"] = [{"title": s.title, "description": s.description} for s in result.sections]
+    if isinstance(result.generation_meta, dict):
+        metric_payload["generation_meta"] = result.generation_meta
 
     async with Repository(settings.database_path) as repo:
         await repo.save_analytics_metric(

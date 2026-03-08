@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from datetime import date
 from decimal import Decimal
+from unittest.mock import patch
 
 import aiosqlite
 import httpx
@@ -154,6 +155,7 @@ async def test_get_ai_commentary_recovers_sections_from_cached_text_when_section
     ]
     assert data["stale"] is False
     assert data["stale_reason"] is None
+    assert "generation_meta" not in data
 
 
 async def test_get_ai_commentary_does_not_invent_sections_for_plain_text(client):
@@ -205,12 +207,47 @@ async def test_get_ai_commentary_marks_stale_when_memory_hash_changes(client):
     assert data["stale_reason"] == "AI report was generated before the report memory was updated."
 
 
+async def test_get_ai_commentary_returns_generation_meta_when_present(client):
+    repo = get_repo(client.app)
+    snapshot_date = date(2024, 1, 18)
+    await _seed_snapshot(repo, snapshot_date)
+
+    await repo.save_analytics_metric(
+        snapshot_date,
+        "ai_commentary",
+        json.dumps(
+            {
+                "text": "## Market Context\n\nGenerated body.",
+                "model": "deepseek-chat",
+                "sections": [{"title": "Market Context", "description": "Generated body."}],
+                "generation_meta": {
+                    "strategy": "deepseek_json_single_shot",
+                    "provider": "deepseek",
+                    "model": "deepseek-chat",
+                    "status": "generated",
+                    "finish_reason": "stop",
+                    "attempts": 1,
+                },
+            }
+        ),
+    )
+
+    resp = await client.get("/api/v1/ai/commentary")
+
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["generation_meta"]["provider"] == "deepseek"
+    assert data["generation_meta"]["finish_reason"] == "stop"
+
+
 async def test_commentary_status_returns_progress_fields(client):
     state = get_runtime_state(client.app)
     state.generating_commentary = True
     state.commentary_completed_sections = 2
     state.commentary_total_sections = 5
     state.commentary_current_section = "Risk Alerts"
+    state.commentary_strategy = "section_by_section"
+    state.commentary_last_error = "temporary problem"
 
     resp = await client.get("/api/v1/ai/commentary/status")
 
@@ -220,4 +257,55 @@ async def test_commentary_status_returns_progress_fields(client):
         "completed_sections": 2,
         "total_sections": 5,
         "current_section": "Risk Alerts",
+        "strategy": "section_by_section",
+        "last_error": "temporary problem",
     }
+
+
+async def test_failed_generation_does_not_overwrite_previous_cached_report(client):
+    repo = get_repo(client.app)
+    snapshot_date = date(2024, 1, 19)
+    await _seed_snapshot(repo, snapshot_date)
+    await repo.save_analytics_metric(
+        snapshot_date,
+        "ai_commentary",
+        json.dumps(
+            {
+                "text": "## Market Context\n\nPrevious successful report.",
+                "model": "deepseek-chat",
+                "sections": [{"title": "Market Context", "description": "Previous successful report."}],
+            }
+        ),
+    )
+
+    async def _fake_generate(*_args, **_kwargs) -> CommentaryResult:
+        return CommentaryResult(
+            text="",
+            model="deepseek-chat",
+            provider="deepseek",
+            error="JSON output was invalid after retry.",
+            generation_meta={
+                "strategy": "deepseek_json_single_shot",
+                "provider": "deepseek",
+                "model": "deepseek-chat",
+                "status": "failed",
+                "finish_reason": "stop",
+                "attempts": 2,
+                "reason": "invalid_json",
+            },
+        )
+
+    with patch("pfm.ai.generate_commentary_with_model", new=_fake_generate):
+        await client.post("/api/v1/ai/commentary")
+        await get_runtime_state(client.app).commentary_task
+
+    resp = await client.get("/api/v1/ai/commentary")
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["text"] == "## Market Context\n\nPrevious successful report."
+    assert data["sections"] == [{"title": "Market Context", "description": "Previous successful report."}]
+
+    status_resp = await client.get("/api/v1/ai/commentary/status")
+    assert status_resp.status == 200
+    status_data = await status_resp.json()
+    assert status_data["last_error"] == "JSON output was invalid after retry."

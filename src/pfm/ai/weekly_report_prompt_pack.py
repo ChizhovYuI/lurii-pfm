@@ -8,10 +8,13 @@ from typing import TYPE_CHECKING, Any
 from pfm.ai.prompts import (
     REPORT_PROMPT_VERSION,
     REPORT_SECTION_SPECS,
+    WEEKLY_REPORT_JSON_SYSTEM_PROMPT,
     WEEKLY_REPORT_SYSTEM_PROMPT,
     render_report_section_prompt,
+    render_weekly_report_json_prompt,
 )
 from pfm.db.ai_report_memory_store import AIReportMemoryStore
+from pfm.db.ai_store import AIProviderStore
 from pfm.server.analytics_helper import build_analytics_summary
 
 if TYPE_CHECKING:
@@ -71,6 +74,35 @@ async def build_weekly_report_prompt_pack(
 
     analytics = await build_analytics_summary(repo, as_of, db_path=db_path)
     investor_memory = await AIReportMemoryStore(db_path).get()
+    active_provider = await AIProviderStore(db_path).get_active()
+    use_single_shot_json = bool(
+        active_provider
+        and active_provider.type == "deepseek"
+        and (active_provider.model or "").strip() == "deepseek-chat"
+    )
+
+    if use_single_shot_json:
+        prompt = render_weekly_report_json_prompt(analytics, investor_memory=investor_memory)
+        return {
+            "kind": "weekly_report_prompt_pack",
+            "prompt_version": REPORT_PROMPT_VERSION,
+            "as_of_date": as_of.isoformat(),
+            "workflow": "single_shot_json",
+            "includes_memory": True,
+            "system_prompt": WEEKLY_REPORT_JSON_SYSTEM_PROMPT,
+            "investor_memory": investor_memory,
+            "analytics_context": _extract_analytics_block(prompt),
+            "execution_notes": (
+                "Generate the full weekly report in one JSON object.",
+                "Use the exact section titles and order required by the production backend.",
+                "Return only a valid JSON object with a top-level sections array.",
+                "Explain fiat balance changes using Fiat balance bridge and Internal "
+                "conversions before FX or valuation explanations.",
+            ),
+            "prior_sections_policy": {},
+            "sections": (),
+        }
+
     sections = tuple(
         WeeklyReportPromptSection(
             index=index,

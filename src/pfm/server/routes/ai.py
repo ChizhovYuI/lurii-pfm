@@ -6,7 +6,7 @@ import asyncio
 import dataclasses
 import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
@@ -23,6 +23,12 @@ from pfm.server.connection_validation import (
 )
 from pfm.server.serializers import mask_secret
 from pfm.server.state import get_broadcaster, get_repo, get_runtime_state
+
+if TYPE_CHECKING:
+    from datetime import date
+
+    from pfm.ai.base import CommentaryResult
+    from pfm.db.repository import Repository
 
 logger = logging.getLogger(__name__)
 
@@ -59,16 +65,18 @@ async def get_commentary(request: web.Request) -> web.Response:
     stale = bool(prompt_version == REPORT_PROMPT_VERSION and cached_memory_hash != current_memory_hash)
     stale_reason = "AI report was generated before the report memory was updated." if stale else None
 
-    return web.json_response(
-        {
-            "date": analysis_date.isoformat(),
-            "text": text,
-            "model": parsed.get("model"),
-            "sections": sections if isinstance(sections, list) else [],
-            "stale": stale,
-            "stale_reason": stale_reason,
-        }
-    )
+    payload = {
+        "date": analysis_date.isoformat(),
+        "text": text,
+        "model": parsed.get("model"),
+        "sections": sections if isinstance(sections, list) else [],
+        "stale": stale,
+        "stale_reason": stale_reason,
+    }
+    if isinstance(parsed.get("generation_meta"), dict):
+        payload["generation_meta"] = parsed["generation_meta"]
+
+    return web.json_response(payload)
 
 
 @routes.get("/api/v1/ai/commentary/status")
@@ -81,6 +89,8 @@ async def commentary_status(request: web.Request) -> web.Response:
             "completed_sections": state.commentary_completed_sections,
             "total_sections": state.commentary_total_sections,
             "current_section": state.commentary_current_section,
+            "strategy": state.commentary_strategy,
+            "last_error": state.commentary_last_error,
         }
     )
 
@@ -97,10 +107,20 @@ async def generate_commentary(request: web.Request) -> web.Response:
     if not latest:
         return web.json_response({"error": "No snapshots available"}, status=404)
 
+    active_provider = await AIProviderStore(request.app["db_path"]).get_active()
+    is_single_shot = bool(
+        active_provider
+        and active_provider.type == "deepseek"
+        and (active_provider.model or "").strip() == "deepseek-chat"
+    )
     state.generating_commentary = True
     state.commentary_completed_sections = 0
-    state.commentary_total_sections = len(REPORT_SECTION_SPECS)
-    state.commentary_current_section = REPORT_SECTION_SPECS[0].title if REPORT_SECTION_SPECS else None
+    state.commentary_total_sections = 1 if is_single_shot else len(REPORT_SECTION_SPECS)
+    state.commentary_current_section = (
+        "Weekly Report" if is_single_shot else (REPORT_SECTION_SPECS[0].title if REPORT_SECTION_SPECS else None)
+    )
+    state.commentary_strategy = "deepseek_json_single_shot" if is_single_shot else "section_by_section"
+    state.commentary_last_error = None
     task = asyncio.create_task(_run_commentary(request.app))
     state.commentary_task = task
 
@@ -122,8 +142,9 @@ async def _run_commentary(app: web.Application) -> None:
             {
                 "type": "commentary_started",
                 "completed_sections": 0,
-                "total_sections": len(REPORT_SECTION_SPECS),
-                "current_section": REPORT_SECTION_SPECS[0].title if REPORT_SECTION_SPECS else None,
+                "total_sections": state.commentary_total_sections,
+                "current_section": state.commentary_current_section,
+                "strategy": state.commentary_strategy,
             }
         )
 
@@ -143,6 +164,7 @@ async def _run_commentary(app: web.Application) -> None:
                     "completed_sections": completed_sections,
                     "total_sections": total_sections,
                     "current_section": current_section,
+                    "strategy": state.commentary_strategy,
                 }
             )
 
@@ -152,44 +174,104 @@ async def _run_commentary(app: web.Application) -> None:
             progress_callback=_report_progress,
             investor_memory=memory,
         )
-
-        sections_dicts = [{"title": s.title, "description": s.description} for s in result.sections]
-
-        metric_payload: dict[str, Any] = {"text": result.text}
-        if result.model:
-            metric_payload["model"] = result.model
-        if sections_dicts:
-            metric_payload["sections"] = sections_dicts
-        metric_payload["prompt_version"] = REPORT_PROMPT_VERSION
-        metric_payload["memory_hash"] = hash_ai_report_memory(memory)
-
-        await repo.save_analytics_metric(
-            report_date,
-            "ai_commentary",
-            json.dumps(metric_payload),
+        await _handle_commentary_result(
+            app=app,
+            report_date=report_date,
+            memory=memory,
+            result=result,
         )
-
-        event: dict[str, Any] = {
-            "type": "commentary_completed",
-            "date": report_date.isoformat(),
-            "text": result.text,
-            "model": result.model,
-            "sections": sections_dicts,
-        }
-        if result.error:
-            event["error"] = result.error
-
-        await broadcaster.broadcast(event)
 
     except Exception as exc:
         logger.exception("AI commentary generation failed")
-        await broadcaster.broadcast({"type": "commentary_failed", "error": str(exc)})
+        state.commentary_last_error = str(exc)
+        await broadcaster.broadcast(
+            {
+                "type": "commentary_failed",
+                "error": str(exc),
+                "strategy": state.commentary_strategy,
+                "last_error": state.commentary_last_error,
+            }
+        )
     finally:
         state.generating_commentary = False
         state.commentary_task = None
         state.commentary_completed_sections = 0
         state.commentary_total_sections = 0
         state.commentary_current_section = None
+        if state.commentary_last_error is None:
+            state.commentary_strategy = None
+
+
+async def _handle_commentary_result(
+    *,
+    app: web.Application,
+    report_date: date,
+    memory: str,
+    result: CommentaryResult,
+) -> None:
+    repo = get_repo(app)
+    broadcaster = get_broadcaster(app)
+    state = get_runtime_state(app)
+    generation_meta = result.generation_meta if isinstance(result.generation_meta, dict) else {}
+    strategy_value = generation_meta.get("strategy")
+    strategy = strategy_value if isinstance(strategy_value, str) else None
+    state.commentary_strategy = strategy
+
+    if not result.sections:
+        state.commentary_last_error = result.error or "AI commentary generation failed."
+        await broadcaster.broadcast(
+            {
+                "type": "commentary_failed",
+                "strategy": strategy,
+                "error": state.commentary_last_error,
+                "reason": generation_meta.get("reason"),
+                "last_error": state.commentary_last_error,
+            }
+        )
+        return
+
+    sections_dicts = [{"title": s.title, "description": s.description} for s in result.sections]
+    await _save_commentary_metric(repo, report_date, memory, result, sections_dicts)
+    state.commentary_last_error = None
+
+    event: dict[str, Any] = {
+        "type": "commentary_completed",
+        "date": report_date.isoformat(),
+        "text": result.text,
+        "model": result.model,
+        "sections": sections_dicts,
+        "strategy": strategy,
+    }
+    if result.error:
+        event["error"] = result.error
+    if isinstance(result.generation_meta, dict):
+        event["generation_meta"] = result.generation_meta
+
+    await broadcaster.broadcast(event)
+
+
+async def _save_commentary_metric(
+    repo: Repository,
+    report_date: date,
+    memory: str,
+    result: CommentaryResult,
+    sections_dicts: list[dict[str, str]],
+) -> None:
+    metric_payload: dict[str, Any] = {"text": result.text}
+    if result.model:
+        metric_payload["model"] = result.model
+    if sections_dicts:
+        metric_payload["sections"] = sections_dicts
+    if isinstance(result.generation_meta, dict):
+        metric_payload["generation_meta"] = result.generation_meta
+    metric_payload["prompt_version"] = REPORT_PROMPT_VERSION
+    metric_payload["memory_hash"] = hash_ai_report_memory(memory)
+
+    await repo.save_analytics_metric(
+        report_date,
+        "ai_commentary",
+        json.dumps(metric_payload),
+    )
 
 
 # ── Legacy single-provider endpoints (backward compat) ──────────────

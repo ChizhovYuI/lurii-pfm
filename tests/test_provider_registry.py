@@ -2,12 +2,14 @@
 
 import pytest
 
+from pfm.ai import providers as _providers  # noqa: F401
 from pfm.ai.base import CommentaryResult, LLMProvider, ProviderName
 from pfm.ai.providers.registry import PROVIDER_REGISTRY, get_provider_names, register_provider
 
 
-def test_registry_contains_all_four_providers():
+def test_registry_contains_all_providers():
     assert ProviderName.gemini in PROVIDER_REGISTRY
+    assert ProviderName.deepseek in PROVIDER_REGISTRY
     assert ProviderName.ollama in PROVIDER_REGISTRY
     assert ProviderName.openrouter in PROVIDER_REGISTRY
     assert ProviderName.grok in PROVIDER_REGISTRY
@@ -16,6 +18,7 @@ def test_registry_contains_all_four_providers():
 def test_get_provider_names_sorted():
     names = get_provider_names()
     assert names == sorted(names)
+    assert "deepseek" in names
     assert "gemini" in names
     assert "ollama" in names
 

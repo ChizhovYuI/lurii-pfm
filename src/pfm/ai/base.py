@@ -11,6 +11,7 @@ class ProviderName(StrEnum):
     """Supported LLM provider identifiers."""
 
     gemini = "gemini"
+    deepseek = "deepseek"
     ollama = "ollama"
     openrouter = "openrouter"
     grok = "grok"
@@ -37,6 +38,10 @@ class CommentaryResult:
     model: str | None
     sections: tuple[CommentarySection, ...] = ()
     error: str | None = None
+    provider: str | None = None
+    finish_reason: str | None = None
+    reasoning_text: str | None = None
+    generation_meta: dict[str, object] | None = None
 
 
 def flatten_sections(sections: tuple[CommentarySection, ...]) -> str:
@@ -66,6 +71,17 @@ class LLMProvider(ABC):
         max_output_tokens: int = 4096,
     ) -> CommentaryResult:
         """Generate commentary text from prompts."""
+
+    async def generate_commentary_json(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        max_output_tokens: int = 4096,
+    ) -> CommentaryResult:
+        """Generate structured JSON commentary when supported by the provider."""
+        msg = f"{self.__class__.__name__} does not support JSON commentary generation"
+        raise NotImplementedError(msg)
 
     @abstractmethod
     async def close(self) -> None:

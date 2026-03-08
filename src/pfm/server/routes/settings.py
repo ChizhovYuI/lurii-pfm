@@ -33,6 +33,7 @@ _SECRET_FIELDS: frozenset[str] = frozenset({"api_key"})
 # Per-provider hints for the api_key field (where to obtain the key).
 _API_KEY_HINTS: dict[str, str] = {
     "gemini": "Get key at aistudio.google.com/apikey",
+    "deepseek": "Get key at platform.deepseek.com/api_keys",
     "openrouter": "Get key at openrouter.ai/keys",
     "grok": "Get key at console.x.ai",
 }

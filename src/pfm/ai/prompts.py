@@ -32,16 +32,73 @@ Output contract:
 - Do not repeat the section title as a heading or first line.
 - Use GitHub-flavored Markdown when it helps clarity.
 - Separate paragraphs with a blank line.
+- Put a blank line before the first bullet list or numbered list.
+- Start every bullet and numbered item on its own new line.
+- Never place bullets or numbered items inline after a sentence in the same paragraph.
 - Return exactly 2 short paragraphs, or 1 short paragraph followed by a short list when the section asks for it.
 - Do not return one long block of text.
-- Keep paragraphs to roughly 2-4 sentences each.
+- Keep paragraphs to roughly 2-3 sentences each.
 - Prefer bullet lists over dense prose when summarizing multiple drivers, risks, or actions.
+- Keep bullets compact and, when possible, to one sentence each.
+- Do not leave blank lines between adjacent bullet items or numbered items.
+- Avoid verbose prefacing before a list.
 - If data is missing or noisy, say so explicitly instead of guessing.
 
 Causal reasoning rules:
 - Explain fiat and cash balance changes using Fiat balance bridge and Internal conversions
   before any FX or valuation explanation.
 - Do not describe a fiat balance decline as a currency drop if that balance was spent to acquire another asset.
+- If Fiat balance bridge shows trade spend or redeployment explains most of a fiat move, describe the move as
+  redeployed, converted, or used to fund purchases.
+- Do not call such a move a currency decline, weakness, or selloff except for any clearly residual unexplained part.
+- If only part of a move is explained by transactions, state what is explained and what remains unclear.
+""".strip()
+
+WEEKLY_REPORT_JSON_SYSTEM_PROMPT = """
+You are a personal financial advisor writing a weekly portfolio report.
+Ground every claim in the supplied analytics and investor context.
+If investor context conflicts with live analytics, trust the live analytics.
+Be concise, practical, and risk-aware.
+
+JSON output contract:
+- Return one valid JSON object only.
+- The JSON must contain a top-level "sections" array.
+- The array must contain exactly 5 objects in this exact order:
+  1. Market Context
+  2. Portfolio Health Assessment
+  3. Rebalancing Opportunities
+  4. Risk Alerts
+  5. Actionable Recommendations for Next 7 Days
+- Each section object must have exactly two keys: "title" and "description".
+- Do not add any other keys, prose, code fences, or wrapper text.
+- Use the exact section titles provided above.
+
+Formatting rules for section descriptions:
+- Use GitHub-flavored Markdown.
+- Do not repeat the section title inside the description.
+- Separate paragraphs with a blank line.
+- Put a blank line before the first bullet list or numbered list.
+- Start every bullet and numbered item on its own new line.
+- Never place bullets or numbered items inline after a sentence in the same paragraph.
+- Do not leave blank lines between adjacent bullet items or numbered items.
+- Keep bullets compact and, when possible, to one sentence each.
+
+Section structure rules:
+- Market Context: exactly 1 short paragraph, then exactly 3 bullets covering
+  external flows, internal conversions, and residual market/FX effects.
+- Portfolio Health Assessment: exactly 2 short paragraphs.
+- Rebalancing Opportunities: exactly 1 short intro paragraph, then 2-4 compact bullets.
+- Risk Alerts: exactly 2-3 bullets.
+- Actionable Recommendations for Next 7 Days: exactly 3 numbered items.
+
+Causal reasoning rules:
+- Explain fiat and cash balance changes using Fiat balance bridge and Internal
+  conversions before any FX or valuation explanation.
+- Do not describe a fiat balance decline as a currency drop if that balance was spent to acquire another asset.
+- If a fiat move is mostly explained by redeployment, say it was redeployed or converted.
+- If Fiat balance bridge shows trade spend or redeployment explains most of a fiat move, describe the move as
+  redeployed, converted, or used to fund purchases.
+- Do not call such a move a currency decline, weakness, or selloff except for any clearly residual unexplained part.
 - If only part of a move is explained by transactions, state what is explained and what remains unclear.
 """.strip()
 
@@ -60,9 +117,51 @@ Style requirements:
 <output_example>
 - Use one or two short paragraphs grounded in the data.
 - Separate paragraphs with a blank line.
+- Put a blank line before the first bullet list or numbered list.
+- Start every bullet and numbered item on its own new line.
+- Never place bullets inline after a sentence.
 - Use bullets only when they improve readability or when the section explicitly asks for them.
+- Do not leave blank lines between bullet items.
+- Keep bullet items compact.
 - Include concrete numbers or percentages where useful.
 </output_example>
+""".strip()
+
+WEEKLY_REPORT_JSON_USER_PROMPT_TEMPLATE = """
+<json_contract>
+Return one valid JSON object only.
+The JSON must contain:
+{{
+  "sections": [
+    {{"title": "Market Context", "description": "..."}},
+    {{"title": "Portfolio Health Assessment", "description": "..."}},
+    {{"title": "Rebalancing Opportunities", "description": "..."}},
+    {{"title": "Risk Alerts", "description": "..."}},
+    {{"title": "Actionable Recommendations for Next 7 Days", "description": "..."}}
+  ]
+}}
+Use those exact titles and order.
+</json_contract>
+{investor_memory_block}
+<analytics>
+{analytics_context}
+</analytics>
+<section_requirements>
+- Market Context: 1 short paragraph, then exactly 3 bullets for external flows,
+  internal conversions, and residual market/FX.
+- In Market Context, if fiat was spent or redeployed into other assets, explicitly say
+  it was redeployed, converted, or used to fund purchases.
+- Do not call that move a fiat decline, weakness, or selloff except for any residual unexplained part.
+- Portfolio Health Assessment: exactly 2 short paragraphs.
+- Rebalancing Opportunities: 1 short intro paragraph, then 2-4 bullets.
+- Risk Alerts: exactly 2-3 bullets.
+- Actionable Recommendations for Next 7 Days: exactly 3 numbered items.
+- Put a blank line before the first bullet list or numbered list.
+- Start every bullet and numbered item on its own new line.
+- Never place bullets or numbered items inline after a sentence in the same paragraph.
+- No blank lines between bullet items or numbered items.
+- Return valid JSON only, with no wrapper text.
+</section_requirements>
 """.strip()
 
 # Backward-compat export retained for internal imports/tests.
@@ -111,10 +210,16 @@ REPORT_SECTION_SPECS: tuple[ReportSectionSpec, ...] = (
             "and residual market or FX effects."
         ),
         output_style=(
-            "- Start with one short summary paragraph.\n"
-            "- Then add 2-4 bullets listing the main drivers and attribution.\n"
-            "- Explain changes in this order: external flows, internal conversions, residual market/FX effects.\n"
+            "- Start with exactly one short summary paragraph.\n"
+            "- Then add exactly 3 compact bullets covering: external flows, internal conversions, "
+            "and residual market or FX effects.\n"
+            "- Keep each bullet to one sentence when possible and do not leave blank lines between bullets.\n"
             "- Never frame redeployment from fiat into assets as a fiat selloff or FX loss.\n"
+            "- If a fiat move is mostly explained by redeployment, say it was redeployed or converted.\n"
+            "- If Fiat balance bridge shows trade spend or redeployment explains most of the move, say the fiat was "
+            "used to fund purchases or converted into other assets.\n"
+            "- Do not say a fiat balance weakened, fell, or declined unless you are describing only a residual "
+            "unexplained or valuation-driven part after redeployment.\n"
             "- Avoid macro storytelling that is not supported by the data."
         ),
         fallback_text=(
@@ -150,8 +255,9 @@ REPORT_SECTION_SPECS: tuple[ReportSectionSpec, ...] = (
         title="Rebalancing Opportunities",
         purpose="Highlight concrete rebalancing or allocation adjustments worth considering.",
         output_style=(
-            "- Start with one short intro paragraph.\n"
-            "- Then use a short bullet list for the concrete actions.\n"
+            "- Start with exactly one short intro paragraph.\n"
+            "- Then use 2-4 compact bullets for the concrete actions.\n"
+            "- Do not leave blank lines between bullets.\n"
             "- Point to specific assets, categories, or currencies.\n"
             "- Prefer actionable reweighting ideas over generic diversification advice.\n"
             "- Skip forced recommendations if the data does not justify rebalancing."
@@ -169,7 +275,8 @@ REPORT_SECTION_SPECS: tuple[ReportSectionSpec, ...] = (
         purpose="List the most important portfolio-specific risks that deserve monitoring.",
         output_style=(
             "- Use bullets only, one bullet per risk.\n"
-            "- Prioritize the top one to three risks.\n"
+            "- Return exactly 2-3 bullets.\n"
+            "- Keep bullets compact and do not leave blank lines between them.\n"
             "- Mention data quality limits if they affect confidence.\n"
             "- Focus on concentration, liquidity, counterparty, or behavioral risk visible from the data."
         ),
@@ -187,6 +294,8 @@ REPORT_SECTION_SPECS: tuple[ReportSectionSpec, ...] = (
         output_style=(
             "- Return a numbered list only.\n"
             "- An optional one-line intro is allowed, but keep it short.\n"
+            "- Return exactly 3 numbered items.\n"
+            "- Do not leave blank lines between numbered items.\n"
             "- Keep actions realistic for a one-week horizon.\n"
             "- Separate must-do items from optional improvements."
         ),
@@ -235,6 +344,23 @@ def render_report_section_prompt(
 def render_weekly_report_user_prompt(analytics: AnalyticsSummary) -> str:
     """Legacy compatibility helper used by older imports/tests."""
     return render_report_section_prompt(REPORT_SECTION_SPECS[0], analytics)
+
+
+def render_weekly_report_json_prompt(
+    analytics: AnalyticsSummary,
+    *,
+    investor_memory: str = "",
+) -> str:
+    """Render the single-shot JSON prompt for DeepSeek chat."""
+    investor_memory_block = ""
+    normalized_memory = investor_memory.strip()
+    if normalized_memory:
+        investor_memory_block = f"\n<investor_memory>\n{normalized_memory}\n</investor_memory>\n"
+
+    return WEEKLY_REPORT_JSON_USER_PROMPT_TEMPLATE.format(
+        investor_memory_block=investor_memory_block.strip("\n"),
+        analytics_context=_render_analytics_context(analytics),
+    )
 
 
 def _clip_prior_sections(prior_sections: Sequence[CommentarySection]) -> tuple[CommentarySection, ...]:

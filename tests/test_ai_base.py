@@ -5,6 +5,7 @@ from pfm.ai.base import FALLBACK_COMMENTARY, CommentaryResult, LLMProvider, Prov
 
 def test_provider_name_enum_values():
     assert ProviderName.gemini == "gemini"
+    assert ProviderName.deepseek == "deepseek"
     assert ProviderName.ollama == "ollama"
     assert ProviderName.openrouter == "openrouter"
     assert ProviderName.grok == "grok"
@@ -19,6 +20,21 @@ def test_commentary_result_frozen():
 def test_commentary_result_none_model():
     result = CommentaryResult(text="fallback", model=None)
     assert result.model is None
+
+
+def test_commentary_result_supports_optional_generation_metadata():
+    result = CommentaryResult(
+        text="fallback",
+        model=None,
+        provider="deepseek",
+        finish_reason="length",
+        reasoning_text="thinking...",
+        generation_meta={"provider": "deepseek"},
+    )
+    assert result.provider == "deepseek"
+    assert result.finish_reason == "length"
+    assert result.reasoning_text == "thinking..."
+    assert result.generation_meta == {"provider": "deepseek"}
 
 
 def test_fallback_commentary_is_non_empty():

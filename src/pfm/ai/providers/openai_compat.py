@@ -71,15 +71,22 @@ class OpenAICompatibleProvider(LLMProvider):
         except APIError:
             error_msg = f"{self.name} API request failed"
             logger.warning("%s", error_msg, exc_info=True)
-            return CommentaryResult(text=FALLBACK_COMMENTARY, model=None, error=error_msg)
+            return CommentaryResult(text=FALLBACK_COMMENTARY, model=None, error=error_msg, provider=self.name)
 
         text = _extract_openai_text(response)
+        finish_reason = _extract_openai_finish_reason(response)
         if not text:
             error_msg = f"{self.name} API returned empty response"
             logger.warning("%s", error_msg)
-            return CommentaryResult(text=FALLBACK_COMMENTARY, model=None, error=error_msg)
+            return CommentaryResult(
+                text=FALLBACK_COMMENTARY,
+                model=None,
+                error=error_msg,
+                provider=self.name,
+                finish_reason=finish_reason,
+            )
 
-        return CommentaryResult(text=text, model=self._model)
+        return CommentaryResult(text=text, model=self._model, provider=self.name, finish_reason=finish_reason)
 
     async def close(self) -> None:
         """Close the underlying OpenAI client if owned."""
@@ -104,6 +111,17 @@ def _extract_openai_text(response: object) -> str:
                 parts.append(text.strip())
         return "\n".join(parts).strip()
     return ""
+
+
+def _extract_openai_finish_reason(response: object) -> str | None:
+    choices = _field_value(response, "choices")
+    if not isinstance(choices, list) or not choices:
+        return None
+
+    finish_reason = _field_value(choices[0], "finish_reason")
+    if isinstance(finish_reason, str) and finish_reason.strip():
+        return finish_reason.strip()
+    return None
 
 
 def _field_value(body: object, field: str) -> object | None:

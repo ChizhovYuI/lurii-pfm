@@ -1,10 +1,18 @@
-"""Pydantic response models for structured LLM output via instructor."""
+"""Pydantic models for structured LLM weekly report output."""
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from pfm.ai.base import CommentarySection
+
+EXPECTED_WEEKLY_REPORT_TITLES = (
+    "Market Context",
+    "Portfolio Health Assessment",
+    "Rebalancing Opportunities",
+    "Risk Alerts",
+    "Actionable Recommendations for Next 7 Days",
+)
 
 
 class ReportSection(BaseModel):
@@ -17,7 +25,23 @@ class ReportSection(BaseModel):
 class CommentaryResponse(BaseModel):
     """Structured response from an LLM for portfolio commentary."""
 
-    sections: list[ReportSection] = Field(min_length=1, max_length=10)
+    sections: list[ReportSection] = Field(min_length=5, max_length=5)
+
+    @field_validator("sections")
+    @classmethod
+    def _validate_section_titles(cls, sections: list[ReportSection]) -> list[ReportSection]:
+        titles = [section.title.strip() for section in sections]
+        if titles != list(EXPECTED_WEEKLY_REPORT_TITLES):
+            msg = "Weekly report sections must match the required titles and order."
+            raise ValueError(msg)
+        return sections
+
+    @model_validator(mode="after")
+    def _validate_non_empty_descriptions(self) -> CommentaryResponse:
+        if any(not section.description.strip() for section in self.sections):
+            msg = "Weekly report sections must have non-empty descriptions."
+            raise ValueError(msg)
+        return self
 
     def to_commentary_sections(self) -> tuple[CommentarySection, ...]:
         """Convert to the application's frozen dataclass format."""

@@ -8,9 +8,11 @@ from decimal import Decimal
 from pfm.ai.base import CommentarySection
 from pfm.ai.prompts import (
     REPORT_SECTION_SPECS,
+    WEEKLY_REPORT_JSON_SYSTEM_PROMPT,
     WEEKLY_REPORT_SYSTEM_PROMPT,
     AnalyticsSummary,
     render_report_section_prompt,
+    render_weekly_report_json_prompt,
 )
 
 
@@ -46,8 +48,13 @@ def test_prompt_templates_have_required_sections():
     assert "Return only the markdown body" in WEEKLY_REPORT_SYSTEM_PROMPT
     assert "Do not return JSON" in WEEKLY_REPORT_SYSTEM_PROMPT
     assert "Separate paragraphs with a blank line" in WEEKLY_REPORT_SYSTEM_PROMPT
+    assert "Put a blank line before the first bullet list or numbered list" in WEEKLY_REPORT_SYSTEM_PROMPT
+    assert "Start every bullet and numbered item on its own new line" in WEEKLY_REPORT_SYSTEM_PROMPT
     assert "Do not return one long block of text" in WEEKLY_REPORT_SYSTEM_PROMPT
+    assert "Do not leave blank lines between adjacent bullet items or numbered items" in WEEKLY_REPORT_SYSTEM_PROMPT
     assert "Fiat balance bridge and Internal conversions" in WEEKLY_REPORT_SYSTEM_PROMPT
+    assert "used to fund purchases" in WEEKLY_REPORT_SYSTEM_PROMPT
+    assert "currency decline, weakness, or selloff" in WEEKLY_REPORT_SYSTEM_PROMPT
     assert [spec.title for spec in REPORT_SECTION_SPECS] == [
         "Market Context",
         "Portfolio Health Assessment",
@@ -55,6 +62,16 @@ def test_prompt_templates_have_required_sections():
         "Risk Alerts",
         "Actionable Recommendations for Next 7 Days",
     ]
+    assert "Return one valid JSON object only" in WEEKLY_REPORT_JSON_SYSTEM_PROMPT
+    assert 'The JSON must contain a top-level "sections" array' in WEEKLY_REPORT_JSON_SYSTEM_PROMPT
+    assert (
+        "Do not leave blank lines between adjacent bullet items or numbered items" in WEEKLY_REPORT_JSON_SYSTEM_PROMPT
+    )
+    assert "Start every bullet and numbered item on its own new line" in WEEKLY_REPORT_JSON_SYSTEM_PROMPT
+    json_prompt_lower = WEEKLY_REPORT_JSON_SYSTEM_PROMPT.lower()
+    assert "fiat balance bridge" in json_prompt_lower
+    assert "internal conversions" in json_prompt_lower
+    assert "used to fund purchases" in json_prompt_lower
 
 
 def test_render_report_section_prompt_formats_analytics():
@@ -75,6 +92,12 @@ def test_render_report_section_prompt_formats_analytics():
     assert "Recent transactions (audit trail, last 7 days)" in prompt
     assert "<analytics>" in prompt
     assert "<investor_memory>" not in prompt
+    assert "external flows, internal conversions" in prompt
+    assert "residual market or FX effects" in prompt
+    assert "used to fund purchases or converted into other assets" in prompt
+    assert "weakened, fell, or declined" in prompt
+    assert "Do not leave blank lines between bullet items" in prompt
+    assert "Never place bullets inline after a sentence" in prompt
 
 
 def test_render_report_section_prompt_includes_investor_memory():
@@ -106,3 +129,29 @@ def test_render_report_section_prompt_includes_clipped_prior_sections():
     assert "## Portfolio Health Assessment" in prompt
     assert "## Rebalancing Opportunities" in prompt
     assert "..." in prompt
+
+
+def test_render_weekly_report_json_prompt_includes_exact_titles_and_json_contract():
+    prompt = render_weekly_report_json_prompt(_sample_analytics())
+
+    assert "Return one valid JSON object only." in prompt
+    assert '"title": "Market Context"' in prompt
+    assert '"title": "Portfolio Health Assessment"' in prompt
+    assert '"title": "Rebalancing Opportunities"' in prompt
+    assert '"title": "Risk Alerts"' in prompt
+    assert '"title": "Actionable Recommendations for Next 7 Days"' in prompt
+    assert "No blank lines between bullet items or numbered items." in prompt
+    assert "Start every bullet and numbered item on its own new line." in prompt
+    assert "used to fund purchases" in prompt
+    assert "fiat decline, weakness, or selloff" in prompt
+    assert "<analytics>" in prompt
+
+
+def test_render_weekly_report_json_prompt_includes_investor_memory():
+    prompt = render_weekly_report_json_prompt(
+        _sample_analytics(),
+        investor_memory="## Investment Profile\nGoal: FIRE.",
+    )
+
+    assert "<investor_memory>" in prompt
+    assert "Goal: FIRE." in prompt

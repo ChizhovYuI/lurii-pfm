@@ -20,6 +20,12 @@ _LEGACY_GEMINI_KEY = "gemini_api_key"
 
 _ALL_LEGACY_KEYS = (_PROVIDER_KEY, _API_KEY_KEY, _MODEL_KEY, _BASE_URL_KEY)
 
+_DEEPSEEK_PROVIDER_TYPE = "deepseek"
+_OPENROUTER_PROVIDER_TYPE = "openrouter"
+_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+_DEEPSEEK_REASONER_MODEL = "deepseek-reasoner"
+_DEEPSEEK_CHAT_MODEL = "deepseek-chat"
+
 # Backward-compat alias
 AIConfig = AIProvider
 
@@ -33,6 +39,7 @@ class AIProviderStore:
     async def _ensure_table(self) -> None:
         """Ensure schema exists via Alembic."""
         await init_db(Path(self._db_path))
+        await self._migrate_legacy_deepseek_provider()
 
     async def add(
         self,
@@ -53,6 +60,11 @@ class AIProviderStore:
             msg = "AI provider type cannot be empty."
             raise ValueError(msg)
 
+        provider_type = _normalize_provider_type(provider_type, base_url=base_url)
+        api_key = api_key.strip()
+        model = _normalize_provider_model(provider_type, model)
+        base_url = _normalize_provider_base_url(provider_type, base_url)
+
         await self._ensure_table()
 
         async with aiosqlite.connect(self._db_path) as db:
@@ -67,15 +79,15 @@ class AIProviderStore:
                 "base_url = excluded.base_url, "
                 "active = excluded.active, "
                 "updated_at = datetime('now')",
-                (provider_type, api_key.strip(), model.strip(), base_url.strip(), int(active)),
+                (provider_type, api_key, model, base_url, int(active)),
             )
             await db.commit()
 
         return AIProvider(
             type=provider_type,
-            api_key=api_key.strip(),
-            model=model.strip(),
-            base_url=base_url.strip(),
+            api_key=api_key,
+            model=model,
+            base_url=base_url,
             active=active,
         )
 
@@ -216,6 +228,9 @@ class AIProviderStore:
                 api_key = values.get(_API_KEY_KEY, "").strip()
                 model = values.get(_MODEL_KEY, "").strip()
                 base_url = values.get(_BASE_URL_KEY, "").strip()
+                provider = _normalize_provider_type(provider, base_url=base_url)
+                model = _migrate_deepseek_model_from_legacy(provider, model)
+                base_url = _normalize_provider_base_url(provider, base_url)
                 await self.add(provider, api_key=api_key, model=model, base_url=base_url, active=True)
                 logger.info("Migrated ai_provider settings to ai_providers table (provider=%s).", provider)
                 return True
@@ -237,6 +252,100 @@ class AIProviderStore:
         await self.add("gemini", api_key=api_key, active=True)
         logger.info("Migrated legacy gemini_api_key to ai_providers table.")
         return True
+
+    async def _migrate_legacy_deepseek_provider(self) -> None:
+        """Rewrite legacy DeepSeek-via-OpenRouter configs to the dedicated provider."""
+        async with aiosqlite.connect(self._db_path) as db:
+            row = await (
+                await db.execute(
+                    "SELECT api_key, model, base_url, active FROM ai_providers WHERE type = ?",
+                    (_OPENROUTER_PROVIDER_TYPE,),
+                )
+            ).fetchone()
+            if row is None:
+                return
+
+            openrouter_base_url = _normalize_provider_base_url(_OPENROUTER_PROVIDER_TYPE, str(row[2] or ""))
+            if not _is_deepseek_base_url(openrouter_base_url):
+                return
+
+            deepseek_row = await (
+                await db.execute(
+                    "SELECT api_key, model, base_url, active FROM ai_providers WHERE type = ?",
+                    (_DEEPSEEK_PROVIDER_TYPE,),
+                )
+            ).fetchone()
+
+            migrated_model = _migrate_deepseek_model_from_legacy(_DEEPSEEK_PROVIDER_TYPE, str(row[1] or ""))
+            migrated_base_url = _normalize_provider_base_url(_DEEPSEEK_PROVIDER_TYPE, openrouter_base_url)
+            api_key = str(row[0] or "").strip()
+            active = bool(row[3])
+
+            if deepseek_row is None:
+                await db.execute(
+                    "UPDATE ai_providers SET type = ?, model = ?, base_url = ?, updated_at = datetime('now') "
+                    "WHERE type = ?",
+                    (_DEEPSEEK_PROVIDER_TYPE, migrated_model, migrated_base_url, _OPENROUTER_PROVIDER_TYPE),
+                )
+                await db.commit()
+                logger.info("Migrated legacy DeepSeek config from openrouter to deepseek provider.")
+                return
+
+            merged_api_key = str(deepseek_row[0] or "").strip() or api_key
+            merged_model = str(deepseek_row[1] or "").strip() or migrated_model
+            merged_base_url = _normalize_provider_base_url(
+                _DEEPSEEK_PROVIDER_TYPE,
+                str(deepseek_row[2] or "").strip() or migrated_base_url,
+            )
+            merged_active = bool(deepseek_row[3]) or active
+
+            await db.execute(
+                "UPDATE ai_providers SET api_key = ?, model = ?, base_url = ?, "
+                "active = ?, updated_at = datetime('now') "
+                "WHERE type = ?",
+                (merged_api_key, merged_model, merged_base_url, int(merged_active), _DEEPSEEK_PROVIDER_TYPE),
+            )
+            await db.execute("DELETE FROM ai_providers WHERE type = ?", (_OPENROUTER_PROVIDER_TYPE,))
+            await db.commit()
+            logger.info("Merged legacy DeepSeek OpenRouter config into deepseek provider.")
+
+
+def _normalize_provider_type(provider_type: str, *, base_url: str = "") -> str:
+    normalized = provider_type.strip()
+    if normalized == _OPENROUTER_PROVIDER_TYPE and _is_deepseek_base_url(base_url):
+        return _DEEPSEEK_PROVIDER_TYPE
+    return normalized
+
+
+def _normalize_provider_model(provider_type: str, model: str) -> str:
+    normalized = model.strip()
+    if provider_type == _DEEPSEEK_PROVIDER_TYPE and not normalized:
+        return _DEEPSEEK_CHAT_MODEL
+    return normalized
+
+
+def _migrate_deepseek_model_from_legacy(provider_type: str, model: str) -> str:
+    normalized = _normalize_provider_model(provider_type, model)
+    if provider_type == _DEEPSEEK_PROVIDER_TYPE and normalized == _DEEPSEEK_REASONER_MODEL:
+        logger.info(
+            "Migrating legacy DeepSeek model %s to recommended default %s for weekly reports.",
+            _DEEPSEEK_REASONER_MODEL,
+            _DEEPSEEK_CHAT_MODEL,
+        )
+        return _DEEPSEEK_CHAT_MODEL
+    return normalized
+
+
+def _normalize_provider_base_url(provider_type: str, base_url: str) -> str:
+    normalized = base_url.strip().rstrip("/")
+    if provider_type == _DEEPSEEK_PROVIDER_TYPE:
+        return normalized or _DEEPSEEK_BASE_URL
+    return normalized
+
+
+def _is_deepseek_base_url(base_url: str) -> bool:
+    normalized = base_url.strip().rstrip("/")
+    return normalized == _DEEPSEEK_BASE_URL
 
 
 # Backward-compat alias
