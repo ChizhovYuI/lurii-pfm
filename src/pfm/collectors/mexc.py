@@ -94,7 +94,7 @@ class MexcCollector(BaseCollector):
 
     async def fetch_raw_balances(self) -> list[RawBalance]:
         """Fetch spot balances from account endpoint."""
-        raw: list[RawBalance] = []
+        spot_raw: list[RawBalance] = []
 
         # Spot wallet balances.
         data = await self._get("/api/v3/account")
@@ -107,7 +107,7 @@ class MexcCollector(BaseCollector):
             if not ticker or amount == 0:
                 continue
 
-            raw.append(
+            spot_raw.append(
                 RawBalance(
                     asset=ticker,
                     amount=amount,
@@ -116,11 +116,12 @@ class MexcCollector(BaseCollector):
             )
 
         # Contract account balances via OPEN-API auth.
-        raw.extend(await self._fetch_contract_raw())
+        contract_raw = await self._fetch_contract_raw()
 
         # Earn positions are separate APY-bearing raw balances when available.
         earn_raw = await self._fetch_earn_raw()
-        raw.extend(earn_raw)
+        spot_raw = self._net_spot_balances_against_earn(spot_raw, earn_raw)
+        raw = [*spot_raw, *contract_raw, *earn_raw]
 
         logger.info("MEXC: found %d non-zero balances", len(raw))
         return raw
@@ -179,6 +180,52 @@ class MexcCollector(BaseCollector):
         if raw:
             logger.info("MEXC: found %d earn positions via %s", len(raw), _EARN_POSITION_PATH)
         return raw
+
+    def _net_spot_balances_against_earn(
+        self,
+        spot_raw: list[RawBalance],
+        earn_raw: list[RawBalance],
+    ) -> list[RawBalance]:
+        if not spot_raw or not earn_raw:
+            return spot_raw
+
+        earn_by_asset: dict[str, Decimal] = {}
+        for raw in earn_raw:
+            earn_by_asset[raw.asset] = earn_by_asset.get(raw.asset, Decimal(0)) + raw.amount
+
+        adjusted: list[RawBalance] = []
+        for raw in spot_raw:
+            earn_amount = earn_by_asset.get(raw.asset, Decimal(0))
+            if earn_amount <= 0:
+                adjusted.append(raw)
+                continue
+
+            if raw.amount < earn_amount:
+                logger.warning(
+                    "MEXC: earn amount %s for %s exceeds spot amount %s; leaving spot balance unchanged",
+                    earn_amount,
+                    raw.asset,
+                    raw.amount,
+                )
+                adjusted.append(raw)
+                continue
+
+            remaining = raw.amount - earn_amount
+            if remaining <= 0:
+                logger.info("MEXC: netted full spot balance for %s against earn positions", raw.asset)
+                continue
+
+            adjusted.append(
+                RawBalance(
+                    asset=raw.asset,
+                    amount=remaining,
+                    apy=raw.apy,
+                    raw_json=raw.raw_json,
+                    price=raw.price,
+                    date=raw.date,
+                )
+            )
+        return adjusted
 
     def _build_earn_raw(
         self,

@@ -513,6 +513,32 @@ async def test_mexc_fetch_earn_with_apy(pricing):
     assert usdc.apy == Decimal("0.125")
 
 
+async def test_mexc_fetch_earn_nets_out_spot_balance(pricing):
+    pricing._set_cache("USDC", Decimal(1))
+    collector = MexcCollector(pricing, api_key="key", api_secret="secret")
+    collector._get_openapi = AsyncMock(return_value={"success": True, "data": []})  # type: ignore[method-assign]
+
+    async def mock_get(path, **kwargs):
+        if path == "/api/v3/account":
+            return _mock_response({"balances": [{"asset": "USDC", "free": "500", "locked": "0"}]})
+        if path == "/api/v3/asset/earn/position":
+            return _mock_response([{"asset": "USDC", "amount": "250", "apy": "12.5"}])
+        return _mock_response([])
+
+    collector._client.get = mock_get  # type: ignore[assignment]
+
+    snapshots = await collector.fetch_balances()
+
+    assert len(snapshots) == 2
+    assert sum((snapshot.amount for snapshot in snapshots), Decimal(0)) == Decimal("500")
+    earn_snap = next(snapshot for snapshot in snapshots if snapshot.apy > 0)
+    spot_snap = next(snapshot for snapshot in snapshots if snapshot.apy == 0)
+    assert earn_snap.asset == "USDC"
+    assert earn_snap.amount == Decimal("250")
+    assert spot_snap.asset == "USDC"
+    assert spot_snap.amount == Decimal("250")
+
+
 # ── OKX ───────────────────────────────────────────────────────────────
 
 
