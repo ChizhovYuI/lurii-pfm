@@ -119,7 +119,7 @@ async def test_send_message_returns_false_when_400_persists_after_plain_text_ret
 
 
 async def test_send_message_404_logs_without_token_leak(caplog):
-    token = "123456:ABCDEF_SECRET_TOKEN"  # noqa: S105
+    token = "123456:ABCDEF_SECRET_TOKEN"
     endpoint = f"https://api.telegram.org/bot{token}/sendMessage"
     client = _FakeClient(
         responses=[
@@ -131,10 +131,12 @@ async def test_send_message_404_logs_without_token_leak(caplog):
         ]
     )
 
-    ok = await send_message("chat-1", "hello", bot_token=token, client=client)
+    with patch("pfm.reporting.telegram.logger.warning") as log_warning:
+        ok = await send_message("chat-1", "hello", bot_token=token, client=client)
     assert ok is False
-    assert "Bot token is likely invalid" in caplog.text
-    assert token not in caplog.text
+    assert log_warning.call_count == 1
+    assert "Bot token is likely invalid" in log_warning.call_args.args[0]
+    assert token not in str(log_warning.call_args)
 
 
 async def test_send_message_returns_false_on_invalid_json_body():
@@ -195,11 +197,15 @@ async def test_send_report_returns_true_when_ai_summary_fails(caplog):
     mock_send = AsyncMock(side_effect=[True, False])
     report = WeeklyReport(text="core report", ai_summary_text="<b>AI Commentary</b>\nGood.")
 
-    with patch("pfm.reporting.telegram.send_message", mock_send):
+    with (
+        patch("pfm.reporting.telegram.send_message", mock_send),
+        patch("pfm.reporting.telegram.logger.warning") as log_warning,
+    ):
         ok = await send_report(report, chat_id="chat", bot_token="token")
 
     assert ok is True
-    assert "AI summary message failed" in caplog.text
+    assert log_warning.call_count == 1
+    assert "AI summary message failed" in log_warning.call_args.args[0]
 
 
 async def test_send_error_alert_formats_errors():

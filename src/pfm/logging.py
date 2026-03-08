@@ -31,6 +31,13 @@ def setup_logging(level: str = "INFO") -> None:
     handler.addFilter(_SecretRedactingFilter())
 
     root = logging.getLogger()
+    preserved_handlers = [
+        existing
+        for existing in root.handlers
+        if type(existing).__module__.startswith("_pytest.logging") or type(existing).__name__ == "LogCaptureHandler"
+    ]
     root.handlers.clear()
+    for existing in preserved_handlers:
+        root.addHandler(existing)
     root.addHandler(handler)
     root.setLevel(level.upper())

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import httpx
 from google.genai import errors
@@ -208,9 +209,7 @@ def test_field_value_from_object():
     assert _field_value(obj, "missing") is None
 
 
-def test_log_token_usage_with_usage_metadata(caplog):
-    import logging
-
+def test_log_token_usage_with_usage_metadata():
     resp = SimpleNamespace(
         usage_metadata=SimpleNamespace(
             prompt_token_count=100,
@@ -218,7 +217,8 @@ def test_log_token_usage_with_usage_metadata(caplog):
             total_token_count=150,
         )
     )
-    with caplog.at_level(logging.INFO):
+    with patch("pfm.ai.providers.gemini.logger.info") as log_info:
         _log_token_usage(resp, model="gemini-2.5-pro")
-    assert "gemini_usage" in caplog.text
-    assert "prompt_tokens=100" in caplog.text
+    assert log_info.call_count == 1
+    assert "gemini_usage" in log_info.call_args.args[0]
+    assert log_info.call_args.args[1:] == ("gemini-2.5-pro", 100, 50, 150)

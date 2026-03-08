@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from aiohttp import web
 
@@ -37,7 +37,8 @@ RUNTIME_STATE = web.AppKey("runtime_state", ServerRuntimeState)
 
 def get_runtime_state(app: web.Application) -> ServerRuntimeState:
     """Return the mutable runtime state container for the aiohttp app."""
-    return cast(ServerRuntimeState, app[RUNTIME_STATE])
+    state: ServerRuntimeState = app[RUNTIME_STATE]
+    return state
 
 
 def get_repo(app: web.Application) -> Repository:

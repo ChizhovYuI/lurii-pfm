@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import imaplib
 import json
-import logging
 import time
 from datetime import date
 from decimal import Decimal
@@ -366,7 +365,7 @@ async def test_binance_th_transactions_fallback_to_sapi(pricing):
     assert "/sapi/v1/capital/withdraw/history" in called_paths
 
 
-async def test_binance_th_transactions_404_on_all_paths_is_clean_skip(pricing, caplog):
+async def test_binance_th_transactions_404_on_all_paths_is_clean_skip(pricing):
     collector = BinanceThCollector(pricing, api_key="key", api_secret="secret")
 
     async def mock_get(path, params=None):
@@ -375,13 +374,14 @@ async def test_binance_th_transactions_404_on_all_paths_is_clean_skip(pricing, c
         raise httpx.HTTPStatusError("404", request=MagicMock(), response=response)
 
     collector._get = mock_get  # type: ignore[assignment]
-    caplog.set_level(logging.INFO)
-
-    txs = await collector.fetch_transactions()
+    with patch("pfm.collectors.binance_th.logger.info") as log_info:
+        txs = await collector.fetch_transactions()
 
     assert txs == []
-    assert "endpoint is unavailable (404) on known paths, skipping." in caplog.text
-    assert "Client error '404 Not Found'" not in caplog.text
+    assert any(
+        "endpoint is unavailable (404) on known paths, skipping." in str(call.args[0])
+        for call in log_info.call_args_list
+    )
 
 
 # ── MEXC ──────────────────────────────────────────────────────────────

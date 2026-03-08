@@ -2,14 +2,34 @@
 
 import logging
 
+import pytest
+
 from pfm.logging import _SecretRedactingFilter, setup_logging
+
+
+@pytest.fixture(autouse=True)
+def restore_root_logger():
+    root = logging.getLogger()
+    original_handlers = list(root.handlers)
+    original_level = root.level
+    try:
+        yield
+    finally:
+        root.handlers.clear()
+        for handler in original_handlers:
+            root.addHandler(handler)
+        root.setLevel(original_level)
 
 
 def test_setup_logging_configures_root_logger():
     setup_logging("DEBUG")
     root = logging.getLogger()
     assert root.level == logging.DEBUG
-    assert len(root.handlers) == 1
+    assert any(
+        isinstance(handler, logging.StreamHandler)
+        and any(isinstance(filter_, _SecretRedactingFilter) for filter_ in handler.filters)
+        for handler in root.handlers
+    )
 
 
 def test_setup_logging_info_level():

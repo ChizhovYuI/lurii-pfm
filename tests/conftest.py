@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -45,3 +46,20 @@ def pricing() -> PricingService:
 def _no_daemon(monkeypatch: pytest.MonkeyPatch) -> None:
     """Prevent tests from proxying to a running daemon."""
     monkeypatch.setattr("pfm.server.client.is_daemon_reachable", lambda *_a, **_kw: False)
+
+
+@pytest.fixture(autouse=True)
+def _restore_logging_state():
+    """Keep global logging mutations from leaking between tests."""
+    root = logging.getLogger()
+    original_handlers = list(root.handlers)
+    original_level = root.level
+    original_disabled = logging.root.manager.disable
+    try:
+        yield
+    finally:
+        root.handlers.clear()
+        for handler in original_handlers:
+            root.addHandler(handler)
+        root.setLevel(original_level)
+        logging.disable(original_disabled)
