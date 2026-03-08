@@ -16,25 +16,22 @@ from pfm.ai.providers.registry import register_provider
 
 logger = logging.getLogger(__name__)
 
-GEMINI_MODELS: tuple[str, ...] = (
-    "gemini-2.5-pro",
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
-)
+GEMINI_MODELS: tuple[str, ...] = ("gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite")
 GEMINI_MAX_RETRIES = 3
 GEMINI_BASE_BACKOFF_SECONDS = 2.0
 GEMINI_MAX_BACKOFF_SECONDS = 120.0
 GEMINI_TOKEN_ESTIMATE_CHARS = 4
 GEMINI_RATE_LIMIT_STATE_FILE = Path("data/gemini_last_request_at.txt")
 HTTP_TOO_MANY_REQUESTS = 429
+HTTP_UNAVAILABLE = 503
 
 
 @register_provider
 class GeminiProvider(LLMProvider):
-    """Gemini provider with model failover chain and rate limiting."""
+    """Gemini provider with rate limiting."""
 
     name = "gemini"
-    description = "Google Gemini — free tier with rate limits, model failover chain"
+    description = "Google Gemini — free tier with rate limits"
     default_model = "gemini-2.5-pro"
     models: tuple[tuple[str, str], ...] = (
         ("gemini-2.5-pro", "best quality, strict rate limits"),
@@ -58,11 +55,17 @@ class GeminiProvider(LLMProvider):
     def _models(self) -> tuple[str, ...]:
         if self._model:
             return (self._model,)
-        return GEMINI_MODELS
+        return (self.default_model,)
+
+    @property
+    def _validation_model(self) -> str:
+        if self._model:
+            return self._model
+        return self.default_model
 
     async def validate_connection(self) -> None:
         """Validate API key and selected model without generating commentary."""
-        await self._client.aio.models.get(model=self._models[0])
+        await self._client.aio.models.get(model=self._validation_model)
 
     async def generate_commentary(
         self,
@@ -83,27 +86,25 @@ class GeminiProvider(LLMProvider):
             max_output_tokens,
         )
 
-        for index, model in enumerate(models):
-            response = await _request_commentary_response(
-                self._client.aio.models,
-                user_prompt,
-                system_prompt=system_prompt,
-                model=model,
-                max_output_tokens=max_output_tokens,
-                input_size=(prompt_chars, prompt_tokens_est),
-                enforce_local_rate_limit=self._owns_client and index == 0,
-            )
-            if response is None:
-                logger.warning("Gemini model %s failed. Trying next fallback model.", model)
-                continue
+        model = models[0]
+        response = await _request_commentary_response(
+            self._client.aio.models,
+            user_prompt,
+            system_prompt=system_prompt,
+            model=model,
+            max_output_tokens=max_output_tokens,
+            input_size=(prompt_chars, prompt_tokens_est),
+            enforce_local_rate_limit=self._owns_client,
+        )
+        if response is None:
+            return CommentaryResult(text="", model=model, error=f"Gemini model {model} failed")
 
-            _log_token_usage(response, model=model)
-            text = _extract_text(response)
-            if text:
-                return CommentaryResult(text=text, model=model)
-            logger.warning("Gemini model %s returned empty text. Trying next fallback model.", model)
-
-        return CommentaryResult(text="", model=None, error="All Gemini models failed (rate limited or error)")
+        _log_token_usage(response, model=model)
+        text = _extract_text(response)
+        if text:
+            return CommentaryResult(text=text, model=model)
+        logger.warning("Gemini model %s returned empty text.", model)
+        return CommentaryResult(text="", model=model, error=f"Gemini model {model} returned empty text")
 
     async def close(self) -> None:
         """Close the SDK client if owned."""
@@ -175,11 +176,13 @@ async def _request_commentary_response(  # noqa: PLR0913
         status = exc.code
         if status == HTTP_TOO_MANY_REQUESTS:
             logger.warning(
-                "Gemini rate limited (HTTP 429). Switching to next model immediately. "
-                "input_chars=%d input_tokens_est=%d",
+                "Gemini rate limited (HTTP 429). input_chars=%d input_tokens_est=%d",
                 prompt_chars,
                 prompt_tokens_est,
             )
+            return None
+        if status == HTTP_UNAVAILABLE:
+            logger.warning("Gemini API temporarily unavailable (HTTP 503) for model %s.", model)
             return None
         logger.warning("Gemini API request failed with HTTP %d. Using fallback commentary.", status)
         return None

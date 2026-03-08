@@ -73,33 +73,14 @@ async def test_gemini_provider_success():
     assert len(fake_models.calls) == 1
 
 
-async def test_gemini_provider_model_failover():
+async def test_gemini_provider_error_returns_failure():
     response = httpx.Response(
         500,
         json={"error": {"message": "boom"}},
         request=httpx.Request("POST", "https://example.invalid/gemini"),
     )
     error = errors.ServerError(500, {"error": {"status": "INTERNAL", "message": "boom"}}, response)
-    fake_models = _FakeAsyncModels(responses=[error, SimpleNamespace(text="Recovered.")])
-    fake_client = _FakeClient(aio=_FakeAioClient(models=fake_models))
-
-    provider = GeminiProvider(api_key="key", client=fake_client)  # type: ignore[arg-type]
-    result = await provider.generate_commentary("sys", "usr")
-    await provider.close()
-
-    assert result.text == "Recovered."
-    assert result.model == GEMINI_MODELS[1]
-    assert len(fake_models.calls) == 2
-
-
-async def test_gemini_provider_all_models_fail():
-    response = httpx.Response(
-        500,
-        json={"error": {"message": "boom"}},
-        request=httpx.Request("POST", "https://example.invalid/gemini"),
-    )
-    error = errors.ServerError(500, {"error": {"status": "INTERNAL", "message": "boom"}}, response)
-    fake_models = _FakeAsyncModels(responses=[error] * len(GEMINI_MODELS))
+    fake_models = _FakeAsyncModels(responses=[error])
     fake_client = _FakeClient(aio=_FakeAioClient(models=fake_models))
 
     provider = GeminiProvider(api_key="key", client=fake_client)  # type: ignore[arg-type]
@@ -107,26 +88,42 @@ async def test_gemini_provider_all_models_fail():
     await provider.close()
 
     assert result.text == ""
-    assert result.model is None
+    assert result.model == GEMINI_MODELS[0]
+    assert result.error == f"Gemini model {GEMINI_MODELS[0]} failed"
+    assert len(fake_models.calls) == 1
 
 
-async def test_gemini_provider_429_switches_model():
-    limited_response = httpx.Response(
-        429,
-        headers={"Retry-After": "0.01"},
-        request=httpx.Request("POST", "https://example.invalid/gemini"),
-    )
-    limited_error = errors.ClientError(429, {"error": {"status": "RESOURCE_EXHAUSTED"}}, limited_response)
-    success = SimpleNamespace(text="Recovered after retry.")
-    fake_models = _FakeAsyncModels(responses=[limited_error, success])
+async def test_gemini_provider_empty_text_returns_failure():
+    fake_models = _FakeAsyncModels(responses=[SimpleNamespace(text="")])
     fake_client = _FakeClient(aio=_FakeAioClient(models=fake_models))
 
     provider = GeminiProvider(api_key="key", client=fake_client)  # type: ignore[arg-type]
     result = await provider.generate_commentary("sys", "usr")
     await provider.close()
 
-    assert result.text == "Recovered after retry."
-    assert len(fake_models.calls) == 2
+    assert result.text == ""
+    assert result.model == GEMINI_MODELS[0]
+    assert result.error == f"Gemini model {GEMINI_MODELS[0]} returned empty text"
+
+
+async def test_gemini_provider_429_returns_failure():
+    limited_response = httpx.Response(
+        429,
+        headers={"Retry-After": "0.01"},
+        request=httpx.Request("POST", "https://example.invalid/gemini"),
+    )
+    limited_error = errors.ClientError(429, {"error": {"status": "RESOURCE_EXHAUSTED"}}, limited_response)
+    fake_models = _FakeAsyncModels(responses=[limited_error])
+    fake_client = _FakeClient(aio=_FakeAioClient(models=fake_models))
+
+    provider = GeminiProvider(api_key="key", client=fake_client)  # type: ignore[arg-type]
+    result = await provider.generate_commentary("sys", "usr")
+    await provider.close()
+
+    assert result.text == ""
+    assert result.model == GEMINI_MODELS[0]
+    assert result.error == f"Gemini model {GEMINI_MODELS[0]} failed"
+    assert len(fake_models.calls) == 1
 
 
 async def test_gemini_provider_single_model():
@@ -140,6 +137,26 @@ async def test_gemini_provider_single_model():
     assert result.text == "Single model."
     assert result.model == "gemini-2.5-flash"
     assert fake_models.calls[0]["model"] == "gemini-2.5-flash"
+
+
+async def test_gemini_provider_explicit_flash_stays_on_selected_model():
+    limited_response = httpx.Response(
+        429,
+        headers={"Retry-After": "0.01"},
+        request=httpx.Request("POST", "https://example.invalid/gemini"),
+    )
+    limited_error = errors.ClientError(429, {"error": {"status": "RESOURCE_EXHAUSTED"}}, limited_response)
+    fake_models = _FakeAsyncModels(responses=[limited_error])
+    fake_client = _FakeClient(aio=_FakeAioClient(models=fake_models))
+
+    provider = GeminiProvider(api_key="key", model="gemini-2.5-flash", client=fake_client)  # type: ignore[arg-type]
+    result = await provider.generate_commentary("sys", "usr")
+    await provider.close()
+
+    assert result.text == ""
+    assert result.model == "gemini-2.5-flash"
+    assert result.error == "Gemini model gemini-2.5-flash failed"
+    assert [call["model"] for call in fake_models.calls] == ["gemini-2.5-flash"]
 
 
 async def test_gemini_provider_closes_owned_client():
