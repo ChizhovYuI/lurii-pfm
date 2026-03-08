@@ -23,13 +23,27 @@ async def test_init_db(tmp_path):
     db_path = tmp_path / "init_test.db"
     await init_db(db_path)
     assert db_path.exists()
+    async with aiosqlite.connect(str(db_path)) as db:
+        version_row = await (await db.execute("SELECT version_num FROM alembic_version")).fetchone()
+    assert version_row is not None
+    assert version_row[0] == "e7b9c1d4a5f0"
 
 
 async def test_init_db_migrates_legacy_transactions_schema(tmp_path):
     db_path = tmp_path / "legacy.db"
     async with aiosqlite.connect(str(db_path)) as db:
-        await db.execute(
+        await db.executescript(
             """
+            CREATE TABLE snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                source TEXT NOT NULL,
+                asset TEXT NOT NULL,
+                amount TEXT NOT NULL,
+                usd_value TEXT NOT NULL,
+                raw_json TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
             CREATE TABLE transactions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 date TEXT NOT NULL,
@@ -43,7 +57,31 @@ async def test_init_db_migrates_legacy_transactions_schema(tmp_path):
                 tx_id TEXT NOT NULL DEFAULT '',
                 raw_json TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
-            )
+            );
+            CREATE TABLE prices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                asset TEXT NOT NULL,
+                currency TEXT NOT NULL,
+                price TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'coingecko',
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE analytics_cache (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                metric_name TEXT NOT NULL,
+                metric_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE sources (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                type TEXT NOT NULL,
+                credentials TEXT NOT NULL DEFAULT '{}',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
             """
         )
         await db.executemany(
@@ -67,12 +105,123 @@ async def test_init_db_migrates_legacy_transactions_schema(tmp_path):
         assert "source_name" in columns
         assert "trade_side" in columns
 
+        index_row = await (
+            await db.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'index' "
+                "AND name = 'idx_transactions_source_name_tx_id_unique'"
+            )
+        ).fetchone()
         cursor = await db.execute(
             "SELECT source, source_name, tx_id, COUNT(*) FROM transactions GROUP BY source, source_name, tx_id"
         )
         rows = await cursor.fetchall()
 
-    assert rows == [("wise", "wise", "dup", 1)]
+    assert rows == [("wise", "", "dup", 2)]
+    assert index_row is not None
+    assert "source_name != ''" in str(index_row[0])
+
+
+async def test_init_db_keeps_existing_transaction_source_name_rows_without_backfill(tmp_path):
+    db_path = tmp_path / "legacy_projected_collision.db"
+    async with aiosqlite.connect(str(db_path)) as db:
+        await db.executescript(
+            """
+            CREATE TABLE snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                source TEXT NOT NULL,
+                asset TEXT NOT NULL,
+                amount TEXT NOT NULL,
+                usd_value TEXT NOT NULL,
+                raw_json TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE transactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                source TEXT NOT NULL,
+                tx_type TEXT NOT NULL,
+                asset TEXT NOT NULL,
+                amount TEXT NOT NULL,
+                usd_value TEXT NOT NULL,
+                counterparty_asset TEXT NOT NULL DEFAULT '',
+                counterparty_amount TEXT NOT NULL DEFAULT '0',
+                tx_id TEXT NOT NULL DEFAULT '',
+                raw_json TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                source_name TEXT NOT NULL DEFAULT '',
+                trade_side TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE sources (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                type TEXT NOT NULL,
+                credentials TEXT NOT NULL DEFAULT '{}',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE prices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                asset TEXT NOT NULL,
+                currency TEXT NOT NULL,
+                price TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'coingecko',
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE analytics_cache (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                metric_name TEXT NOT NULL,
+                metric_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            """
+        )
+        await db.execute("CREATE INDEX idx_transactions_source_name_date ON transactions(source_name, date)")
+        await db.execute(
+            "INSERT INTO sources (name, type, credentials, enabled) VALUES (?, ?, ?, ?)",
+            ("lobstr-main", "lobstr", "{}", 1),
+        )
+        await db.executemany(
+            (
+                "INSERT INTO transactions "
+                "(date, source, source_name, tx_type, asset, amount, usd_value, tx_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+            ),
+            [
+                ("2024-01-10", "lobstr", "lobstr", "deposit", "XLM", "10", "10", "dup"),
+                ("2024-01-10", "lobstr", "lobstr-main", "deposit", "XLM", "10", "10", "dup"),
+            ],
+        )
+        await db.commit()
+
+    await init_db(db_path)
+
+    async with aiosqlite.connect(str(db_path)) as db:
+        index_row = await (
+            await db.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'index' "
+                "AND name = 'idx_transactions_source_name_tx_id_unique'"
+            )
+        ).fetchone()
+        cursor = await db.execute(
+            "SELECT source, source_name, tx_id, COUNT(*) "
+            "FROM transactions GROUP BY source, source_name, tx_id ORDER BY source_name, tx_id"
+        )
+        rows = await cursor.fetchall()
+
+    assert rows == [
+        ("lobstr", "lobstr", "dup", 1),
+        ("lobstr", "lobstr-main", "dup", 1),
+    ]
+    assert index_row is not None
+    assert "source_name != ''" in str(index_row[0])
 
 
 async def test_save_and_get_snapshot(repo):
@@ -669,6 +818,41 @@ async def test_init_db_migrates_legacy_snapshots_with_source_name(tmp_path):
                 enabled INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
+            CREATE TABLE transactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                source TEXT NOT NULL,
+                tx_type TEXT NOT NULL,
+                asset TEXT NOT NULL,
+                amount TEXT NOT NULL,
+                usd_value TEXT NOT NULL,
+                counterparty_asset TEXT NOT NULL DEFAULT '',
+                counterparty_amount TEXT NOT NULL DEFAULT '0',
+                tx_id TEXT NOT NULL DEFAULT '',
+                raw_json TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE prices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                asset TEXT NOT NULL,
+                currency TEXT NOT NULL,
+                price TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'coingecko',
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE analytics_cache (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                metric_name TEXT NOT NULL,
+                metric_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
             """
         )
         await db.execute(
@@ -685,6 +869,9 @@ async def test_init_db_migrates_legacy_snapshots_with_source_name(tmp_path):
 
     async with Repository(db_path) as migrated_repo:
         rows = await migrated_repo.get_snapshots_by_date(date(2024, 1, 15))
+    async with aiosqlite.connect(db_path) as db:
+        stored_row = await (await db.execute("SELECT source_name FROM snapshots")).fetchone()
     assert len(rows) == 1
     assert rows[0].source == "wise"
-    assert rows[0].source_name == "wise-main"
+    assert rows[0].source_name == "wise"
+    assert stored_row == ("",)

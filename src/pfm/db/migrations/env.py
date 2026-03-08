@@ -80,6 +80,11 @@ def run_migrations_online() -> None:
     and associate a connection with the context.
 
     """
+    provided_connection = config.attributes.get("connection")
+    if provided_connection is not None:
+        _run_migrations_with_connection(provided_connection)
+        return
+
     section = config.get_section(config.config_ini_section, {})
     connectable: Engine = engine_from_config(
         section,

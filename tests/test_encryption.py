@@ -13,7 +13,7 @@ from pfm.db.encryption import (
     migrate_to_encrypted,
     validate_key_hex,
 )
-from pfm.db.models import SCHEMA_SQL, init_db
+from pfm.db.models import init_db
 from pfm.server.app import create_app
 
 # 256-bit test key (64 hex chars)
@@ -161,8 +161,18 @@ async def test_init_encrypted_db_migrates_legacy_transactions_schema(tmp_path):
     db = tmp_path / "legacy-enc.db"
     conn = connect_encrypted(db, TEST_KEY)
     async with conn:
-        await conn.execute(
+        await conn.executescript(
             """
+            CREATE TABLE snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                source TEXT NOT NULL,
+                asset TEXT NOT NULL,
+                amount TEXT NOT NULL,
+                usd_value TEXT NOT NULL,
+                raw_json TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
             CREATE TABLE transactions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 date TEXT NOT NULL,
@@ -176,7 +186,31 @@ async def test_init_encrypted_db_migrates_legacy_transactions_schema(tmp_path):
                 tx_id TEXT NOT NULL DEFAULT '',
                 raw_json TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
-            )
+            );
+            CREATE TABLE prices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                asset TEXT NOT NULL,
+                currency TEXT NOT NULL,
+                price TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'coingecko',
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE analytics_cache (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                metric_name TEXT NOT NULL,
+                metric_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE sources (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                type TEXT NOT NULL,
+                credentials TEXT NOT NULL DEFAULT '{}',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
             """
         )
         await conn.executemany(
@@ -201,12 +235,20 @@ async def test_init_encrypted_db_migrates_legacy_transactions_schema(tmp_path):
         assert "source_name" in columns
         assert "trade_side" in columns
 
+        index_row = await (
+            await conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'index' "
+                "AND name = 'idx_transactions_source_name_tx_id_unique'"
+            )
+        ).fetchone()
         cursor = await conn.execute(
             "SELECT source, source_name, tx_id, COUNT(*) FROM transactions GROUP BY source, source_name, tx_id"
         )
         rows = await cursor.fetchall()
 
-    assert rows == [("wise", "wise", "dup", 1)]
+    assert rows == [("wise", "", "dup", 2)]
+    assert index_row is not None
+    assert "source_name != ''" in str(index_row[0])
 
 
 # ── migrate_to_encrypted ───────────────────────────────────────────
@@ -218,8 +260,8 @@ async def test_migrate_to_encrypted(tmp_path):
     enc_path = tmp_path / "encrypted.db"
 
     # Create plain DB with schema + data
+    await init_db(plain_path)
     plain = sqlite3.connect(str(plain_path))
-    plain.executescript(SCHEMA_SQL)
     plain.execute(
         "INSERT INTO sources (name, type, credentials) VALUES (?, ?, ?)",
         ("test-src", "okx", '{"key": "val"}'),

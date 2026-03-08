@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import aiosqlite
 
-from pfm.db.models import AIProvider
-
-if TYPE_CHECKING:
-    from pathlib import Path
+from pfm.db.models import AIProvider, init_db
 
 logger = logging.getLogger(__name__)
 
@@ -34,20 +31,8 @@ class AIProviderStore:
         self._db_path = str(db_path)
 
     async def _ensure_table(self) -> None:
-        """Create the ai_providers table if it doesn't exist."""
-        async with aiosqlite.connect(self._db_path) as db:
-            await db.execute(
-                "CREATE TABLE IF NOT EXISTS ai_providers ("
-                "type TEXT PRIMARY KEY, "
-                "api_key TEXT NOT NULL DEFAULT '', "
-                "model TEXT NOT NULL DEFAULT '', "
-                "base_url TEXT NOT NULL DEFAULT '', "
-                "active INTEGER NOT NULL DEFAULT 0, "
-                "created_at TEXT NOT NULL DEFAULT (datetime('now')), "
-                "updated_at TEXT NOT NULL DEFAULT (datetime('now'))"
-                ")"
-            )
-            await db.commit()
+        """Ensure schema exists via Alembic."""
+        await init_db(Path(self._db_path))
 
     async def add(
         self,

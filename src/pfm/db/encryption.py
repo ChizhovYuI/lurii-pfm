@@ -47,25 +47,10 @@ def connect_db(db_path: str | Path, *, key_hex: str | None = None) -> aiosqlite.
 
 
 async def init_encrypted_db(path: Path, key_hex: str) -> None:
-    """Create an encrypted DB with the full application schema."""
-    from pfm.db.models import (
-        SCHEMA_SQL,
-        _migrate_snapshots_apy,
-        _migrate_snapshots_price,
-        _migrate_snapshots_source_name,
-        _migrate_transactions_source_name_and_trade_side,
-    )
+    """Create or upgrade an encrypted DB via Alembic."""
+    from pfm.db.migrations.runner import run_migrations
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = connect_encrypted(path, key_hex)
-    async with conn:
-        await conn.executescript(SCHEMA_SQL)
-        await _migrate_snapshots_price(conn)
-        await _migrate_snapshots_apy(conn)
-        await _migrate_snapshots_source_name(conn)
-        await _migrate_transactions_source_name_and_trade_side(conn)
-        await conn.execute("DROP TABLE IF EXISTS raw_responses")
-        await conn.commit()
+    await run_migrations(path, key_hex=key_hex)
     logger.info("Initialized encrypted database at %s", path)
 
 
@@ -94,4 +79,5 @@ async def migrate_to_encrypted(plain_path: Path, encrypted_path: Path, key_hex: 
     finally:
         conn.close()
 
+    await init_encrypted_db(encrypted_path, key_hex)
     logger.info("Migrated plain DB %s -> encrypted %s", plain_path, encrypted_path)

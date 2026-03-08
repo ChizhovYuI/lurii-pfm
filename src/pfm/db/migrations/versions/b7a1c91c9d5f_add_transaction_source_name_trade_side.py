@@ -32,23 +32,9 @@ def upgrade() -> None:
             batch_op.add_column(sa.Column("trade_side", sa.Text(), nullable=False, server_default=sa.text("''")))
         if "idx_transactions_source_name_date" not in indexes:
             batch_op.create_index("idx_transactions_source_name_date", ["source_name", "date"], unique=False)
-
-    op.execute("UPDATE transactions SET source_name = source WHERE source_name = '' OR source_name IS NULL")
-    op.execute(
-        "UPDATE transactions "
-        "SET source_name = (SELECT MIN(name) FROM sources WHERE type = transactions.source) "
-        "WHERE (source_name = source OR source_name = '' OR source_name IS NULL) "
-        "  AND (SELECT COUNT(*) FROM sources WHERE type = transactions.source) = 1"
-    )
-    op.execute(
-        "DELETE FROM transactions "
-        "WHERE tx_id != '' AND id NOT IN ("
-        "  SELECT MIN(id) FROM transactions WHERE tx_id != '' GROUP BY source_name, tx_id"
-        ")"
-    )
     op.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_source_name_tx_id_unique "
-        "ON transactions(source_name, tx_id) WHERE tx_id != ''"
+        "ON transactions(source_name, tx_id) WHERE tx_id != '' AND source_name != ''"
     )
 
 

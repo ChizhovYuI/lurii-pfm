@@ -31,17 +31,6 @@ def upgrade() -> None:
         if "idx_snapshots_source_name" not in indexes:
             batch_op.create_index("idx_snapshots_source_name", ["source_name"], unique=False)
 
-    # If there is exactly one configured source for a type, align to its instance name.
-    op.execute(
-        "UPDATE snapshots "
-        "SET source_name = (SELECT MIN(name) FROM sources WHERE type = snapshots.source) "
-        "WHERE (source_name = '' OR source_name IS NULL) "
-        "  AND (SELECT COUNT(*) FROM sources WHERE type = snapshots.source) = 1"
-    )
-
-    # Rows that cannot be mapped unambiguously are invalid for the new schema.
-    op.execute("DELETE FROM snapshots WHERE source_name = '' OR source_name IS NULL")
-
 
 def downgrade() -> None:
     """Downgrade schema."""
