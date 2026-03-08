@@ -10,8 +10,11 @@ from pydantic import SecretStr
 
 from pfm.ai.analyst import (
     GEMINI_MAX_OUTPUT_TOKENS,
+    _build_section_input_context,
     _escape_newlines_in_json_strings,
     _finalize_commentary_text,
+    _has_readable_structure,
+    _is_valid_section_body,
     _parse_sections,
     generate_commentary,
     generate_commentary_with_model,
@@ -32,14 +35,57 @@ def _sample_analytics() -> AnalyticsSummary:
         allocation_by_category='[{"category":"crypto","usd_value":"700","percentage":"70"}]',
         currency_exposure='[{"currency":"USD","usd_value":"900","percentage":"90"}]',
         risk_metrics='{"concentration_percentage":"70"}',
-        recent_transactions='[{"date":"2024-01-14","source":"wise","type":"withdrawal","asset":"GBP","amount":"5000"}]',
+        recent_transactions=(
+            '[{"date":"2024-01-14","source":"ibkr-main","type":"trade","asset":"VWRA","amount":"37.20",'
+            '"usd_value":"5000","counterparty_asset":"GBP","counterparty_amount":"5000","trade_side":"buy"}]'
+        ),
+        internal_conversions=(
+            '[{"date":"2024-01-14","source":"ibkr-main","from_asset":"GBP","from_amount":"5000","to_asset":"VWRA",'
+            '"to_amount":"37.20","usd_value":"5000","trade_side":"buy"}]'
+        ),
+        currency_flow_bridge=(
+            '[{"currency":"GBP","previous_amount":"5000","current_amount":"0","delta_amount":"-5000",'
+            '"delta_usd_value":"-6400","explained_by_external_inflows":"0","explained_by_external_outflows":"0",'
+            '"explained_by_income":"0","explained_by_trade_spend":"5000","explained_by_trade_proceeds":"0",'
+            '"residual_unexplained":"0"}]'
+        ),
     )
 
 
 def _section_text(index: int) -> str:
+    spec = REPORT_SECTION_SPECS[index - 1]
+    if spec.structure == "two_paragraphs_or_bullets":
+        return (
+            "Weekly movement was driven mainly by internal redeployment and recent flows rather than by pure FX moves. "
+            "The data points to asset purchases funded from existing cash balances.\n\n"
+            "- GBP appears to have been redeployed into VWRA purchases.\n"
+            "- Remaining valuation noise looks secondary to the conversion itself."
+        )
+    if spec.structure == "two_paragraphs":
+        return (
+            "The portfolio remains diversified across several buckets, although concentration still sits above an "
+            "ideal benchmark. The largest positions are meaningful but not isolated from the rest of the portfolio.\n\n"
+            "Liquidity and yield exposure still fit the stated profile, with cash, stablecoins, and income-bearing "
+            "positions providing flexibility without fully crowding out long-term growth assets."
+        )
+    if spec.structure == "paragraph_then_bullets":
+        return (
+            "Only a few rebalancing ideas are justified by the current data, and they mostly relate to concentration "
+            "and cash deployment.\n\n"
+            "- Trim oversized fiat concentration when it is no longer intentional.\n"
+            "- Redeploy excess cash into target long-term holdings gradually."
+        )
+    if spec.structure == "bullets_only":
+        return (
+            "- GBP concentration remains elevated relative to the rest of the portfolio.\n"
+            "- DeFi yield exposure adds counterparty and smart-contract risk.\n"
+            "- Stale source data can reduce confidence in short-term conclusions."
+        )
     return (
-        f"Section {index} summary uses portfolio data and concrete numbers from the analytics. "
-        f"This is long enough to satisfy the section validator for section {index}."
+        "Weekly priorities should stay practical and limited to the clearest actions.\n\n"
+        "1. Review the biggest concentration risk.\n"
+        "2. Confirm liquidity buffers remain adequate.\n"
+        "3. Execute only the highest-conviction rebalance."
     )
 
 
@@ -202,6 +248,8 @@ async def test_generate_commentary_with_model_falls_back_for_one_failed_section(
     assert len(result.sections) == 5
     assert result.sections[2].title == "Rebalancing Opportunities"
     assert result.sections[2].description == REPORT_SECTION_SPECS[2].fallback_text
+    assert "\n\n" in result.sections[2].description
+    assert "- " in result.sections[2].description
     assert result.error == "Some sections used fallback text: Rebalancing Opportunities."
 
 
@@ -260,6 +308,97 @@ async def test_generate_commentary_with_model_reports_progress(tmp_path):
     assert progress[0] == (0, 5, "Market Context")
     assert progress[1] == (1, 5, "Portfolio Health Assessment")
     assert progress[-1] == (4, 5, "Actionable Recommendations for Next 7 Days")
+
+
+def test_has_readable_structure_rejects_long_single_paragraph():
+    text = (
+        "This is one long block of text without any blank lines or bullets and it keeps going to describe market "
+        "context, portfolio moves, and conclusions in a single dense paragraph that should be rejected by the "
+        "section validator because it is not readable enough for the weekly report output contract."
+    )
+    assert _has_readable_structure(text, "two_paragraphs_or_bullets") is False
+
+
+def test_has_readable_structure_accepts_two_paragraphs():
+    text = "Paragraph one is concise and grounded in the numbers.\n\nParagraph two explains the cause clearly."
+    assert _has_readable_structure(text, "two_paragraphs") is True
+
+
+def test_has_readable_structure_accepts_paragraph_and_bullets():
+    text = "Short intro paragraph.\n\n- First action\n- Second action"
+    assert _has_readable_structure(text, "paragraph_then_bullets") is True
+
+
+def test_is_valid_section_body_rejects_market_context_without_conversion_language():
+    context = _build_section_input_context(_sample_analytics())
+    body = (
+        "GBP dropped sharply this week and created most of the portfolio weakness. This was a major negative move for "
+        "the currency and it reduced the portfolio materially.\n\nThe portfolio should monitor this decline closely."
+    )
+    assert _is_valid_section_body(body, REPORT_SECTION_SPECS[0], context) is False
+
+
+async def test_generate_commentary_with_model_retry_fixes_structure_and_conversion_reasoning(tmp_path):
+    db_path = tmp_path / "semantic-retry.db"
+    await init_db(db_path)
+    await AIProviderStore(db_path).add("gemini", api_key="key", active=True)
+
+    responses = [
+        CommentaryResult(
+            text=(
+                "GBP dropped sharply this week and created most of the portfolio weakness. This was a major negative "
+                "move for the currency and it reduced the portfolio materially without any notable rebalancing."
+            ),
+            model="gemini-2.5-flash",
+        ),
+        CommentaryResult(text=_section_text(1), model="gemini-2.5-flash"),
+        CommentaryResult(text=_section_text(2), model="gemini-2.5-flash"),
+        CommentaryResult(text=_section_text(3), model="gemini-2.5-flash"),
+        CommentaryResult(text=_section_text(4), model="gemini-2.5-flash"),
+        CommentaryResult(text=_section_text(5), model="gemini-2.5-flash"),
+    ]
+
+    mock_provider = MagicMock()
+    mock_provider.generate_commentary = AsyncMock(side_effect=responses)
+    mock_provider.close = AsyncMock()
+
+    settings = MagicMock()
+    settings.database_path = db_path
+    settings.gemini_api_key = SecretStr("")
+
+    with (
+        patch("pfm.ai.analyst.get_settings", return_value=settings),
+        patch("pfm.ai.analyst._build_provider", return_value=mock_provider),
+    ):
+        result = await generate_commentary_with_model(_sample_analytics(), db_path=db_path)
+
+    assert "redeployed" in result.sections[0].description.lower()
+    assert mock_provider.generate_commentary.await_count == 6
+
+
+async def test_generate_commentary_with_model_fallback_text_stays_structured(tmp_path):
+    db_path = tmp_path / "structured-fallback.db"
+    await init_db(db_path)
+    await AIProviderStore(db_path).add("gemini", api_key="key", active=True)
+
+    mock_provider = MagicMock()
+    mock_provider.generate_commentary = AsyncMock(
+        side_effect=[CommentaryResult(text="[]", model="gemini-2.5-flash") for _ in range(10)]
+    )
+    mock_provider.close = AsyncMock()
+
+    settings = MagicMock()
+    settings.database_path = db_path
+    settings.gemini_api_key = SecretStr("")
+
+    with (
+        patch("pfm.ai.analyst.get_settings", return_value=settings),
+        patch("pfm.ai.analyst._build_provider", return_value=mock_provider),
+    ):
+        result = await generate_commentary_with_model(_sample_analytics(), db_path=db_path)
+
+    assert result.sections == ()
+    assert result.text == FALLBACK_COMMENTARY
 
 
 def test_finalize_commentary_text_preserves_incomplete_tail_line():

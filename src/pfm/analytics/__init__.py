@@ -12,6 +12,7 @@ from pfm.analytics.portfolio import (
     compute_data_warnings,
     compute_net_worth,
     compute_risk_metrics,
+    is_fiat_asset,
 )
 from pfm.analytics.yield_tracker import YieldResult, compute_yield
 
@@ -29,4 +30,5 @@ __all__ = [
     "compute_net_worth",
     "compute_risk_metrics",
     "compute_yield",
+    "is_fiat_asset",
 ]

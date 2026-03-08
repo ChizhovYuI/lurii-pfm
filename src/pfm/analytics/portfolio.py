@@ -77,6 +77,11 @@ class RiskMetrics:
     hhi_index: Decimal
 
 
+def is_fiat_asset(asset: str) -> bool:
+    """Return whether an asset ticker should be treated as fiat."""
+    return asset.upper() in _FIAT_ASSETS
+
+
 async def compute_net_worth(repo: Repository, snapshot_date: date) -> Decimal:
     """Compute total USD value of all snapshots for a date."""
     snapshots = await repo.get_snapshots_resolved(snapshot_date)
@@ -170,7 +175,7 @@ async def compute_currency_exposure(repo: Repository, snapshot_date: date) -> li
 
     for snap in snapshots:
         asset = snap.asset.upper()
-        if asset in _FIAT_ASSETS:
+        if is_fiat_asset(asset):
             by_currency[asset] = by_currency.get(asset, Decimal(0)) + snap.usd_value
 
     rows = [

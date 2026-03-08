@@ -17,6 +17,7 @@ REPORT_PROMPT_VERSION = 2
 _PRIOR_SECTION_DESCRIPTION_LIMIT = 300
 _PRIOR_SECTION_DESCRIPTION_TRUNCATED_LIMIT = _PRIOR_SECTION_DESCRIPTION_LIMIT - 3
 _PRIOR_SECTIONS_TOTAL_LIMIT = 1200
+_SIGNIFICANT_VALUE_THRESHOLD = Decimal(10)
 
 WEEKLY_REPORT_SYSTEM_PROMPT = """
 You are a personal financial advisor writing one section of a weekly portfolio report.
@@ -30,7 +31,17 @@ Output contract:
 - Do not wrap the answer in code fences.
 - Do not repeat the section title as a heading or first line.
 - Use GitHub-flavored Markdown when it helps clarity.
+- Separate paragraphs with a blank line.
+- Return exactly 2 short paragraphs, or 1 short paragraph followed by a short list when the section asks for it.
+- Do not return one long block of text.
+- Keep paragraphs to roughly 2-4 sentences each.
 - If data is missing or noisy, say so explicitly instead of guessing.
+
+Causal reasoning rules:
+- Explain fiat and cash balance changes using Fiat balance bridge and Internal conversions
+  before any FX or valuation explanation.
+- Do not describe a fiat balance decline as a currency drop if that balance was spent to acquire another asset.
+- If only part of a move is explained by transactions, state what is explained and what remains unclear.
 """.strip()
 
 REPORT_SECTION_USER_PROMPT_TEMPLATE = """
@@ -46,8 +57,9 @@ Style requirements:
 </analytics>
 {prior_sections_block}
 <output_example>
-- One or two short paragraphs grounded in the data.
-- Use bullets only when they improve readability.
+- Use one or two short paragraphs grounded in the data.
+- Separate paragraphs with a blank line.
+- Use bullets only when they improve readability or when the section explicitly asks for them.
 - Include concrete numbers or percentages where useful.
 </output_example>
 """.strip()
@@ -71,6 +83,9 @@ class AnalyticsSummary:
     earn_positions: str = ""
     weekly_pnl: str = ""
     recent_transactions: str = ""
+    capital_flows: str = ""
+    internal_conversions: str = ""
+    currency_flow_bridge: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +97,7 @@ class ReportSectionSpec:
     purpose: str
     output_style: str
     fallback_text: str
+    structure: str
     max_output_tokens: int = 1400
 
 
@@ -89,72 +105,94 @@ REPORT_SECTION_SPECS: tuple[ReportSectionSpec, ...] = (
     ReportSectionSpec(
         slug="market-context",
         title="Market Context",
-        purpose="Summarize what the portfolio data suggests about the last week and current positioning backdrop.",
+        purpose=(
+            "Summarize what changed this week by separating external flows, internal conversions or redeployment, "
+            "and residual market or FX effects."
+        ),
         output_style=(
-            "- Explain performance drivers from the portfolio itself.\n"
-            "- Mention material 7-day PnL, top movers, or transaction context.\n"
+            "- Start with one short summary paragraph.\n"
+            "- Then add either a second short paragraph on cause attribution or 2-4 bullets listing the main drivers.\n"
+            "- Explain changes in this order: external flows, internal conversions, residual market/FX effects.\n"
+            "- Never frame redeployment from fiat into assets as a fiat selloff or FX loss.\n"
             "- Avoid macro storytelling that is not supported by the data."
         ),
         fallback_text=(
-            "Recent portfolio movement was mixed. Use the 7-day PnL, top movers, and recent transfers as the main "
-            "context for the week, and treat missing market data cautiously."
+            "Portfolio movement this week should be explained first through external flows and internal "
+            "redeployment.\n\n"
+            "If a fiat balance fell because it funded purchases, treat that as conversion into other assets rather "
+            "than currency weakness. Mention any remaining unexplained move separately."
         ),
+        structure="two_paragraphs_or_bullets",
     ),
     ReportSectionSpec(
         slug="portfolio-health",
         title="Portfolio Health Assessment",
         purpose="Assess diversification, liquidity, income mix, and whether the portfolio matches the stated profile.",
         output_style=(
-            "- Focus on concentration, cash buffer, category balance, and yield exposure.\n"
-            "- Call out strengths before weaknesses.\n"
-            "- Relate the assessment to the investor context when available."
+            "- Return at least two short paragraphs.\n"
+            "- The first paragraph should assess diversification, concentration, and balance.\n"
+            "- The second paragraph should assess liquidity, yield exposure, and fit with the investor profile.\n"
+            "- Call out strengths before weaknesses."
         ),
         fallback_text=(
-            "Portfolio health should be assessed through concentration risk, liquidity buffer, source diversification, "
-            "and whether current holdings still match the intended long-term strategy."
+            "Portfolio health should be assessed through concentration risk, diversification, and whether current "
+            "holdings still match the intended long-term strategy.\n\n"
+            "Liquidity, income exposure, and portfolio fit should then be reviewed against the investor's stated goals "
+            "and risk profile."
         ),
+        structure="two_paragraphs",
     ),
     ReportSectionSpec(
         slug="rebalancing",
         title="Rebalancing Opportunities",
         purpose="Highlight concrete rebalancing or allocation adjustments worth considering.",
         output_style=(
+            "- Start with one short intro paragraph.\n"
+            "- Then use a short bullet list for the concrete actions.\n"
             "- Point to specific assets, categories, or currencies.\n"
             "- Prefer actionable reweighting ideas over generic diversification advice.\n"
             "- Skip forced recommendations if the data does not justify rebalancing."
         ),
         fallback_text=(
-            "Review outsized positions, category drift, and cash deployment opportunities. Rebalance only where the "
-            "current allocation materially diverges from the intended risk profile."
+            "Review only the clearest allocation drifts and deployment gaps.\n\n"
+            "- Focus first on outsized positions or idle cash.\n"
+            "- Rebalance only where the current allocation materially diverges from the intended risk profile."
         ),
+        structure="paragraph_then_bullets",
     ),
     ReportSectionSpec(
         slug="risk-alerts",
         title="Risk Alerts",
         purpose="List the most important portfolio-specific risks that deserve monitoring.",
         output_style=(
+            "- Use bullets only, one bullet per risk.\n"
             "- Prioritize the top one to three risks.\n"
             "- Mention data quality limits if they affect confidence.\n"
             "- Focus on concentration, liquidity, counterparty, or behavioral risk visible from the data."
         ),
         fallback_text=(
-            "The main risks to monitor are concentration, liquidity, and any source-specific exposure that could cause "
-            "outsized damage if one position or platform moves sharply."
+            "- Monitor the largest concentration and liquidity risks first.\n"
+            "- Watch for source-specific or counterparty exposure that could cause outsized damage.\n"
+            "- Note any data quality gaps that reduce confidence in the analysis."
         ),
+        structure="bullets_only",
     ),
     ReportSectionSpec(
         slug="next-7-days",
         title="Actionable Recommendations for Next 7 Days",
         purpose="End with a short practical checklist for the coming week.",
         output_style=(
-            "- Use a short numbered list when helpful.\n"
+            "- Return a numbered list only.\n"
+            "- An optional one-line intro is allowed, but keep it short.\n"
             "- Keep actions realistic for a one-week horizon.\n"
             "- Separate must-do items from optional improvements."
         ),
         fallback_text=(
-            "For the next 7 days, review concentration risk, confirm cash and emergency reserves, and make only the "
-            "highest-conviction allocation adjustments supported by current data."
+            "1. Review the biggest concentration and liquidity risks.\n"
+            "2. Confirm cash reserves and emergency buffers are still adequate.\n"
+            "3. Make only the highest-conviction allocation adjustments supported by the data."
         ),
+        structure="numbered_list",
     ),
 )
 
@@ -218,6 +256,9 @@ def _render_analytics_context(analytics: AnalyticsSummary) -> str:
     allocation_by_category = _compact_allocation_by_category(analytics.allocation_by_category)
     allocation_by_source = _compact_allocation_by_source(analytics.allocation_by_source)
     currency_exposure = _compact_currency_exposure(analytics.currency_exposure)
+    capital_flows = _compact_capital_flows(analytics.capital_flows)
+    internal_conversions = _compact_internal_conversions(analytics.internal_conversions)
+    currency_flow_bridge = _compact_currency_flow_bridge(analytics.currency_flow_bridge)
     risk_metrics = _compact_risk_metrics(analytics.risk_metrics)
     warnings_text = "\n".join(f"- {warning}" for warning in analytics.warnings) if analytics.warnings else "- None"
 
@@ -230,11 +271,18 @@ def _render_analytics_context(analytics: AnalyticsSummary) -> str:
         _pretty_json(allocation_by_category),
         "Allocation by source:",
         _pretty_json(allocation_by_source),
-        "Currency exposure:",
-        _pretty_json(currency_exposure),
         "Risk metrics:",
         _pretty_json(risk_metrics),
     ]
+
+    if currency_flow_bridge:
+        parts.extend(["Fiat balance bridge (last 7 days):", _pretty_json(currency_flow_bridge)])
+
+    if internal_conversions:
+        parts.extend(["Internal conversions (last 7 days):", _pretty_json(internal_conversions)])
+
+    if capital_flows:
+        parts.extend(["External capital and income flows (last 7 days):", _pretty_json(capital_flows)])
 
     if analytics.earn_positions:
         earn = _compact_earn_positions(analytics.earn_positions)
@@ -246,10 +294,12 @@ def _render_analytics_context(analytics: AnalyticsSummary) -> str:
         if pnl:
             parts.extend(["7-day portfolio change:", _pretty_json(pnl)])
 
+    parts.extend(["Currency exposure:", _pretty_json(currency_exposure)])
+
     if analytics.recent_transactions:
         txs = _compact_recent_transactions(analytics.recent_transactions)
         if txs:
-            parts.extend(["Recent transactions (last 7 days):", _pretty_json(txs)])
+            parts.extend(["Recent transactions (audit trail, last 7 days):", _pretty_json(txs)])
 
     parts.extend(["Data warnings:", warnings_text])
     return "\n".join(parts)
@@ -323,6 +373,79 @@ def _compact_currency_exposure(raw: str) -> list[dict[str, object]]:
         for row in rows
     ]
     compact.sort(key=lambda row: _to_decimal(row.get("usd_value", "0")), reverse=True)
+    return compact[:8]
+
+
+def _compact_capital_flows(raw: str) -> list[dict[str, object]]:
+    rows = _parse_list(raw)
+    compact: list[dict[str, object]] = []
+    for row in rows:
+        usd_value = _to_decimal(row.get("usd_value", "0"))
+        amount = _to_decimal(row.get("amount", "0"))
+        if abs(usd_value) < _SIGNIFICANT_VALUE_THRESHOLD and abs(amount) < _SIGNIFICANT_VALUE_THRESHOLD:
+            continue
+        compact.append(
+            {
+                "date": str(row.get("date", "")),
+                "source": str(row.get("source", "")),
+                "kind": str(row.get("kind", "")),
+                "asset": str(row.get("asset", "")),
+                "amount": _fmt_signed(row.get("amount", "0")),
+                "usd_value": _fmt_signed(row.get("usd_value", "0")),
+            }
+        )
+    return compact[:20]
+
+
+def _compact_internal_conversions(raw: str) -> list[dict[str, object]]:
+    rows = _parse_list(raw)
+    compact: list[dict[str, object]] = [
+        {
+            "date": str(row.get("date", "")),
+            "source": str(row.get("source", "")),
+            "from_asset": str(row.get("from_asset", "")),
+            "from_amount": _fmt_signed(row.get("from_amount", "0")),
+            "to_asset": str(row.get("to_asset", "")),
+            "to_amount": _fmt_signed(row.get("to_amount", "0")),
+            "usd_value": _fmt_usd(row.get("usd_value", "0")),
+            "trade_side": str(row.get("trade_side", "")),
+        }
+        for row in rows
+    ]
+    return compact[:20]
+
+
+def _compact_currency_flow_bridge(raw: str) -> list[dict[str, object]]:
+    rows = _parse_list(raw)
+    compact: list[dict[str, object]] = []
+    for row in rows:
+        delta_usd = _to_decimal(row.get("delta_usd_value", "0"))
+        explained = max(
+            abs(_to_decimal(row.get("explained_by_trade_spend", "0"))),
+            abs(_to_decimal(row.get("explained_by_trade_proceeds", "0"))),
+            abs(_to_decimal(row.get("explained_by_external_inflows", "0"))),
+            abs(_to_decimal(row.get("explained_by_external_outflows", "0"))),
+            abs(_to_decimal(row.get("explained_by_income", "0"))),
+        )
+        if abs(delta_usd) < _SIGNIFICANT_VALUE_THRESHOLD and explained < _SIGNIFICANT_VALUE_THRESHOLD:
+            continue
+        compact.append(
+            {
+                "currency": str(row.get("currency", "")),
+                "previous_amount": _fmt_signed(row.get("previous_amount", "0")),
+                "current_amount": _fmt_signed(row.get("current_amount", "0")),
+                "delta_amount": _fmt_signed(row.get("delta_amount", "0")),
+                "delta_usd_value": _fmt_signed(row.get("delta_usd_value", "0")),
+                "explained_by_external_inflows": _fmt_signed(row.get("explained_by_external_inflows", "0")),
+                "explained_by_external_outflows": _fmt_signed(row.get("explained_by_external_outflows", "0")),
+                "explained_by_income": _fmt_signed(row.get("explained_by_income", "0")),
+                "explained_by_trade_spend": _fmt_signed(row.get("explained_by_trade_spend", "0")),
+                "explained_by_trade_proceeds": _fmt_signed(row.get("explained_by_trade_proceeds", "0")),
+                "residual_unexplained": _fmt_signed(row.get("residual_unexplained", "0")),
+                "likely_counterparties": row.get("likely_counterparties", []),
+            }
+        )
+    compact.sort(key=lambda row: abs(_to_decimal(row.get("delta_usd_value", "0"))), reverse=True)
     return compact[:8]
 
 
@@ -429,28 +552,33 @@ def _compact_weekly_pnl(raw: str) -> dict[str, object] | None:
 def _compact_recent_transactions(raw: str) -> list[dict[str, object]]:
     """Compact recent transactions for the AI prompt."""
     rows = _parse_list(raw)
-    grouped: dict[tuple[str, ...], Decimal] = {}
-    for row in rows:
-        key = (
-            str(row.get("date", "")),
-            str(row.get("source", "")),
-            str(row.get("type", "")),
-            str(row.get("asset", "")),
-        )
-        grouped[key] = grouped.get(key, Decimal(0)) + _to_decimal(row.get("amount", 0))
-
     compact: list[dict[str, object]] = []
-    for (tx_date, source, tx_type, asset), amount in grouped.items():
-        if amount < 10:  # noqa: PLR2004
+    for row in rows:
+        usd_value = _to_decimal(row.get("usd_value", "0"))
+        amount = _to_decimal(row.get("amount", 0))
+        counterparty_amount = _to_decimal(row.get("counterparty_amount", "0"))
+        if (
+            abs(usd_value) < _SIGNIFICANT_VALUE_THRESHOLD
+            and abs(amount) < _SIGNIFICANT_VALUE_THRESHOLD
+            and abs(counterparty_amount) < _SIGNIFICANT_VALUE_THRESHOLD
+        ):
             continue
         compact.append(
             {
-                "date": tx_date,
-                "source": source,
-                "type": tx_type,
-                "asset": asset,
-                "amount": str(amount.quantize(Decimal("0.01"))),
+                "date": str(row.get("date", "")),
+                "source": str(row.get("source", "")),
+                "type": str(row.get("type", "")),
+                "asset": str(row.get("asset", "")),
+                "amount": _fmt_signed(row.get("amount", "0")),
+                "usd_value": _fmt_signed(row.get("usd_value", "0")),
+                "counterparty_asset": str(row.get("counterparty_asset", "")),
+                "counterparty_amount": _fmt_signed(row.get("counterparty_amount", "0")),
+                "trade_side": str(row.get("trade_side", "")),
             }
         )
     compact.sort(key=lambda row: str(row.get("date", "")), reverse=True)
     return compact[:30]
+
+
+def _fmt_signed(value: object) -> str:
+    return str(_to_decimal(value).quantize(Decimal("0.01")))

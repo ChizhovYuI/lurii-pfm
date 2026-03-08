@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import inspect
+import json
 import logging
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
@@ -34,6 +36,9 @@ logger = logging.getLogger(__name__)
 GEMINI_MAX_OUTPUT_TOKENS = 4096
 _MIN_SECTION_TEXT_CHARS = 80
 _MIN_CODE_FENCE_LINES = 2
+_MAX_SINGLE_PARAGRAPH_CHARS = 420
+_MIN_STRUCTURED_BLOCKS = 2
+_MIN_LIST_ITEMS = 2
 _DATA_LIMITATION_MARKERS = (
     "insufficient data",
     "not enough data",
@@ -42,12 +47,56 @@ _DATA_LIMITATION_MARKERS = (
     "data was not available",
     "no recent data",
 )
+_LIST_LINE_RE = re.compile(r"^\s*(?:[-*]|\d+\.)\s+")
+_NEGATIVE_BALANCE_WORDS = (
+    "drop",
+    "dropped",
+    "decline",
+    "declined",
+    "fell",
+    "fall",
+    "loss",
+    "losses",
+    "weakness",
+    "weakened",
+    "disappearance",
+    "disappeared",
+)
+_CONVERSION_WORDS = (
+    "redeploy",
+    "redeployed",
+    "conversion",
+    "converted",
+    "funded",
+    "used to buy",
+    "used to fund",
+    "spent to buy",
+    "spent on",
+    "moved into",
+    "reallocated",
+    "rotated into",
+    "purchase",
+    "purchased",
+    "bought",
+)
+_CONVERSION_VALIDATION_SECTIONS = {
+    "Market Context",
+    "Rebalancing Opportunities",
+    "Risk Alerts",
+}
 
 
 class CommentaryProgressCallback(Protocol):
     """Callable used to report section-by-section commentary progress."""
 
     def __call__(self, completed_sections: int, total_sections: int, current_section: str) -> object: ...
+
+
+@dataclass(frozen=True, slots=True)
+class SectionInputContext:
+    """Derived prompt facts used to validate section causality and structure."""
+
+    redeployed_fiat_assets: tuple[str, ...] = ()
 
 
 async def generate_commentary(
@@ -147,6 +196,7 @@ async def _generate_single_section(
     investor_memory: str,
     prior_sections: tuple[CommentarySection, ...],
 ) -> tuple[CommentarySection, str | None, bool]:
+    context = _build_section_input_context(analytics)
     prompt = render_report_section_prompt(
         spec,
         analytics,
@@ -161,7 +211,11 @@ async def _generate_single_section(
             prior_sections=(),
         )
         + "\n\n<retry_instruction>\n"
-        + "Your previous answer did not follow the contract. Return only the markdown body, no JSON and no heading.\n"
+        + "Your previous answer was rejected because it either lacked paragraph or list structure or did not properly "
+        + "distinguish conversions from valuation or FX changes.\n"
+        + "Return only the markdown body, no JSON and no heading.\n"
+        + "Return exactly 2 short paragraphs or 1 short paragraph plus bullets.\n"
+        + "If fiat was redeployed into another asset, describe it as conversion or redeployment, not a fiat decline.\n"
         + "</retry_instruction>"
     )
 
@@ -175,7 +229,7 @@ async def _generate_single_section(
         if result.model:
             last_model = result.model
         body = _sanitize_section_output(spec.title, result.text)
-        if _is_valid_section_body(body):
+        if _is_valid_section_body(body, spec, context):
             return CommentarySection(title=spec.title, description=body), last_model, False
 
     return CommentarySection(title=spec.title, description=spec.fallback_text), last_model, True
@@ -225,17 +279,95 @@ def _normalize_heading(text: str) -> str:
     return normalized.rstrip(":").strip()
 
 
-def _is_valid_section_body(text: str) -> bool:
+def _is_valid_section_body(text: str, spec: ReportSectionSpec, context: SectionInputContext) -> bool:
     stripped = text.strip()
     if not stripped or stripped == FALLBACK_COMMENTARY:
         return False
     if stripped.startswith(("[", "{")):
         return False
     compact_len = len(re.sub(r"\s+", "", stripped))
-    if compact_len >= _MIN_SECTION_TEXT_CHARS:
-        return True
-    lowered = stripped.lower()
-    return any(marker in lowered for marker in _DATA_LIMITATION_MARKERS)
+    if compact_len < _MIN_SECTION_TEXT_CHARS:
+        lowered = stripped.lower()
+        return any(marker in lowered for marker in _DATA_LIMITATION_MARKERS)
+
+    if not _has_readable_structure(stripped, spec.structure):
+        return False
+
+    return not _violates_conversion_reasoning(stripped, spec.title, context)
+
+
+def _has_readable_structure(text: str, structure: str) -> bool:
+    blocks = [block.strip() for block in re.split(r"\n\s*\n", text.strip()) if block.strip()]
+    if not blocks:
+        return False
+    list_lines = [line for line in text.splitlines() if _LIST_LINE_RE.match(line)]
+    numbered_lines = [line for line in text.splitlines() if re.match(r"^\s*\d+\.\s+", line)]
+    long_single_block = len(blocks) == 1 and len(blocks[0]) > _MAX_SINGLE_PARAGRAPH_CHARS
+    if long_single_block:
+        return False
+
+    non_empty_lines = [line for line in text.splitlines() if line.strip()]
+    starts_with_list = bool(_LIST_LINE_RE.match(blocks[0].splitlines()[0]))
+    has_two_blocks = len(blocks) >= _MIN_STRUCTURED_BLOCKS
+    has_list = len(list_lines) >= _MIN_LIST_ITEMS
+    has_numbered_list = len(numbered_lines) >= _MIN_LIST_ITEMS
+
+    if structure == "two_paragraphs":
+        is_valid = has_two_blocks and not list_lines
+    elif structure == "two_paragraphs_or_bullets":
+        is_valid = has_two_blocks or has_list
+    elif structure == "paragraph_then_bullets":
+        is_valid = has_two_blocks and not starts_with_list and has_list
+    elif structure == "bullets_only":
+        is_valid = has_list and len(list_lines) == len(non_empty_lines)
+    elif structure == "numbered_list":
+        is_valid = has_numbered_list and (
+            len(non_empty_lines) == len(numbered_lines)
+            or (len(non_empty_lines) == len(numbered_lines) + 1 and not _LIST_LINE_RE.match(non_empty_lines[0]))
+        )
+    else:
+        is_valid = has_two_blocks or has_list
+    return is_valid
+
+
+def _violates_conversion_reasoning(text: str, section_title: str, context: SectionInputContext) -> bool:
+    if section_title not in _CONVERSION_VALIDATION_SECTIONS:
+        return False
+    if not context.redeployed_fiat_assets:
+        return False
+    lowered = text.lower()
+    if any(word in lowered for word in _CONVERSION_WORDS):
+        return False
+    if not any(currency.lower() in lowered for currency in context.redeployed_fiat_assets):
+        return False
+    return any(word in lowered for word in _NEGATIVE_BALANCE_WORDS)
+
+
+def _build_section_input_context(analytics: AnalyticsSummary) -> SectionInputContext:
+    try:
+        parsed = json.loads(analytics.currency_flow_bridge) if analytics.currency_flow_bridge else []
+    except json.JSONDecodeError:
+        parsed = []
+    if not isinstance(parsed, list):
+        parsed = []
+
+    redeployed: list[str] = []
+    for row in parsed:
+        if not isinstance(row, dict):
+            continue
+        delta_amount = _safe_decimal(row.get("delta_amount", "0"))
+        trade_spend = _safe_decimal(row.get("explained_by_trade_spend", "0"))
+        currency = str(row.get("currency", "")).upper()
+        if currency and delta_amount < 0 and trade_spend > 0:
+            redeployed.append(currency)
+    return SectionInputContext(redeployed_fiat_assets=tuple(dict.fromkeys(redeployed)))
+
+
+def _safe_decimal(value: object) -> float:
+    try:
+        return float(str(value))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _summarize_models(models: tuple[str, ...]) -> str | None:

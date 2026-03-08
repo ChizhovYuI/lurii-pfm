@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from pfm.ai import AnalyticsSummary
+    from pfm.db.models import Transaction
     from pfm.db.repository import Repository
 
 
@@ -33,9 +34,15 @@ async def build_analytics_summary(
         compute_net_worth,
         compute_risk_metrics,
     )
+    from pfm.analytics.flow_bridge import (
+        build_capital_flows_summary,
+        build_currency_flow_bridge,
+        build_internal_conversions_summary,
+    )
     from pfm.analytics.pnl import PnlPeriod, compute_pnl
 
     snapshots = await repo.get_snapshots_resolved(snapshot_date)
+    previous_snapshots = await repo.get_snapshots_resolved(snapshot_date - timedelta(days=1))
 
     # Compute data warnings (stale KBank, missing sources)
     enabled_types: set[str] = set()
@@ -101,25 +108,40 @@ async def build_analytics_summary(
             }
         )
 
-    # Recent transactions (last 7 days) for AI context on fund movements
+    # Recent transactions and capital flow bridge (last 7 days) for AI context on fund movements
     recent_transactions = ""
+    capital_flows = ""
+    internal_conversions = ""
+    currency_flow_bridge = ""
     tx_start = snapshot_date - timedelta(days=7)
     txs = await repo.get_transactions(start=tx_start, end=snapshot_date)
-    move_types = {"deposit", "withdrawal", "transfer"}
-    move_txs = [t for t in txs if t.tx_type in move_types and t.amount >= _MIN_TX_AMOUNT]
-    if move_txs:
+    material_txs = [t for t in txs if _is_material_transaction(t)]
+    if material_txs:
         recent_transactions = json.dumps(
             [
                 {
                     "date": t.date.isoformat(),
-                    "source": t.source,
-                    "type": t.tx_type,
+                    "source": t.source_name or t.source,
+                    "type": t.tx_type.value,
                     "asset": t.asset,
                     "amount": _str_decimal(t.amount),
+                    "usd_value": _str_decimal(t.usd_value),
+                    "counterparty_asset": t.counterparty_asset,
+                    "counterparty_amount": _str_decimal(t.counterparty_amount),
+                    "trade_side": t.trade_side,
                 }
-                for t in move_txs
+                for t in material_txs
             ]
         )
+    capital_rows = build_capital_flows_summary(material_txs)
+    if capital_rows:
+        capital_flows = json.dumps(capital_rows)
+    conversion_rows = build_internal_conversions_summary(material_txs)
+    if conversion_rows:
+        internal_conversions = json.dumps(conversion_rows)
+    bridge_rows = build_currency_flow_bridge(snapshots, previous_snapshots, material_txs)
+    if bridge_rows:
+        currency_flow_bridge = json.dumps(bridge_rows)
 
     return AnalyticsSummary(
         as_of_date=snapshot_date,
@@ -188,4 +210,15 @@ async def build_analytics_summary(
         earn_positions=earn_positions,
         weekly_pnl=weekly_pnl,
         recent_transactions=recent_transactions,
+        capital_flows=capital_flows,
+        internal_conversions=internal_conversions,
+        currency_flow_bridge=currency_flow_bridge,
     )
+
+
+def _is_material_transaction(tx: Transaction) -> bool:
+    if tx.usd_value >= _MIN_TX_AMOUNT:
+        return True
+    if tx.amount >= _MIN_TX_AMOUNT:
+        return True
+    return tx.counterparty_amount >= _MIN_TX_AMOUNT
