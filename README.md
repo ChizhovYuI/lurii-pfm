@@ -16,6 +16,10 @@ To install only the backend (without the desktop app):
 brew install ChizhovYuI/lurii/lurii-pfm
 ```
 
+The backend install provides two commands:
+- `pfm` for CLI and daemon tasks
+- `pfm-mcp` for the local MCP server used by Claude Desktop, Codex, and other MCP clients
+
 ## Usage
 
 ```sh
@@ -39,6 +43,9 @@ pfm run
 
 # Start the HTTP backend (used by the macOS app)
 pfm daemon start
+
+# Run the local MCP server over stdio
+pfm-mcp
 ```
 
 ## Development

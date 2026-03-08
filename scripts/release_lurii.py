@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# ruff: noqa: T201, S603, TRY003, EM101, EM102, PLR2004, C901
+# ruff: noqa: T201, S603, TRY003, EM101, EM102, PLR2004, C901, PLR0912
 """Release automation for lurii-pfm, lurii-finance, and the Homebrew tap.
 
 This script is intentionally opinionated:
@@ -37,6 +37,7 @@ class RepoPaths:
     app_export_options: Path
     tap_formula_file: Path
     tap_cask_file: Path
+    formula_resource_script: Path
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,7 @@ class ReleaseTarget:
     app_build: str | None
     skip_verify: bool
     changelog_comment: str | None
+    verify_brew: bool
 
 
 def main() -> int:
@@ -120,6 +122,10 @@ def main() -> int:
         app_version=target.app_version,
         app_sha=sha256_file(app_asset) if app_asset is not None else None,
     )
+    if target.release_pfm:
+        sync_formula_resources(paths)
+        if target.verify_brew:
+            verify_brew_formula(paths)
     commit_repo(
         repo=paths.tap_repo,
         files=[
@@ -166,6 +172,11 @@ def parse_args() -> argparse.Namespace:
         "--changelog-comment",
         help="Optional text to prepend to the generated GitHub release notes.",
     )
+    parser.add_argument(
+        "--verify-brew",
+        action="store_true",
+        help="Run a local Homebrew smoke-check for lurii-pfm after syncing formula resources.",
+    )
     return parser.parse_args()
 
 
@@ -185,6 +196,7 @@ def discover_paths() -> RepoPaths:
         app_export_options=app_repo / "ExportOptions.plist",
         tap_formula_file=tap_repo / "Formula/lurii-pfm.rb",
         tap_cask_file=tap_repo / "Casks/lurii-finance.rb",
+        formula_resource_script=pfm_repo / "scripts/generate_homebrew_formula_resources.py",
     )
 
     for path in (
@@ -196,6 +208,7 @@ def discover_paths() -> RepoPaths:
         paths.app_export_options,
         paths.tap_formula_file,
         paths.tap_cask_file,
+        paths.formula_resource_script,
     ):
         if not path.exists():
             raise SystemExit(f"Missing required path: {path}")
@@ -228,6 +241,7 @@ def prepare_target(paths: RepoPaths, args: argparse.Namespace) -> ReleaseTarget:
         app_build=app_build,
         skip_verify=bool(args.skip_verify),
         changelog_comment=args.changelog_comment,
+        verify_brew=bool(args.verify_brew),
     )
 
 
@@ -379,12 +393,16 @@ def verify_pfm(paths: RepoPaths) -> None:
     mypy_targets = mypy_targets_for_release(paths.pfm_repo)
     if mypy_targets:
         run(["uv", "run", "mypy", *mypy_targets], cwd=paths.pfm_repo)
+    verify_formula_resources(paths)
 
 
 def verify_release_script(paths: RepoPaths) -> None:
     script_path = str(Path(__file__).resolve().relative_to(paths.pfm_repo))
     run(["uv", "run", "ruff", "check", script_path], cwd=paths.pfm_repo)
     run(["uv", "run", "mypy", script_path], cwd=paths.pfm_repo)
+    formula_script_path = str(paths.formula_resource_script.relative_to(paths.pfm_repo))
+    run(["uv", "run", "ruff", "check", formula_script_path], cwd=paths.pfm_repo)
+    run(["uv", "run", "mypy", formula_script_path], cwd=paths.pfm_repo)
 
 
 def verify_app(paths: RepoPaths) -> None:
@@ -413,6 +431,46 @@ def build_pfm_asset(paths: RepoPaths, version: str) -> Path:
     if not asset.exists():
         raise SystemExit(f"Missing built pfm asset: {asset}")
     return asset
+
+
+def sync_formula_resources(paths: RepoPaths) -> None:
+    run(
+        [
+            "python3",
+            str(paths.formula_resource_script),
+            "--lock",
+            str(paths.pfm_repo / "uv.lock"),
+            "--formula",
+            str(paths.tap_formula_file),
+            "--write",
+            "--check",
+        ],
+        cwd=paths.pfm_repo,
+    )
+
+
+def verify_formula_resources(paths: RepoPaths) -> None:
+    run(
+        [
+            "python3",
+            str(paths.formula_resource_script),
+            "--lock",
+            str(paths.pfm_repo / "uv.lock"),
+            "--formula",
+            str(paths.tap_formula_file),
+            "--check",
+        ],
+        cwd=paths.pfm_repo,
+    )
+
+
+def verify_brew_formula(paths: RepoPaths) -> None:
+    run(["brew", "install", "--build-from-source", str(paths.tap_formula_file)], cwd=paths.pfm_repo)
+    run(["/opt/homebrew/bin/pfm", "--help"], cwd=paths.pfm_repo)
+    run(
+        ["/opt/homebrew/opt/lurii-pfm/libexec/bin/python", "-c", "import pfm.mcp_server"],
+        cwd=paths.pfm_repo,
+    )
 
 
 def build_app_asset(paths: RepoPaths, version: str) -> Path:
