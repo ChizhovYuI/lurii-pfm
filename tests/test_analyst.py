@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -10,11 +11,11 @@ from pydantic import SecretStr
 
 from pfm.ai.analyst import (
     GEMINI_MAX_OUTPUT_TOKENS,
-    _build_section_input_context,
+    SectionInputContext,
     _escape_newlines_in_json_strings,
     _finalize_commentary_text,
-    _has_readable_structure,
     _is_valid_section_body,
+    _normalize_section_body,
     _parse_sections,
     generate_commentary,
     generate_commentary_with_model,
@@ -86,6 +87,56 @@ def _section_text(index: int) -> str:
         "1. Review the biggest concentration risk.\n"
         "2. Confirm liquidity buffers remain adequate.\n"
         "3. Execute only the highest-conviction rebalance."
+    )
+
+
+def _deepseek_json_report() -> str:
+    return json.dumps(
+        {
+            "sections": [
+                {
+                    "title": "Market Context",
+                    "description": (
+                        "Weekly movement was mainly transaction-driven.\n\n"
+                        "- External flows added capital.\n"
+                        "- Internal conversions redeployed GBP into long-term assets.\n"
+                        "- Residual market and FX effects were secondary."
+                    ),
+                },
+                {
+                    "title": "Portfolio Health Assessment",
+                    "description": (
+                        "Diversification remains acceptable across the main portfolio buckets. "
+                        "Concentration is elevated in a few areas but not extreme.\n\n"
+                        "Liquidity and income exposure remain aligned with the stated profile, "
+                        "with enough flexibility to keep contributing over time."
+                    ),
+                },
+                {
+                    "title": "Rebalancing Opportunities",
+                    "description": (
+                        "Only a few allocation changes look worth acting on this week.\n\n"
+                        "- Trim the largest unintended concentration if it keeps drifting higher.\n"
+                        "- Deploy idle cash gradually into target holdings."
+                    ),
+                },
+                {
+                    "title": "Risk Alerts",
+                    "description": (
+                        "- GBP concentration remains a meaningful portfolio risk.\n"
+                        "- Yield platforms still add counterparty and smart-contract exposure."
+                    ),
+                },
+                {
+                    "title": "Actionable Recommendations for Next 7 Days",
+                    "description": (
+                        "1. Review the largest concentration risk.\n"
+                        "2. Confirm liquidity buffers remain adequate.\n"
+                        "3. Make only the clearest high-conviction allocation change."
+                    ),
+                },
+            ]
+        }
     )
 
 
@@ -187,6 +238,113 @@ async def test_generate_commentary_with_model_calls_provider_in_fixed_section_or
     assert "<prior_sections>" in prompts[1]
     assert "## Market Context" in prompts[1]
     assert result.model == "gemini-2.5-flash"
+
+
+async def test_generate_commentary_with_model_uses_single_shot_json_for_deepseek_chat(tmp_path):
+    db_path = tmp_path / "deepseek-json.db"
+    await init_db(db_path)
+    await AIProviderStore(db_path).add("deepseek", api_key="key", model="deepseek-chat", active=True)
+
+    response_text = _deepseek_json_report()
+
+    mock_provider = MagicMock()
+    mock_provider.generate_commentary_json = AsyncMock(
+        return_value=CommentaryResult(
+            text=response_text,
+            model="deepseek-chat",
+            provider="deepseek",
+            finish_reason="stop",
+        )
+    )
+    mock_provider.generate_commentary = AsyncMock()
+    mock_provider.close = AsyncMock()
+    mock_provider.name = "deepseek"
+    mock_provider._model = "deepseek-chat"
+
+    settings = MagicMock()
+    settings.database_path = db_path
+    settings.gemini_api_key = SecretStr("")
+
+    with (
+        patch("pfm.ai.analyst.get_settings", return_value=settings),
+        patch("pfm.ai.analyst._build_provider", return_value=mock_provider),
+    ):
+        result = await generate_commentary_with_model(_sample_analytics(), db_path=db_path)
+
+    assert len(result.sections) == 5
+    assert result.generation_meta["strategy"] == "deepseek_json_single_shot"
+    assert result.generation_meta["status"] == "generated"
+    assert mock_provider.generate_commentary_json.await_count == 1
+    mock_provider.generate_commentary.assert_not_called()
+
+
+async def test_generate_commentary_with_model_retries_single_shot_json_once(tmp_path):
+    db_path = tmp_path / "deepseek-json-retry.db"
+    await init_db(db_path)
+    await AIProviderStore(db_path).add("deepseek", api_key="key", model="deepseek-chat", active=True)
+
+    valid_response = _deepseek_json_report()
+
+    mock_provider = MagicMock()
+    mock_provider.generate_commentary_json = AsyncMock(
+        side_effect=[
+            CommentaryResult(text="{bad json", model="deepseek-chat", provider="deepseek", finish_reason="stop"),
+            CommentaryResult(text=valid_response, model="deepseek-chat", provider="deepseek", finish_reason="stop"),
+        ]
+    )
+    mock_provider.generate_commentary = AsyncMock()
+    mock_provider.close = AsyncMock()
+    mock_provider.name = "deepseek"
+    mock_provider._model = "deepseek-chat"
+
+    settings = MagicMock()
+    settings.database_path = db_path
+    settings.gemini_api_key = SecretStr("")
+
+    with (
+        patch("pfm.ai.analyst.get_settings", return_value=settings),
+        patch("pfm.ai.analyst._build_provider", return_value=mock_provider),
+    ):
+        result = await generate_commentary_with_model(_sample_analytics(), db_path=db_path)
+
+    assert len(result.sections) == 5
+    assert result.generation_meta["attempts"] == 2
+    assert mock_provider.generate_commentary_json.await_count == 2
+
+
+async def test_generate_commentary_with_model_single_shot_json_hard_fails_after_retry(tmp_path):
+    db_path = tmp_path / "deepseek-json-hard-fail.db"
+    await init_db(db_path)
+    await AIProviderStore(db_path).add("deepseek", api_key="key", model="deepseek-chat", active=True)
+
+    mock_provider = MagicMock()
+    mock_provider.generate_commentary_json = AsyncMock(
+        side_effect=[
+            CommentaryResult(text="{bad json", model="deepseek-chat", provider="deepseek", finish_reason="stop"),
+            CommentaryResult(text="{still bad", model="deepseek-chat", provider="deepseek", finish_reason="stop"),
+        ]
+    )
+    mock_provider.generate_commentary = AsyncMock()
+    mock_provider.close = AsyncMock()
+    mock_provider.name = "deepseek"
+    mock_provider._model = "deepseek-chat"
+
+    settings = MagicMock()
+    settings.database_path = db_path
+    settings.gemini_api_key = SecretStr("")
+
+    with (
+        patch("pfm.ai.analyst.get_settings", return_value=settings),
+        patch("pfm.ai.analyst._build_provider", return_value=mock_provider),
+    ):
+        result = await generate_commentary_with_model(_sample_analytics(), db_path=db_path)
+
+    assert result.sections == ()
+    assert result.text == ""
+    assert result.error == "JSON output was invalid after retry."
+    assert result.generation_meta["strategy"] == "deepseek_json_single_shot"
+    assert result.generation_meta["status"] == "failed"
+    assert result.generation_meta["reason"] == "invalid_json"
 
 
 async def test_generate_commentary_with_model_retries_invalid_section_once(tmp_path):
@@ -310,44 +468,23 @@ async def test_generate_commentary_with_model_reports_progress(tmp_path):
     assert progress[-1] == (4, 5, "Actionable Recommendations for Next 7 Days")
 
 
-def test_has_readable_structure_rejects_long_single_paragraph():
-    text = (
-        "This is one long block of text without any blank lines or bullets and it keeps going to describe market "
-        "context, portfolio moves, and conclusions in a single dense paragraph that should be rejected by the "
-        "section validator because it is not readable enough for the weekly report output contract."
+def test_normalize_section_body_compacts_blank_lines_between_list_items():
+    raw = "Short intro paragraph.\n\n* First item\n\n* Second item\n\n* Third item"
+    assert _normalize_section_body(raw) == (
+        "Short intro paragraph.\n\n- First item\n- Second item\n- Third item"
     )
-    assert _has_readable_structure(text, "two_paragraphs_or_bullets") is False
 
 
-def test_has_readable_structure_accepts_two_paragraphs():
-    text = "Paragraph one is concise and grounded in the numbers.\n\nParagraph two explains the cause clearly."
-    assert _has_readable_structure(text, "two_paragraphs") is True
-
-
-def test_has_readable_structure_accepts_paragraph_and_bullets():
-    text = "Short intro paragraph.\n\n- First action\n- Second action"
-    assert _has_readable_structure(text, "paragraph_then_bullets") is True
-
-
-def test_has_readable_structure_rejects_dense_two_paragraphs():
-    text = (
-        "Sentence one explains the numbers. Sentence two adds more detail. Sentence three adds even more detail. "
-        "Sentence four makes the paragraph too dense.\n\n"
-        "This paragraph is short enough."
-    )
-    assert _has_readable_structure(text, "two_paragraphs") is False
-
-
-def test_is_valid_section_body_rejects_market_context_without_conversion_language():
-    context = _build_section_input_context(_sample_analytics())
+def test_is_valid_section_body_accepts_dense_market_context():
     body = (
         "GBP dropped sharply this week and created most of the portfolio weakness. This was a major negative move for "
-        "the currency and it reduced the portfolio materially.\n\nThe portfolio should monitor this decline closely."
+        "the currency and it reduced the portfolio materially.\n- External flows remained positive.\n"
+        "- Internal conversions likely funded purchases.\n- Residual market pressure was secondary."
     )
-    assert _is_valid_section_body(body, REPORT_SECTION_SPECS[0], context) is False
+    assert _is_valid_section_body(body, REPORT_SECTION_SPECS[0], context=SectionInputContext()) is True
 
 
-async def test_generate_commentary_with_model_retry_fixes_structure_and_conversion_reasoning(tmp_path):
+async def test_generate_commentary_with_model_accepts_first_valid_attempt_without_retry(tmp_path):
     db_path = tmp_path / "semantic-retry.db"
     await init_db(db_path)
     await AIProviderStore(db_path).add("gemini", api_key="key", active=True)
@@ -360,7 +497,6 @@ async def test_generate_commentary_with_model_retry_fixes_structure_and_conversi
             ),
             model="gemini-2.5-flash",
         ),
-        CommentaryResult(text=_section_text(1), model="gemini-2.5-flash"),
         CommentaryResult(text=_section_text(2), model="gemini-2.5-flash"),
         CommentaryResult(text=_section_text(3), model="gemini-2.5-flash"),
         CommentaryResult(text=_section_text(4), model="gemini-2.5-flash"),
@@ -381,8 +517,99 @@ async def test_generate_commentary_with_model_retry_fixes_structure_and_conversi
     ):
         result = await generate_commentary_with_model(_sample_analytics(), db_path=db_path)
 
-    assert "redeployed" in result.sections[0].description.lower()
+    assert result.sections[0].description.startswith("GBP dropped sharply this week")
+    assert mock_provider.generate_commentary.await_count == 5
+
+
+async def test_generate_commentary_with_model_records_generation_meta_for_fallbacks(tmp_path):
+    db_path = tmp_path / "generation-meta.db"
+    await init_db(db_path)
+    await AIProviderStore(db_path).add("gemini", api_key="key", active=True)
+
+    responses = [
+        CommentaryResult(text=_section_text(1), model="gemini-2.5-flash", provider="gemini"),
+        CommentaryResult(text="[]", model="gemini-2.5-flash", provider="gemini", finish_reason="length"),
+        CommentaryResult(text="[]", model="gemini-2.5-flash", provider="gemini", finish_reason="length"),
+        CommentaryResult(text=_section_text(3), model="gemini-2.5-flash", provider="gemini"),
+        CommentaryResult(text=_section_text(4), model="gemini-2.5-flash", provider="gemini"),
+        CommentaryResult(text=_section_text(5), model="gemini-2.5-flash", provider="gemini"),
+    ]
+
+    mock_provider = MagicMock()
+    mock_provider.generate_commentary = AsyncMock(side_effect=responses)
+    mock_provider.close = AsyncMock()
+    mock_provider.name = "gemini"
+    mock_provider._model = "gemini-2.5-flash"
+
+    settings = MagicMock()
+    settings.database_path = db_path
+    settings.gemini_api_key = SecretStr("")
+
+    with (
+        patch("pfm.ai.analyst.get_settings", return_value=settings),
+        patch("pfm.ai.analyst._build_provider", return_value=mock_provider),
+    ):
+        result = await generate_commentary_with_model(_sample_analytics(), db_path=db_path)
+
+    assert result.generation_meta is not None
+    assert result.generation_meta["provider"] == "gemini"
+    assert result.generation_meta["model"] == "gemini-2.5-flash"
+    diagnostics = result.generation_meta["sections"]
+    assert diagnostics[1] == {
+        "title": "Portfolio Health Assessment",
+        "status": "fallback",
+        "reason": "length_truncated",
+        "finish_reason": "length",
+    }
+
+
+async def test_generate_commentary_with_model_reasoner_empty_content_triggers_retry(tmp_path):
+    db_path = tmp_path / "deepseek-reasoner.db"
+    await init_db(db_path)
+    await AIProviderStore(db_path).add("deepseek", api_key="key", model="deepseek-reasoner", active=True)
+
+    recorded_max_tokens: list[int] = []
+    responses = [
+        CommentaryResult(
+            text="",
+            model="deepseek-reasoner",
+            provider="deepseek",
+            reasoning_text="Reasoning happened but no final answer arrived.",
+            finish_reason="length",
+            error="deepseek API returned no final answer before reasoning budget was exhausted",
+        ),
+        CommentaryResult(text=_section_text(1), model="deepseek-reasoner", provider="deepseek"),
+        CommentaryResult(text=_section_text(2), model="deepseek-reasoner", provider="deepseek"),
+        CommentaryResult(text=_section_text(3), model="deepseek-reasoner", provider="deepseek"),
+        CommentaryResult(text=_section_text(4), model="deepseek-reasoner", provider="deepseek"),
+        CommentaryResult(text=_section_text(5), model="deepseek-reasoner", provider="deepseek"),
+    ]
+
+    async def _generate(_system_prompt: str, _user_prompt: str, *, max_output_tokens: int = 4096) -> CommentaryResult:
+        recorded_max_tokens.append(max_output_tokens)
+        return responses[len(recorded_max_tokens) - 1]
+
+    mock_provider = MagicMock()
+    mock_provider.generate_commentary = AsyncMock(side_effect=_generate)
+    mock_provider.close = AsyncMock()
+    mock_provider.name = "deepseek"
+    mock_provider._model = "deepseek-reasoner"
+
+    settings = MagicMock()
+    settings.database_path = db_path
+    settings.gemini_api_key = SecretStr("")
+
+    with (
+        patch("pfm.ai.analyst.get_settings", return_value=settings),
+        patch("pfm.ai.analyst._build_provider", return_value=mock_provider),
+    ):
+        result = await generate_commentary_with_model(_sample_analytics(), db_path=db_path)
+
+    assert recorded_max_tokens[0] >= 6000
     assert mock_provider.generate_commentary.await_count == 6
+    assert result.generation_meta is not None
+    assert result.generation_meta["sections"][0]["status"] == "retried"
+    assert result.generation_meta["sections"][0]["reason"] == "empty_content_with_reasoning"
 
 
 async def test_generate_commentary_with_model_fallback_text_stays_structured(tmp_path):
