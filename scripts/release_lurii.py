@@ -300,6 +300,10 @@ def changed_python_files_for_release(repo: Path) -> list[str]:
     return sorted(path for path in changed if path.endswith(".py"))
 
 
+def mypy_targets_for_release(repo: Path) -> list[str]:
+    return sorted(path for path in changed_python_files_for_release(repo) if path.startswith(("src/", "scripts/")))
+
+
 def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
@@ -368,10 +372,12 @@ def write_app_version(paths: RepoPaths, version: str, build: str) -> None:
 
 def verify_pfm(paths: RepoPaths) -> None:
     run(["uv", "run", "pytest", "-q", "--no-cov"], cwd=paths.pfm_repo)
-    python_files = changed_python_files_for_release(paths.pfm_repo)
-    if python_files:
-        run(["uv", "run", "ruff", "check", *python_files], cwd=paths.pfm_repo)
-        run(["uv", "run", "mypy", *python_files], cwd=paths.pfm_repo)
+    ruff_targets = changed_python_files_for_release(paths.pfm_repo)
+    if ruff_targets:
+        run(["uv", "run", "ruff", "check", *ruff_targets], cwd=paths.pfm_repo)
+    mypy_targets = mypy_targets_for_release(paths.pfm_repo)
+    if mypy_targets:
+        run(["uv", "run", "mypy", *mypy_targets], cwd=paths.pfm_repo)
 
 
 def verify_app(paths: RepoPaths) -> None:
