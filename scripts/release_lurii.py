@@ -47,6 +47,7 @@ class ReleaseTarget:
     app_version: str | None
     app_build: str | None
     skip_verify: bool
+    changelog_comment: str | None
 
 
 def main() -> int:
@@ -90,6 +91,7 @@ def main() -> int:
             remote_repo="ChizhovYuI/lurii-pfm",
             tag=f"v{target.pfm_version}",
             asset=pfm_asset,
+            changelog_comment=target.changelog_comment,
         )
 
     if target.release_app and target.app_version is not None:
@@ -107,6 +109,7 @@ def main() -> int:
             remote_repo="ChizhovYuI/lurii-finance",
             tag=f"v{target.app_version}",
             asset=app_asset,
+            changelog_comment=target.changelog_comment,
         )
 
     update_tap(
@@ -157,6 +160,10 @@ def parse_args() -> argparse.Namespace:
         "--skip-verify",
         action="store_true",
         help="Skip pytest/ruff/mypy and xcodebuild Debug verification before building release assets.",
+    )
+    parser.add_argument(
+        "--changelog-comment",
+        help="Optional text to prepend to the generated GitHub release notes.",
     )
     return parser.parse_args()
 
@@ -219,6 +226,7 @@ def prepare_target(paths: RepoPaths, args: argparse.Namespace) -> ReleaseTarget:
         app_version=app_version,
         app_build=app_build,
         skip_verify=bool(args.skip_verify),
+        changelog_comment=args.changelog_comment,
     )
 
 
@@ -467,22 +475,28 @@ def push_tag(repo: Path, tag: str) -> None:
     run(["git", "push", "origin", tag], cwd=repo)
 
 
-def create_github_release(repo: Path, remote_repo: str, tag: str, asset: Path) -> None:
-    run(
-        [
-            "gh",
-            "release",
-            "create",
-            tag,
-            str(asset),
-            "--repo",
-            remote_repo,
-            "--title",
-            tag,
-            "--generate-notes",
-        ],
-        cwd=repo,
-    )
+def create_github_release(
+    repo: Path,
+    remote_repo: str,
+    tag: str,
+    asset: Path,
+    changelog_comment: str | None = None,
+) -> None:
+    cmd = [
+        "gh",
+        "release",
+        "create",
+        tag,
+        str(asset),
+        "--repo",
+        remote_repo,
+        "--title",
+        tag,
+        "--generate-notes",
+    ]
+    if changelog_comment:
+        cmd.extend(["--notes", changelog_comment])
+    run(cmd, cwd=repo)
 
 
 def sha256_file(path: Path) -> str:

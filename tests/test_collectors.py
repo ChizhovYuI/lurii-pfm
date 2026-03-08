@@ -530,13 +530,13 @@ async def test_mexc_fetch_earn_nets_out_spot_balance(pricing):
     snapshots = await collector.fetch_balances()
 
     assert len(snapshots) == 2
-    assert sum((snapshot.amount for snapshot in snapshots), Decimal(0)) == Decimal("500")
+    assert sum((snapshot.amount for snapshot in snapshots), Decimal(0)) == Decimal(500)
     earn_snap = next(snapshot for snapshot in snapshots if snapshot.apy > 0)
     spot_snap = next(snapshot for snapshot in snapshots if snapshot.apy == 0)
     assert earn_snap.asset == "USDC"
-    assert earn_snap.amount == Decimal("250")
+    assert earn_snap.amount == Decimal(250)
     assert spot_snap.asset == "USDC"
-    assert spot_snap.amount == Decimal("250")
+    assert spot_snap.amount == Decimal(250)
 
 
 # ── OKX ───────────────────────────────────────────────────────────────
