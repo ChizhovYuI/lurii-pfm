@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import json
+from datetime import date
+from decimal import Decimal
+
 import aiosqlite
 import httpx
 import pytest
@@ -9,8 +13,9 @@ import pytest
 from pfm.ai.base import CommentaryResult, LLMProvider, ProviderName
 from pfm.ai.providers.registry import PROVIDER_REGISTRY
 from pfm.db.ai_store import AIProviderStore
-from pfm.db.models import init_db
+from pfm.db.models import Snapshot, init_db
 from pfm.server.app import create_app
+from pfm.server.state import get_repo
 
 
 class _FakeGeminiValidationProvider(LLMProvider):
@@ -114,3 +119,68 @@ async def test_validate_ai_provider_unreachable_returns_503(client, db_path):
         count = (await (await db.execute("SELECT COUNT(*) FROM ai_providers")).fetchone())[0]
 
     assert count == 0
+
+
+async def test_get_ai_commentary_recovers_sections_from_cached_text_when_sections_missing(client):
+    repo = get_repo(client.app)
+    snapshot_date = date(2024, 1, 15)
+    await repo.save_snapshots(
+        [
+            Snapshot(
+                date=snapshot_date,
+                source="wise",
+                source_name="wise-main",
+                asset="USD",
+                amount=Decimal(100),
+                usd_value=Decimal(100),
+            )
+        ]
+    )
+    truncated = (
+        '[{"title": "Market Context", "description": "BTC at **$95k**."}, '
+        '{"title": "Risk Alerts", "description": "High con'
+    )
+    await repo.save_analytics_metric(
+        snapshot_date,
+        "ai_commentary",
+        json.dumps({"text": truncated, "model": "gemini-2.5-flash"}),
+    )
+
+    resp = await client.get("/api/v1/ai/commentary")
+
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["date"] == "2024-01-15"
+    assert data["model"] == "gemini-2.5-flash"
+    assert data["text"] == "Market Context\nBTC at **$95k**."
+    assert data["sections"] == [{"title": "Market Context", "description": "BTC at **$95k**."}]
+
+
+async def test_get_ai_commentary_does_not_invent_sections_for_plain_text(client):
+    repo = get_repo(client.app)
+    snapshot_date = date(2024, 1, 16)
+    await repo.save_snapshots(
+        [
+            Snapshot(
+                date=snapshot_date,
+                source="wise",
+                source_name="wise-main",
+                asset="USD",
+                amount=Decimal(100),
+                usd_value=Decimal(100),
+            )
+        ]
+    )
+    text = "### Summary\n\n- BTC is strong\n- Reduce concentration"
+    await repo.save_analytics_metric(
+        snapshot_date,
+        "ai_commentary",
+        json.dumps({"text": text, "model": "gemini-2.5-flash"}),
+    )
+
+    resp = await client.get("/api/v1/ai/commentary")
+
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["text"] == text
+    assert data["sections"] == []

@@ -10,6 +10,8 @@ from typing import Any
 
 from aiohttp import web
 
+from pfm.ai.base import flatten_sections
+from pfm.ai.commentary_parser import parse_commentary_sections
 from pfm.db.ai_store import AIProviderStore
 from pfm.server.connection_validation import (
     ConnectionValidationError,
@@ -40,12 +42,20 @@ async def get_commentary(request: web.Request) -> web.Response:
         return web.json_response({"error": "No AI commentary cached"}, status=404)
 
     parsed = json.loads(raw)
+    text = parsed.get("text", "")
+    sections = parsed.get("sections", [])
+    if (not isinstance(sections, list) or not sections) and isinstance(text, str):
+        recovered = parse_commentary_sections(text)
+        if recovered:
+            text = flatten_sections(recovered)
+            sections = [{"title": section.title, "description": section.description} for section in recovered]
+
     return web.json_response(
         {
             "date": analysis_date.isoformat(),
-            "text": parsed.get("text", ""),
+            "text": text,
             "model": parsed.get("model"),
-            "sections": parsed.get("sections", []),
+            "sections": sections if isinstance(sections, list) else [],
         }
     )
 

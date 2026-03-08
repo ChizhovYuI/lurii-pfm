@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -270,9 +271,34 @@ def test_parse_sections_with_newlines_in_strings():
     assert "2. Hold ETH." in sections[0].description
 
 
+def test_parse_sections_recovers_complete_items_from_truncated_array():
+    raw = (
+        '[{"title": "Market Context", "description": "BTC at **$95k**."}, '
+        '{"title": "Risk Alerts", "description": "High con'
+    )
+    sections = _parse_sections(raw)
+    assert sections == (CommentarySection(title="Market Context", description="BTC at **$95k**."),)
+
+
+def test_parse_sections_recovers_from_truncated_fenced_json():
+    raw = (
+        "```json\n"
+        "[\n"
+        '  {"title": "Market", "description": "BTC up."},\n'
+        '  {"title": "Risk", "description": "Sharpe improv'
+    )
+    sections = _parse_sections(raw)
+    assert sections == (CommentarySection(title="Market", description="BTC up."),)
+
+
+def test_parse_sections_returns_empty_when_first_object_is_incomplete():
+    raw = '[{"title": "Market", "description": "BTC'
+    sections = _parse_sections(raw)
+    assert sections == ()
+
+
 async def test_generate_commentary_with_model_parses_sections(tmp_path):
     """When LLM returns valid JSON sections, result includes parsed sections."""
-    import json
 
     db_path = tmp_path / "sections.db"
     await init_db(db_path)
@@ -309,6 +335,39 @@ async def test_generate_commentary_with_model_parses_sections(tmp_path):
     assert result.sections[1].description == "High HHI."
     assert "Market Context" in result.text
     assert "BTC at **$95k**." in result.text
+
+
+async def test_generate_commentary_with_model_uses_recovered_sections_from_truncated_array(tmp_path):
+    db_path = tmp_path / "truncated.db"
+    await init_db(db_path)
+    store = AIProviderStore(db_path)
+    await store.add("gemini", api_key="key", active=True)
+
+    truncated = (
+        '[{"title": "Market Context", "description": "BTC at **$95k**."}, '
+        '{"title": "Risk Alerts", "description": "High con'
+    )
+
+    mock_provider = MagicMock()
+    mock_provider.generate_commentary = AsyncMock(
+        return_value=CommentaryResult(text=truncated, model="gemini-2.5-flash")
+    )
+    mock_provider.close = AsyncMock()
+
+    settings = MagicMock()
+    settings.database_path = db_path
+    settings.gemini_api_key = SecretStr("")
+
+    from pfm.ai.analyst import generate_commentary_with_model
+
+    with (
+        patch("pfm.ai.analyst.get_settings", return_value=settings),
+        patch("pfm.ai.analyst._build_provider", return_value=mock_provider),
+    ):
+        result = await generate_commentary_with_model(_sample_analytics(), db_path=db_path)
+
+    assert result.sections == (CommentarySection(title="Market Context", description="BTC at **$95k**."),)
+    assert result.text == "Market Context\nBTC at **$95k**."
 
 
 async def test_generate_commentary_with_model_returns_preparsed_sections(tmp_path):

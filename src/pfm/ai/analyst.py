@@ -3,20 +3,23 @@
 from __future__ import annotations
 
 import inspect
-import json
 import logging
-import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pfm.ai.base import FALLBACK_COMMENTARY, CommentaryResult, CommentarySection, ProviderName, flatten_sections
+from pfm.ai.base import FALLBACK_COMMENTARY, CommentaryResult, ProviderName, flatten_sections
+from pfm.ai.commentary_parser import (
+    escape_newlines_in_json_strings,
+    finalize_commentary_text,
+    parse_commentary_sections,
+)
 from pfm.ai.prompts import WEEKLY_REPORT_SYSTEM_PROMPT, render_weekly_report_user_prompt
 from pfm.ai.providers.registry import PROVIDER_REGISTRY
 from pfm.config import get_settings
 from pfm.db.ai_store import AIProviderStore
 
 if TYPE_CHECKING:
-    from pfm.ai.base import LLMProvider
+    from pfm.ai.base import CommentarySection, LLMProvider
     from pfm.ai.prompts import AnalyticsSummary
     from pfm.db.models import AIProvider
 
@@ -158,85 +161,12 @@ def _resolve_db_path(db_path: str | Path | None) -> str | Path:
 
 
 def _finalize_commentary_text(text: str) -> str:
-    """Normalize line endings, strip ``<think>`` blocks, and trim whitespace."""
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    # Remove <think>...</think> blocks (Qwen3, DeepSeek, etc.)
-    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
-    return text.strip()
+    return finalize_commentary_text(text)
 
 
 def _escape_newlines_in_json_strings(text: str) -> str:
-    """Escape literal newlines inside JSON string values.
-
-    LLMs sometimes emit actual newline characters within JSON strings (e.g.
-    numbered lists in description fields).  ``json.loads`` rejects these, so
-    we walk the text tracking open/close quotes and replace bare newlines
-    inside strings with the ``\\n`` escape sequence.
-    """
-    result: list[str] = []
-    in_string = False
-    escape_next = False
-    for ch in text:
-        if escape_next:
-            result.append(ch)
-            escape_next = False
-            continue
-        if ch == "\\" and in_string:
-            result.append(ch)
-            escape_next = True
-            continue
-        if ch == '"':
-            in_string = not in_string
-            result.append(ch)
-            continue
-        if ch == "\n" and in_string:
-            result.append("\\n")
-            continue
-        result.append(ch)
-    return "".join(result)
-
-
-def _try_json_loads(text: str) -> list[object] | None:
-    """Attempt ``json.loads``, repairing unescaped newlines on first failure."""
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError:
-        try:
-            parsed = json.loads(_escape_newlines_in_json_strings(text))
-        except json.JSONDecodeError:
-            return None
-    return parsed if isinstance(parsed, list) else None
+    return escape_newlines_in_json_strings(text)
 
 
 def _parse_sections(text: str) -> tuple[CommentarySection, ...]:
-    """Try to parse LLM output as a JSON array of {title, description} objects."""
-    # Strip markdown code fences if the LLM wrapped the JSON
-    stripped = text.strip()
-    if stripped.startswith("```"):
-        lines = stripped.split("\n")
-        # Remove first line (```json) and last line (```)
-        lines = [ln for ln in lines[1:] if not ln.strip().startswith("```")]
-        stripped = "\n".join(lines)
-
-    parsed = _try_json_loads(stripped)
-    if parsed is None:
-        # Fallback: scan for a JSON array embedded in preamble text
-        start = stripped.find("[")
-        end = stripped.rfind("]")
-        if start != -1 and end > start:
-            parsed = _try_json_loads(stripped[start : end + 1])
-
-    if parsed is None:
-        logger.debug("AI response is not valid JSON; treating as plain text.")
-        return ()
-
-    sections: list[CommentarySection] = []
-    for item in parsed:
-        if not isinstance(item, dict):
-            continue
-        title = str(item.get("title", "")).strip()
-        description = str(item.get("description", "")).strip()
-        if title and description:
-            sections.append(CommentarySection(title=title, description=description))
-
-    return tuple(sections)
+    return parse_commentary_sections(text)
