@@ -3,10 +3,12 @@
 import json
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 
 import aiosqlite
 import pytest
 
+from pfm.db.migrations import runner as migration_runner
 from pfm.db.models import Price, Snapshot, Transaction, TransactionType, init_db
 from pfm.db.repository import Repository
 from pfm.db.source_store import SourceNotFoundError
@@ -27,6 +29,19 @@ async def test_init_db(tmp_path):
         version_row = await (await db.execute("SELECT version_num FROM alembic_version")).fetchone()
     assert version_row is not None
     assert version_row[0] == "e7b9c1d4a5f0"
+
+
+def test_runner_uses_package_relative_migration_path(tmp_path):
+    db_path = tmp_path / "config_test.db"
+    engine = migration_runner._create_engine(db_path)
+    try:
+        with engine.connect() as connection:
+            config = migration_runner._make_config(db_path, connection)
+    finally:
+        engine.dispose()
+
+    assert config.config_file_name is None
+    assert Path(config.get_main_option("script_location")) == Path(migration_runner.__file__).resolve().parent
 
 
 async def test_init_db_migrates_legacy_transactions_schema(tmp_path):

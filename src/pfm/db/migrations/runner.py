@@ -26,8 +26,8 @@ _RAW_RESPONSES_REVISION = "e7b9c1d4a5f0"
 _APP_BASE_TABLES = {"snapshots", "transactions", "prices", "analytics_cache", "sources"}
 
 
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[4]
+def _migrations_dir() -> Path:
+    return Path(__file__).resolve().parent
 
 
 def _sqlite_url(path: Path) -> str:
@@ -35,8 +35,8 @@ def _sqlite_url(path: Path) -> str:
 
 
 def _make_config(db_path: Path, connection: Connection) -> Config:
-    config = Config(str(_repo_root() / "alembic.ini"))
-    config.set_main_option("script_location", str(_repo_root() / "src/pfm/db/migrations"))
+    config = Config()
+    config.set_main_option("script_location", str(_migrations_dir()))
     config.set_main_option("sqlalchemy.url", _sqlite_url(db_path))
     config.attributes["connection"] = connection
     return config
