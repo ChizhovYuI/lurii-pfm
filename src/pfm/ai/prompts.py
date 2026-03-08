@@ -35,6 +35,7 @@ Output contract:
 - Return exactly 2 short paragraphs, or 1 short paragraph followed by a short list when the section asks for it.
 - Do not return one long block of text.
 - Keep paragraphs to roughly 2-4 sentences each.
+- Prefer bullet lists over dense prose when summarizing multiple drivers, risks, or actions.
 - If data is missing or noisy, say so explicitly instead of guessing.
 
 Causal reasoning rules:
@@ -111,7 +112,7 @@ REPORT_SECTION_SPECS: tuple[ReportSectionSpec, ...] = (
         ),
         output_style=(
             "- Start with one short summary paragraph.\n"
-            "- Then add either a second short paragraph on cause attribution or 2-4 bullets listing the main drivers.\n"
+            "- Then add 2-4 bullets listing the main drivers and attribution.\n"
             "- Explain changes in this order: external flows, internal conversions, residual market/FX effects.\n"
             "- Never frame redeployment from fiat into assets as a fiat selloff or FX loss.\n"
             "- Avoid macro storytelling that is not supported by the data."
@@ -119,10 +120,11 @@ REPORT_SECTION_SPECS: tuple[ReportSectionSpec, ...] = (
         fallback_text=(
             "Portfolio movement this week should be explained first through external flows and internal "
             "redeployment.\n\n"
-            "If a fiat balance fell because it funded purchases, treat that as conversion into other assets rather "
-            "than currency weakness. Mention any remaining unexplained move separately."
+            "- Treat fiat spent on purchases as conversion into other assets, not currency weakness.\n"
+            "- Separate external inflows, internal redeployment, and any residual unexplained move.\n"
+            "- Mention market or FX effects only after transaction-driven explanations."
         ),
-        structure="two_paragraphs_or_bullets",
+        structure="paragraph_then_bullets",
     ),
     ReportSectionSpec(
         slug="portfolio-health",
@@ -132,6 +134,7 @@ REPORT_SECTION_SPECS: tuple[ReportSectionSpec, ...] = (
             "- Return at least two short paragraphs.\n"
             "- The first paragraph should assess diversification, concentration, and balance.\n"
             "- The second paragraph should assess liquidity, yield exposure, and fit with the investor profile.\n"
+            "- Keep each paragraph to 2-3 sentences.\n"
             "- Call out strengths before weaknesses."
         ),
         fallback_text=(

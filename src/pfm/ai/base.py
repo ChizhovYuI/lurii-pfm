@@ -43,7 +43,8 @@ def flatten_sections(sections: tuple[CommentarySection, ...]) -> str:
     """Convert structured sections into plain text for Telegram."""
     parts: list[str] = []
     for section in sections:
-        parts.append(section.title)
+        parts.append(f"## {section.title}")
+        parts.append("")
         parts.append(section.description)
         parts.append("")
     return "\n".join(parts).strip()

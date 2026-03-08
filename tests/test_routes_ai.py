@@ -147,7 +147,7 @@ async def test_get_ai_commentary_recovers_sections_from_cached_text_when_section
     data = await resp.json()
     assert data["date"] == "2024-01-15"
     assert data["model"] == "gemini-2.5-flash"
-    assert data["text"] == "Market Context\nBTC at **$95k**.\n\nRisk Alerts\nHigh con"
+    assert data["text"] == "## Market Context\n\nBTC at **$95k**.\n\n## Risk Alerts\n\nHigh con"
     assert data["sections"] == [
         {"title": "Market Context", "description": "BTC at **$95k**."},
         {"title": "Risk Alerts", "description": "High con"},

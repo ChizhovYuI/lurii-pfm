@@ -37,6 +37,8 @@ GEMINI_MAX_OUTPUT_TOKENS = 4096
 _MIN_SECTION_TEXT_CHARS = 80
 _MIN_CODE_FENCE_LINES = 2
 _MAX_SINGLE_PARAGRAPH_CHARS = 420
+_MAX_PARAGRAPH_CHARS = 320
+_MAX_SENTENCES_PER_PARAGRAPH = 3
 _MIN_STRUCTURED_BLOCKS = 2
 _MIN_LIST_ITEMS = 2
 _DATA_LIMITATION_MARKERS = (
@@ -228,7 +230,7 @@ async def _generate_single_section(
         )
         if result.model:
             last_model = result.model
-        body = _sanitize_section_output(spec.title, result.text)
+        body = _normalize_section_body(_sanitize_section_output(spec.title, result.text))
         if _is_valid_section_body(body, spec, context):
             return CommentarySection(title=spec.title, description=body), last_model, False
 
@@ -272,6 +274,15 @@ def _strip_code_fences(text: str) -> str:
     lines = stripped.splitlines()
     lines = lines[1:-1] if len(lines) >= _MIN_CODE_FENCE_LINES and lines[-1].strip().startswith("```") else lines[1:]
     return "\n".join(lines).strip()
+
+
+def _normalize_section_body(text: str) -> str:
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not normalized:
+        return ""
+    normalized = re.sub(r"\n{3,}", "\n\n", normalized)
+    normalized = re.sub(r"(?<!\n)\n(?=\s*(?:[-*]|\d+\.)\s+)", "\n\n", normalized)
+    return normalized.strip()
 
 
 def _normalize_heading(text: str) -> str:
@@ -327,7 +338,25 @@ def _has_readable_structure(text: str, structure: str) -> bool:
         )
     else:
         is_valid = has_two_blocks or has_list
-    return is_valid
+    if not is_valid:
+        return False
+
+    paragraph_blocks = [block for block in blocks if not _LIST_LINE_RE.match(block.splitlines()[0])]
+    return all(_paragraph_is_readable(block) for block in paragraph_blocks)
+
+
+def _paragraph_is_readable(block: str) -> bool:
+    compact = re.sub(r"\s+", " ", block).strip()
+    if not compact:
+        return False
+    if len(compact) > _MAX_PARAGRAPH_CHARS:
+        return False
+    return _sentence_count(compact) <= _MAX_SENTENCES_PER_PARAGRAPH
+
+
+def _sentence_count(text: str) -> int:
+    matches = re.findall(r"[.!?](?:\s|$)", text)
+    return len(matches) if matches else 1
 
 
 def _violates_conversion_reasoning(text: str, section_title: str, context: SectionInputContext) -> bool:

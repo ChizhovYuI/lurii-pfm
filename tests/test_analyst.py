@@ -54,7 +54,7 @@ def _sample_analytics() -> AnalyticsSummary:
 
 def _section_text(index: int) -> str:
     spec = REPORT_SECTION_SPECS[index - 1]
-    if spec.structure == "two_paragraphs_or_bullets":
+    if spec.structure == "paragraph_then_bullets" and spec.title == "Market Context":
         return (
             "Weekly movement was driven mainly by internal redeployment and recent flows rather than by pure FX moves. "
             "The data points to asset purchases funded from existing cash balances.\n\n"
@@ -110,8 +110,8 @@ async def test_generate_commentary_uses_provider(tmp_path):
     ):
         result = await generate_commentary(_sample_analytics(), db_path=db_path)
 
-    assert "Market Context" in result
-    assert "Actionable Recommendations for Next 7 Days" in result
+    assert "## Market Context" in result
+    assert "## Actionable Recommendations for Next 7 Days" in result
     assert mock_provider.generate_commentary.await_count == 5
     mock_provider.close.assert_awaited_once()
 
@@ -327,6 +327,15 @@ def test_has_readable_structure_accepts_two_paragraphs():
 def test_has_readable_structure_accepts_paragraph_and_bullets():
     text = "Short intro paragraph.\n\n- First action\n- Second action"
     assert _has_readable_structure(text, "paragraph_then_bullets") is True
+
+
+def test_has_readable_structure_rejects_dense_two_paragraphs():
+    text = (
+        "Sentence one explains the numbers. Sentence two adds more detail. Sentence three adds even more detail. "
+        "Sentence four makes the paragraph too dense.\n\n"
+        "This paragraph is short enough."
+    )
+    assert _has_readable_structure(text, "two_paragraphs") is False
 
 
 def test_is_valid_section_body_rejects_market_context_without_conversion_language():
