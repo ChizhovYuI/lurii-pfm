@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from aiohttp import web
@@ -19,9 +20,11 @@ from pfm.server.connection_validation import (
 from pfm.server.connection_validation import (
     validate_source_connection as run_source_validation,
 )
+from pfm.server.routes.collect import start_collection_task
 from pfm.server.serializers import source_to_dict
 
 routes = web.RouteTableDef()
+logger = logging.getLogger(__name__)
 
 
 @routes.get("/api/v1/source-types")
@@ -93,6 +96,12 @@ async def add_source(request: web.Request) -> web.Response:
         return web.json_response({"error": str(exc)}, status=409)
     except (InvalidSourceTypeError, InvalidCredentialsError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
+
+    if source.enabled:
+        if start_collection_task(request.app, source.name):
+            logger.info("Source '%s' added; started background collection", source.name)
+        else:
+            logger.info("Source '%s' added; auto-collect skipped because another collection is running", source.name)
 
     return web.json_response(source_to_dict(source), status=201)
 

@@ -25,6 +25,17 @@ logger = logging.getLogger(__name__)
 routes = web.RouteTableDef()
 
 
+def start_collection_task(app: web.Application, source_name: str | None) -> bool:
+    """Start a background collection task if no collection is active."""
+    if app["collecting"]:
+        return False
+
+    app["collecting"] = True
+    task = asyncio.create_task(_run_collection(app, source_name))
+    app["_collection_task"] = task
+    return True
+
+
 @routes.get("/api/v1/collect/status")
 async def collect_status(request: web.Request) -> web.Response:
     """Return current collection state."""
@@ -34,12 +45,6 @@ async def collect_status(request: web.Request) -> web.Response:
 @routes.post("/api/v1/collect")
 async def start_collection(request: web.Request) -> web.Response:
     """Spawn a background collection task. Returns 202 immediately."""
-    if request.app["collecting"]:
-        return web.json_response(
-            {"error": "Collection already in progress"},
-            status=409,
-        )
-
     body: dict[str, Any] = {}
     if request.can_read_body:
         try:
@@ -49,9 +54,11 @@ async def start_collection(request: web.Request) -> web.Response:
 
     source_name: str | None = body.get("source")
 
-    request.app["collecting"] = True
-    task = asyncio.ensure_future(_run_collection(request.app, source_name))
-    request.app["_collection_task"] = task
+    if not start_collection_task(request.app, source_name):
+        return web.json_response(
+            {"error": "Collection already in progress"},
+            status=409,
+        )
 
     return web.json_response({"status": "started"}, status=202)
 

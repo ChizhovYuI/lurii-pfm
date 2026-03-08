@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from datetime import date
 from decimal import Decimal
+from unittest.mock import patch
 
 import aiosqlite
 import pytest
@@ -131,51 +132,90 @@ async def test_list_sources_empty(client):
 
 
 async def test_add_source(client):
-    resp = await client.post(
-        "/api/v1/sources",
-        json={
-            "name": "wise-main",
-            "type": "wise",
-            "credentials": {"api_token": "my-secret-token-1234"},
-        },
-    )
+    with patch("pfm.server.routes.sources.start_collection_task", return_value=True) as start_mock:
+        resp = await client.post(
+            "/api/v1/sources",
+            json={
+                "name": "wise-main",
+                "type": "wise",
+                "credentials": {"api_token": "my-secret-token-1234"},
+            },
+        )
     assert resp.status == 201
     data = await resp.json()
     assert data["name"] == "wise-main"
     assert data["type"] == "wise"
     assert "..." in data["credentials"]["api_token"]  # masked
+    start_mock.assert_called_once_with(client.app, "wise-main")
+
+
+async def test_add_source_starts_background_collect_for_new_source(client):
+    with patch("pfm.server.routes.sources.start_collection_task", return_value=True) as start_mock:
+        resp = await client.post(
+            "/api/v1/sources",
+            json={
+                "name": "wise-main",
+                "type": "wise",
+                "credentials": {"api_token": "my-secret-token-1234"},
+            },
+        )
+
+    assert resp.status == 201
+    start_mock.assert_called_once_with(client.app, "wise-main")
+
+
+async def test_add_source_skips_auto_collect_when_collection_already_running(client):
+    with patch("pfm.server.routes.sources.start_collection_task", return_value=False) as start_mock:
+        resp = await client.post(
+            "/api/v1/sources",
+            json={
+                "name": "wise-main",
+                "type": "wise",
+                "credentials": {"api_token": "my-secret-token-1234"},
+            },
+        )
+
+    assert resp.status == 201
+    start_mock.assert_called_once_with(client.app, "wise-main")
+    store = SourceStore(client.app["db_path"])
+    source = await store.get("wise-main")
+    assert source.name == "wise-main"
 
 
 async def test_add_source_duplicate(client):
-    await client.post(
-        "/api/v1/sources",
-        json={
-            "name": "wise-main",
-            "type": "wise",
-            "credentials": {"api_token": "token"},
-        },
-    )
-    resp = await client.post(
-        "/api/v1/sources",
-        json={
-            "name": "wise-main",
-            "type": "wise",
-            "credentials": {"api_token": "token"},
-        },
-    )
+    with patch("pfm.server.routes.sources.start_collection_task", return_value=True) as start_mock:
+        await client.post(
+            "/api/v1/sources",
+            json={
+                "name": "wise-main",
+                "type": "wise",
+                "credentials": {"api_token": "token"},
+            },
+        )
+        resp = await client.post(
+            "/api/v1/sources",
+            json={
+                "name": "wise-main",
+                "type": "wise",
+                "credentials": {"api_token": "token"},
+            },
+        )
     assert resp.status == 409
+    start_mock.assert_called_once_with(client.app, "wise-main")
 
 
 async def test_add_source_invalid_type(client):
-    resp = await client.post(
-        "/api/v1/sources",
-        json={
-            "name": "bad",
-            "type": "nonexistent",
-            "credentials": {},
-        },
-    )
+    with patch("pfm.server.routes.sources.start_collection_task", return_value=True) as start_mock:
+        resp = await client.post(
+            "/api/v1/sources",
+            json={
+                "name": "bad",
+                "type": "nonexistent",
+                "credentials": {},
+            },
+        )
     assert resp.status == 400
+    start_mock.assert_not_called()
 
 
 async def test_get_source(client_with_source):

@@ -11,6 +11,7 @@ import pytest
 from pfm.db.models import CollectorResult, init_db
 from pfm.db.source_store import SourceStore
 from pfm.server.app import create_app
+from pfm.server.routes.collect import start_collection_task
 
 
 @pytest.fixture
@@ -55,6 +56,29 @@ async def test_collect_status_during_collection(client):
     data = await resp.json()
     assert data == {"collecting": True}
     client.app["collecting"] = False
+
+
+async def test_start_collection_task_sets_collecting_and_creates_task(client):
+    async_mock = AsyncMock()
+    with patch("pfm.server.routes.collect._run_collection", async_mock):
+        started = start_collection_task(client.app, "wise-main")
+
+        assert started is True
+        assert client.app["collecting"] is True
+        task = client.app.get("_collection_task")
+        assert task is not None
+        await asyncio.wait_for(task, timeout=5.0)
+        async_mock.assert_awaited_once_with(client.app, "wise-main")
+
+
+async def test_start_collection_task_returns_false_when_busy(client):
+    client.app["collecting"] = True
+
+    with patch("pfm.server.routes.collect._run_collection", AsyncMock()) as async_mock:
+        started = start_collection_task(client.app, "wise-main")
+
+    assert started is False
+    async_mock.assert_not_called()
 
 
 async def test_collect_returns_202(client):
