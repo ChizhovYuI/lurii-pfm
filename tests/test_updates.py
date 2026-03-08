@@ -332,7 +332,7 @@ def test_find_restart_python_executable_falls_back_when_sys_executable_missing()
         patch.object(daemon_mod.sys, "executable", "/missing/python"),
         patch.object(daemon_mod.sys, "_base_executable", "/also-missing/python", create=True),
         patch("pfm.server.daemon.shutil.which", side_effect=_which),
-        patch("pfm.server.daemon.Path.exists") as mock_exists,
+        patch("pfm.server.daemon.Path.exists", autospec=True) as mock_exists,
     ):
         mock_exists.side_effect = lambda self: str(self) == "/usr/bin/python3"
         assert daemon_mod._find_restart_python_executable() == "/usr/bin/python3"
