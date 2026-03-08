@@ -114,13 +114,25 @@ async def get_source(request: web.Request) -> web.Response:
 async def delete_source(request: web.Request) -> web.Response:
     """Delete a source by name."""
     name = request.match_info["name"]
-    store = SourceStore(request.app["db_path"])
+    repo = request.app["repo"]
     try:
-        await store.delete(name)
+        result = await repo.delete_source_cascade(name)
     except SourceNotFoundError:
         return web.json_response({"error": f"Source {name!r} not found"}, status=404)
 
-    return web.json_response({"deleted": True})
+    await request.app["broadcaster"].broadcast({"type": "snapshot_updated"})
+    return web.json_response(
+        {
+            "deleted": True,
+            "name": result.name,
+            "removed": {
+                "snapshots": result.snapshots,
+                "transactions": result.transactions,
+                "analytics_metrics": result.analytics_metrics,
+                "apy_rules": result.apy_rules,
+            },
+        }
+    )
 
 
 @routes.patch("/api/v1/sources/{name}")

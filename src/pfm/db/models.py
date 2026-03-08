@@ -119,6 +119,17 @@ class AIProvider:
     active: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class SourceDeleteResult:
+    """Summary of rows removed when deleting a configured source."""
+
+    name: str
+    snapshots: int = 0
+    transactions: int = 0
+    analytics_metrics: int = 0
+    apy_rules: int = 0
+
+
 @dataclass(slots=True)
 class CollectorResult:
     """Result summary from a collector run."""

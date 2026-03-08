@@ -1,5 +1,6 @@
 """Tests for database models and repository."""
 
+import json
 from datetime import date
 from decimal import Decimal
 
@@ -8,6 +9,7 @@ import pytest
 
 from pfm.db.models import Price, Snapshot, Transaction, TransactionType, init_db
 from pfm.db.repository import Repository
+from pfm.db.source_store import SourceNotFoundError
 
 
 @pytest.fixture
@@ -438,6 +440,210 @@ async def test_save_analytics_metric_replaces_existing(repo):
 
     metrics = await repo.get_analytics_metrics_by_date(metric_date)
     assert metrics["net_worth"] == '{"usd":"200"}'
+
+
+async def test_delete_source_cascade_removes_owned_state_and_counts(repo):
+    await repo._db.execute(
+        "INSERT INTO sources (name, type, credentials, enabled) VALUES (?, ?, ?, ?)",
+        ("wise-main", "wise", "{}", 1),
+    )
+    await repo._db.commit()
+
+    await repo.save_snapshots(
+        [
+            Snapshot(
+                date=date(2024, 1, 10),
+                source="wise",
+                source_name="wise-main",
+                asset="USD",
+                amount=Decimal(100),
+                usd_value=Decimal(100),
+            ),
+            Snapshot(
+                date=date(2024, 1, 11),
+                source="wise",
+                source_name="wise-main",
+                asset="EUR",
+                amount=Decimal(50),
+                usd_value=Decimal(55),
+            ),
+        ]
+    )
+    await repo.save_transactions(
+        [
+            Transaction(
+                date=date(2024, 1, 10),
+                source="wise",
+                source_name="wise-main",
+                tx_type=TransactionType.DEPOSIT,
+                asset="USD",
+                amount=Decimal(10),
+                usd_value=Decimal(10),
+                tx_id="wise-1",
+            ),
+            Transaction(
+                date=date(2024, 1, 11),
+                source="wise",
+                source_name="wise-main",
+                tx_type=TransactionType.DEPOSIT,
+                asset="EUR",
+                amount=Decimal(20),
+                usd_value=Decimal(22),
+                tx_id="wise-2",
+            ),
+        ]
+    )
+    await repo.save_analytics_metric(date(2024, 1, 10), "ai_commentary", '{"text":"hello"}')
+    await repo.save_analytics_metric(date(2024, 1, 10), "weekly_pnl", '{"usd":"10"}')
+    await repo.save_analytics_metric(date(2024, 1, 11), "ai_commentary", '{"text":"bye"}')
+    await repo.save_analytics_metric(date(2024, 1, 20), "ai_commentary", '{"text":"keep"}')
+    await repo._db.execute(
+        "INSERT INTO app_settings (key, value) VALUES (?, ?)",
+        ("apy_rules:wise-main", json.dumps([{"id": "r1"}, {"id": "r2"}])),
+    )
+    await repo._db.commit()
+
+    result = await repo.delete_source_cascade("wise-main")
+
+    assert result.name == "wise-main"
+    assert result.snapshots == 2
+    assert result.transactions == 2
+    assert result.analytics_metrics == 3
+    assert result.apy_rules == 2
+    assert (
+        await repo.get_snapshots_by_source_name_and_date_range("wise-main", date(2024, 1, 1), date(2024, 1, 31)) == []
+    )
+    assert await repo.get_transactions(source_name="wise-main") == []
+    assert await repo.get_analytics_metrics_by_date(date(2024, 1, 10)) == {}
+    assert await repo.get_analytics_metrics_by_date(date(2024, 1, 11)) == {}
+    assert await repo.get_analytics_metrics_by_date(date(2024, 1, 20)) == {"ai_commentary": '{"text":"keep"}'}
+
+    source_row = await (await repo._db.execute("SELECT name FROM sources WHERE name = ?", ("wise-main",))).fetchone()
+    apy_row = await (
+        await repo._db.execute(
+            "SELECT value FROM app_settings WHERE key = ?",
+            ("apy_rules:wise-main",),
+        )
+    ).fetchone()
+    assert source_row is None
+    assert apy_row is None
+
+
+async def test_delete_source_cascade_keeps_unrelated_source_state(repo):
+    await repo._db.executemany(
+        "INSERT INTO sources (name, type, credentials, enabled) VALUES (?, ?, ?, ?)",
+        [
+            ("wise-main", "wise", "{}", 1),
+            ("wise-alt", "wise", "{}", 1),
+        ],
+    )
+    await repo._db.commit()
+
+    await repo.save_snapshots(
+        [
+            Snapshot(
+                date=date(2024, 1, 10),
+                source="wise",
+                source_name="wise-main",
+                asset="USD",
+                amount=Decimal(100),
+                usd_value=Decimal(100),
+            ),
+            Snapshot(
+                date=date(2024, 1, 10),
+                source="wise",
+                source_name="wise-alt",
+                asset="GBP",
+                amount=Decimal(200),
+                usd_value=Decimal(250),
+            ),
+        ]
+    )
+    await repo.save_transactions(
+        [
+            Transaction(
+                date=date(2024, 1, 10),
+                source="wise",
+                source_name="wise-main",
+                tx_type=TransactionType.DEPOSIT,
+                asset="USD",
+                amount=Decimal(10),
+                usd_value=Decimal(10),
+                tx_id="main-1",
+            ),
+            Transaction(
+                date=date(2024, 1, 10),
+                source="wise",
+                source_name="wise-alt",
+                tx_type=TransactionType.DEPOSIT,
+                asset="GBP",
+                amount=Decimal(20),
+                usd_value=Decimal(25),
+                tx_id="alt-1",
+            ),
+        ]
+    )
+    await repo._db.executemany(
+        "INSERT INTO app_settings (key, value) VALUES (?, ?)",
+        [
+            ("apy_rules:wise-main", json.dumps([{"id": "r1"}])),
+            ("apy_rules:wise-alt", json.dumps([{"id": "r2"}])),
+        ],
+    )
+    await repo._db.commit()
+
+    await repo.delete_source_cascade("wise-main")
+
+    remaining_snaps = await repo.get_snapshots_by_source_name_and_date_range(
+        "wise-alt",
+        date(2024, 1, 1),
+        date(2024, 1, 31),
+    )
+    remaining_txs = await repo.get_transactions(source_name="wise-alt")
+    remaining_source = await (
+        await repo._db.execute("SELECT name FROM sources WHERE name = ?", ("wise-alt",))
+    ).fetchone()
+    remaining_rules = await (
+        await repo._db.execute(
+            "SELECT value FROM app_settings WHERE key = ?",
+            ("apy_rules:wise-alt",),
+        )
+    ).fetchone()
+
+    assert len(remaining_snaps) == 1
+    assert remaining_snaps[0].asset == "GBP"
+    assert len(remaining_txs) == 1
+    assert remaining_txs[0].tx_id == "alt-1"
+    assert remaining_source is not None
+    assert remaining_rules is not None
+
+
+async def test_delete_source_cascade_malformed_apy_rules_counted_as_zero(repo):
+    await repo._db.execute(
+        "INSERT INTO sources (name, type, credentials, enabled) VALUES (?, ?, ?, ?)",
+        ("wise-main", "wise", "{}", 1),
+    )
+    await repo._db.execute(
+        "INSERT INTO app_settings (key, value) VALUES (?, ?)",
+        ("apy_rules:wise-main", "{not-json"),
+    )
+    await repo._db.commit()
+
+    result = await repo.delete_source_cascade("wise-main")
+
+    assert result.apy_rules == 0
+    apy_row = await (
+        await repo._db.execute(
+            "SELECT value FROM app_settings WHERE key = ?",
+            ("apy_rules:wise-main",),
+        )
+    ).fetchone()
+    assert apy_row is None
+
+
+async def test_delete_source_cascade_not_found(repo):
+    with pytest.raises(SourceNotFoundError):
+        await repo.delete_source_cascade("missing-source")
 
 
 async def test_init_db_migrates_legacy_snapshots_with_source_name(tmp_path):

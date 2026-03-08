@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import date
 from decimal import Decimal
@@ -9,11 +10,17 @@ from typing import TYPE_CHECKING, Self
 
 import aiosqlite
 
-from pfm.db.models import Price, Snapshot, Transaction, TransactionType, init_db
+from pfm.db.models import Price, Snapshot, SourceDeleteResult, Transaction, TransactionType, init_db
+from pfm.db.source_store import SourceNotFoundError
 
 if TYPE_CHECKING:
     from pathlib import Path
     from types import TracebackType
+
+
+def _raise_source_not_found(source_name: str) -> None:
+    msg = f"Source {source_name!r} not found"
+    raise SourceNotFoundError(msg)
 
 
 class Repository:
@@ -190,6 +197,76 @@ class Repository:
         )
         await self._db.commit()
         return cursor.rowcount
+
+    async def delete_source_cascade(self, source_name: str) -> SourceDeleteResult:
+        """Delete a source and all source-owned state in one transaction."""
+        row = await (await self._db.execute("SELECT name FROM sources WHERE name = ?", (source_name,))).fetchone()
+        if row is None:
+            _raise_source_not_found(source_name)
+
+        apy_rules_key = f"apy_rules:{source_name}"
+
+        await self._db.execute("BEGIN")
+        try:
+            snapshot_rows = await (
+                await self._db.execute("SELECT DISTINCT date FROM snapshots WHERE source_name = ?", (source_name,))
+            ).fetchall()
+            tx_rows = await (
+                await self._db.execute("SELECT DISTINCT date FROM transactions WHERE source_name = ?", (source_name,))
+            ).fetchall()
+            affected_dates = sorted({str(row[0]) for row in [*snapshot_rows, *tx_rows] if row[0]})
+
+            apy_rule_row = await (
+                await self._db.execute("SELECT value FROM app_settings WHERE key = ?", (apy_rules_key,))
+            ).fetchone()
+            apy_rules_count = 0
+            if apy_rule_row is not None:
+                try:
+                    parsed_rules = json.loads(str(apy_rule_row[0]))
+                    if isinstance(parsed_rules, list):
+                        apy_rules_count = len(parsed_rules)
+                except json.JSONDecodeError:
+                    apy_rules_count = 0
+
+            snapshot_cursor = await self._db.execute(
+                "DELETE FROM snapshots WHERE source_name = ?",
+                (source_name,),
+            )
+            transaction_cursor = await self._db.execute(
+                "DELETE FROM transactions WHERE source_name = ?",
+                (source_name,),
+            )
+
+            analytics_count = 0
+            if affected_dates:
+                placeholders = ",".join("?" for _ in affected_dates)
+                analytics_cursor = await self._db.execute(
+                    f"DELETE FROM analytics_cache WHERE date IN ({placeholders})",  # noqa: S608
+                    affected_dates,
+                )
+                analytics_count = analytics_cursor.rowcount
+
+            await self._db.execute("DELETE FROM app_settings WHERE key = ?", (apy_rules_key,))
+
+            source_cursor = await self._db.execute(
+                "DELETE FROM sources WHERE name = ?",
+                (source_name,),
+            )
+            if source_cursor.rowcount == 0:
+                _raise_source_not_found(source_name)
+
+            await self._db.commit()
+        except Exception:
+            await self._db.rollback()
+            raise
+
+        return SourceDeleteResult(
+            name=source_name,
+            snapshots=snapshot_cursor.rowcount,
+            transactions=transaction_cursor.rowcount,
+            analytics_metrics=analytics_count,
+            apy_rules=apy_rules_count,
+        )
 
     # ── Transactions ──────────────────────────────────────────────────
 
