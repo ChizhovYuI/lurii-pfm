@@ -56,6 +56,7 @@ def main() -> int:
     target = prepare_target(paths, args)
 
     ensure_prerequisites(target)
+    verify_release_script(paths)
     ensure_clean_worktree(paths.tap_repo)
     if target.release_pfm:
         ensure_clean_worktree(paths.pfm_repo)
@@ -378,6 +379,12 @@ def verify_pfm(paths: RepoPaths) -> None:
     mypy_targets = mypy_targets_for_release(paths.pfm_repo)
     if mypy_targets:
         run(["uv", "run", "mypy", *mypy_targets], cwd=paths.pfm_repo)
+
+
+def verify_release_script(paths: RepoPaths) -> None:
+    script_path = str(Path(__file__).resolve().relative_to(paths.pfm_repo))
+    run(["uv", "run", "ruff", "check", script_path], cwd=paths.pfm_repo)
+    run(["uv", "run", "mypy", script_path], cwd=paths.pfm_repo)
 
 
 def verify_app(paths: RepoPaths) -> None:
