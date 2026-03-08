@@ -35,6 +35,7 @@ async def earn_summary(request: web.Request) -> web.Response:
             "weighted_avg_apy": _str_decimal(weighted_avg_apy),
             "positions": [
                 {
+                    "id": snap.id,
                     "source": snap.source,
                     "source_name": snap.source_name or snap.source,
                     "asset": snap.asset,

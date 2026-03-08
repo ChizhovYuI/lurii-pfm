@@ -93,10 +93,61 @@ async def test_earn_summary(client):
     assert data["weighted_avg_apy"] == "0.1049"
     assert len(data["positions"]) == 1
     pos = data["positions"][0]
+    assert isinstance(pos["id"], int)
     assert pos["source"] == "okx"
     assert pos["asset"] == "USDT"
     assert pos["asset_type"] == "crypto"
     assert pos["apy"] == "0.1049"
+
+
+async def test_earn_summary_preserves_distinct_rows_for_same_source_and_asset(db_path, aiohttp_client):
+    async with Repository(db_path) as repo:
+        snaps = [
+            Snapshot(
+                date=date(2024, 1, 7),
+                source="mexc_earn",
+                source_name="mexc-earn-main",
+                asset="USDC",
+                amount=Decimal("262.79260253"),
+                usd_value=Decimal("262.79260253"),
+                price=Decimal(1),
+                apy=Decimal("0.12"),
+            ),
+            Snapshot(
+                date=date(2024, 1, 7),
+                source="mexc_earn",
+                source_name="mexc-earn-main",
+                asset="USDC",
+                amount=Decimal("5039.448835"),
+                usd_value=Decimal("5039.448835"),
+                price=Decimal(1),
+                apy=Decimal("0.15"),
+            ),
+            Snapshot(
+                date=date(2024, 1, 7),
+                source="mexc_earn",
+                source_name="mexc-earn-main",
+                asset="USDT",
+                amount=Decimal("300.0064994"),
+                usd_value=Decimal("300.0064994"),
+                price=Decimal(1),
+                apy=Decimal("0.15"),
+            ),
+        ]
+        await repo.save_snapshots(snaps)
+
+    app = create_app(db_path)
+    client = await aiohttp_client(app)
+
+    resp = await client.get("/api/v1/earn/summary")
+    assert resp.status == 200
+    data = await resp.json()
+
+    positions = data["positions"]
+    usdc_positions = [pos for pos in positions if pos["source"] == "mexc_earn" and pos["asset"] == "USDC"]
+    assert len(usdc_positions) == 2
+    assert {pos["amount"] for pos in usdc_positions} == {"262.79260253", "5039.448835"}
+    assert len({pos["id"] for pos in usdc_positions}) == 2
 
 
 async def test_earn_summary_no_data(empty_client):
