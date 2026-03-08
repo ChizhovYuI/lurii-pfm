@@ -22,6 +22,7 @@ from pfm.ai.prompts import (
     render_report_section_prompt,
     render_weekly_report_user_prompt,
 )
+from pfm.ai.weekly_report_prompt_pack import build_weekly_report_prompt_pack
 
 __all__ = [
     "FALLBACK_COMMENTARY",
@@ -35,6 +36,7 @@ __all__ = [
     "CommentarySection",
     "LLMProvider",
     "ProviderName",
+    "build_weekly_report_prompt_pack",
     "flatten_sections",
     "generate_commentary",
     "generate_commentary_with_model",

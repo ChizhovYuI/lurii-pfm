@@ -13,6 +13,7 @@ from pfm.mcp_server import (
     _dec,
     _dec2,
     _json,
+    _memory_payload,
     _parse_date,
     _pct,
     _today,
@@ -149,6 +150,231 @@ class TestGetPnl:
             assert parsed["top_gainers"][0]["asset"] == "BTC"
 
 
+class TestAIReportMemory:
+    @pytest.mark.asyncio
+    async def test_get_ai_report_memory_tool_returns_current_memory(self):
+        from pfm.mcp_server import get_ai_report_memory
+
+        mock_ctx = AsyncMock()
+        mock_ctx.request_context.lifespan_context.db_path = "/tmp/test.db"
+
+        with patch("pfm.mcp_server.AIReportMemoryStore") as mock_store_cls:
+            mock_store = AsyncMock()
+            mock_store.get.return_value = "## Location & Expenses\nLiving in Thailand."
+            mock_store_cls.return_value = mock_store
+
+            result = await get_ai_report_memory(mock_ctx)
+
+        parsed = json.loads(result)
+        assert parsed == {
+            "memory": "## Location & Expenses\nLiving in Thailand.",
+            "length": 42,
+            "normalized": True,
+            "max_chars": 4000,
+        }
+
+    @pytest.mark.asyncio
+    async def test_set_ai_report_memory_tool_persists_normalized_memory(self):
+        from pfm.mcp_server import set_ai_report_memory
+
+        mock_ctx = AsyncMock()
+        mock_ctx.request_context.lifespan_context.db_path = "/tmp/test.db"
+
+        with (
+            patch("pfm.mcp_server.normalize_ai_report_memory", return_value="## Investment Profile\nGoal: FIRE."),
+            patch("pfm.mcp_server.AIReportMemoryStore") as mock_store_cls,
+        ):
+            mock_store = AsyncMock()
+            mock_store_cls.return_value = mock_store
+
+            result = await set_ai_report_memory(mock_ctx, "  ## Investment Profile\r\nGoal: FIRE.\r\n")
+
+        parsed = json.loads(result)
+        mock_store.set.assert_awaited_once_with("## Investment Profile\nGoal: FIRE.")
+        assert parsed["updated"] is True
+        assert parsed["memory"] == "## Investment Profile\nGoal: FIRE."
+        assert parsed["normalized"] is True
+
+    @pytest.mark.asyncio
+    async def test_clear_ai_report_memory_tool_clears_value(self):
+        from pfm.mcp_server import clear_ai_report_memory
+
+        mock_ctx = AsyncMock()
+        mock_ctx.request_context.lifespan_context.db_path = "/tmp/test.db"
+
+        with patch("pfm.mcp_server.AIReportMemoryStore") as mock_store_cls:
+            mock_store = AsyncMock()
+            mock_store_cls.return_value = mock_store
+
+            result = await clear_ai_report_memory(mock_ctx)
+
+        parsed = json.loads(result)
+        mock_store.set.assert_awaited_once_with("")
+        assert parsed["updated"] is True
+        assert parsed["cleared"] is True
+        assert parsed["memory"] == ""
+        assert parsed["length"] == 0
+
+    @pytest.mark.asyncio
+    async def test_resource_ai_report_memory_returns_current_memory(self):
+        from pfm.mcp_server import resource_ai_report_memory
+
+        with (
+            patch("pfm.server.daemon.get_db_path", return_value="/tmp/test.db"),
+            patch("pfm.mcp_server.AIReportMemoryStore") as mock_store_cls,
+        ):
+            mock_store = AsyncMock()
+            mock_store.get.return_value = "## Location & Expenses\nLiving in Thailand."
+            mock_store_cls.return_value = mock_store
+
+            result = await resource_ai_report_memory()
+
+        parsed = json.loads(result)
+        assert parsed["memory"] == "## Location & Expenses\nLiving in Thailand."
+        assert parsed["length"] == 42
+
+
+class TestWeeklyReportPromptPack:
+    @pytest.mark.asyncio
+    async def test_resource_weekly_report_prompt_returns_prompt_pack(self):
+        from pfm.mcp_server import resource_weekly_report_prompt
+
+        pack = {
+            "kind": "weekly_report_prompt_pack",
+            "prompt_version": 2,
+            "workflow": "section_by_section",
+            "includes_memory": True,
+            "sections": [{"title": "Market Context"}],
+        }
+
+        mock_repo = AsyncMock()
+        cm = AsyncMock()
+        cm.__aenter__.return_value = mock_repo
+        cm.__aexit__.return_value = None
+
+        with (
+            patch("pfm.server.daemon.get_db_path", return_value="/tmp/test.db"),
+            patch("pfm.db.repository.Repository", return_value=cm),
+            patch("pfm.ai.build_weekly_report_prompt_pack", new=AsyncMock(return_value=pack)),
+        ):
+            result = await resource_weekly_report_prompt()
+
+        parsed = json.loads(result)
+        assert parsed["kind"] == "weekly_report_prompt_pack"
+        assert parsed["prompt_version"] == 2
+        assert parsed["workflow"] == "section_by_section"
+        assert parsed["includes_memory"] is True
+        assert len(parsed["sections"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_resource_weekly_report_prompt_handles_no_snapshots(self):
+        from pfm.mcp_server import resource_weekly_report_prompt
+
+        pack = {
+            "kind": "weekly_report_prompt_pack",
+            "prompt_version": 2,
+            "as_of_date": "2026-03-08",
+            "error": "No snapshots available",
+        }
+
+        mock_repo = AsyncMock()
+        cm = AsyncMock()
+        cm.__aenter__.return_value = mock_repo
+        cm.__aexit__.return_value = None
+
+        with (
+            patch("pfm.server.daemon.get_db_path", return_value="/tmp/test.db"),
+            patch("pfm.db.repository.Repository", return_value=cm),
+            patch("pfm.ai.build_weekly_report_prompt_pack", new=AsyncMock(return_value=pack)),
+        ):
+            result = await resource_weekly_report_prompt()
+
+        parsed = json.loads(result)
+        assert parsed["error"] == "No snapshots available"
+
+
+class TestLegacyPrompts:
+    @pytest.mark.asyncio
+    async def test_investment_review_uses_prompt_pack_builder(self):
+        from pfm.mcp_server import investment_review
+
+        pack = {
+            "system_prompt": "system prompt",
+            "analytics_context": "analytics block",
+            "investor_memory": "## Profile\nGoal: FIRE.",
+            "sections": [
+                {"title": "Market Context"},
+                {"title": "Portfolio Health Assessment"},
+            ],
+        }
+
+        mock_repo = AsyncMock()
+        cm = AsyncMock()
+        cm.__aenter__.return_value = mock_repo
+        cm.__aexit__.return_value = None
+
+        with (
+            patch("pfm.server.daemon.get_db_path", return_value="/tmp/test.db"),
+            patch("pfm.db.repository.Repository", return_value=cm),
+            patch("pfm.ai.build_weekly_report_prompt_pack", new=AsyncMock(return_value=pack)),
+        ):
+            result = await investment_review("risk")
+
+        assert "Use the weekly report prompt pack below as the authoritative contract." in result
+        assert "system prompt" in result
+        assert "analytics block" in result
+        assert "Please focus on: risk" in result
+
+    @pytest.mark.asyncio
+    async def test_weekly_check_in_mentions_conversions_when_present(self):
+        from pfm.analytics.pnl import PnlResult
+        from pfm.db.models import Transaction, TransactionType
+        from pfm.mcp_server import weekly_check_in
+
+        txs = [
+            Transaction(
+                date=date(2024, 1, 15),
+                source="ibkr",
+                source_name="ibkr-main",
+                tx_type=TransactionType.TRADE,
+                asset="VWRA",
+                amount=Decimal(10),
+                usd_value=Decimal(1000),
+                counterparty_asset="GBP",
+                counterparty_amount=Decimal(800),
+                trade_side="buy",
+            )
+        ]
+
+        pnl = PnlResult(
+            start_date=date(2024, 1, 8),
+            end_date=date(2024, 1, 15),
+            start_value=Decimal(9000),
+            end_value=Decimal(10000),
+            absolute_change=Decimal(1000),
+            percentage_change=Decimal("11.11"),
+            top_gainers=[],
+            top_losers=[],
+        )
+
+        mock_repo = AsyncMock()
+        mock_repo.get_transactions.return_value = txs
+        cm = AsyncMock()
+        cm.__aenter__.return_value = mock_repo
+        cm.__aexit__.return_value = None
+
+        with (
+            patch("pfm.server.daemon.get_db_path", return_value="/tmp/test.db"),
+            patch("pfm.db.repository.Repository", return_value=cm),
+            patch("pfm.analytics.compute_net_worth", new=AsyncMock(return_value=Decimal(10000))),
+            patch("pfm.analytics.pnl.compute_pnl", new=AsyncMock(return_value=pnl)),
+        ):
+            result = await weekly_check_in()
+
+        assert "Recent internal conversions / redeployments:" in result
+        assert "GBP 800 -> VWRA 10" in result
+
+
 class TestEntryPoint:
     def test_main_calls_mcp_run(self):
         from pfm.mcp_server import main
@@ -156,3 +382,13 @@ class TestEntryPoint:
         with patch("pfm.mcp_server.mcp") as mock_mcp:
             main()
             mock_mcp.run.assert_called_once_with(transport="stdio")
+
+
+def test_memory_payload_shape():
+    payload = _memory_payload("## Profile\nGoal: FIRE.")
+    assert payload == {
+        "memory": "## Profile\nGoal: FIRE.",
+        "length": 22,
+        "normalized": True,
+        "max_chars": 4000,
+    }

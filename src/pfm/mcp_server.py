@@ -11,6 +11,7 @@ from pathlib import Path
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.session import ServerSession
 
+from pfm.db.ai_report_memory_store import AI_REPORT_MEMORY_MAX_CHARS, AIReportMemoryStore, normalize_ai_report_memory
 from pfm.db.repository import Repository
 
 # ---------------------------------------------------------------------------
@@ -43,7 +44,8 @@ mcp = FastMCP(
     "Lurii Finance",
     instructions=(
         "Portfolio analytics server for Lurii Finance. "
-        "Use tools to query balances, allocations, PnL, transactions, and yield data. "
+        "Use tools/resources to query balances, allocations, PnL, transactions, and yield data, "
+        "fetch weekly report prompt packs, and manage weekly AI report memory. "
         "All monetary values are in USD. Dates use ISO format (YYYY-MM-DD)."
     ),
     lifespan=_lifespan,
@@ -473,6 +475,38 @@ async def get_sources(
     return _json({"sources": data})
 
 
+@mcp.tool()
+async def get_ai_report_memory(
+    ctx: Context[ServerSession, AppContext],
+) -> str:
+    """Read the current weekly AI report memory."""
+    store = AIReportMemoryStore(_ctx_db_path(ctx))
+    memory = await store.get()
+    return _json(_memory_payload(memory))
+
+
+@mcp.tool()
+async def set_ai_report_memory(
+    ctx: Context[ServerSession, AppContext],
+    content: str,
+) -> str:
+    """Replace the weekly AI report memory with new content."""
+    normalized = normalize_ai_report_memory(content)
+    store = AIReportMemoryStore(_ctx_db_path(ctx))
+    await store.set(normalized)
+    return _json({"updated": True, **_memory_payload(normalized)})
+
+
+@mcp.tool()
+async def clear_ai_report_memory(
+    ctx: Context[ServerSession, AppContext],
+) -> str:
+    """Clear the weekly AI report memory."""
+    store = AIReportMemoryStore(_ctx_db_path(ctx))
+    await store.set("")
+    return _json({"updated": True, "cleared": True, **_memory_payload("")})
+
+
 # ---------------------------------------------------------------------------
 # Resources
 # ---------------------------------------------------------------------------
@@ -636,6 +670,29 @@ async def resource_sources() -> str:
     return _json([{"name": s.name, "type": s.type, "enabled": s.enabled} for s in sources])
 
 
+@mcp.resource("lurii://ai/report-memory")
+async def resource_ai_report_memory() -> str:
+    """Current weekly AI report memory."""
+    from pfm.server.daemon import get_db_path
+
+    memory = await AIReportMemoryStore(get_db_path()).get()
+    return _json(_memory_payload(memory))
+
+
+@mcp.resource("lurii://ai/weekly-report/prompt")
+async def resource_weekly_report_prompt() -> str:
+    """Production weekly report prompt pack for external AI assistants."""
+    from pfm.ai import build_weekly_report_prompt_pack
+    from pfm.db.repository import Repository
+    from pfm.server.daemon import get_db_path
+
+    db_path = get_db_path()
+    d = _today()
+    async with Repository(db_path) as repo:
+        pack = await build_weekly_report_prompt_pack(repo, db_path, d)
+    return _json(pack)
+
+
 # ---------------------------------------------------------------------------
 # Prompts
 # ---------------------------------------------------------------------------
@@ -648,31 +705,35 @@ async def investment_review(focus: str = "") -> str:
     Args:
         focus: Optional focus area (e.g. "risk", "rebalancing", "yield", "performance").
     """
+    from pfm.ai import build_weekly_report_prompt_pack
     from pfm.db.repository import Repository
-    from pfm.server.analytics_helper import build_analytics_summary
     from pfm.server.daemon import get_db_path
 
     d = _today()
     db_path = get_db_path()
     async with Repository(db_path) as repo:
-        summary = await build_analytics_summary(repo, d, db_path=db_path)
+        pack = await build_weekly_report_prompt_pack(repo, db_path, d)
+
+    if pack.get("error"):
+        return f"Unable to build weekly review prompt: {pack['error']}"
+
+    sections = pack["sections"]
+    titles = ", ".join(section["title"] for section in sections)
 
     parts = [
         f"Review my investment portfolio as of {d.isoformat()}.",
-        f"Net worth: ${summary.net_worth_usd:,.2f}",
+        "Use the weekly report prompt pack below as the authoritative contract.",
         "",
-        f"Holdings: {summary.allocation_by_asset}",
-        f"Categories: {summary.allocation_by_category}",
-        f"Risk: {summary.risk_metrics}",
+        f"Section order: {titles}",
+        "",
+        "System prompt:",
+        pack["system_prompt"],
+        "",
+        "Analytics context:",
+        pack["analytics_context"],
     ]
-    if summary.earn_positions:
-        parts.append(f"Earn positions: {summary.earn_positions}")
-    if summary.weekly_pnl:
-        parts.append(f"Weekly PnL: {summary.weekly_pnl}")
-    if summary.recent_transactions:
-        parts.append(f"Recent transactions: {summary.recent_transactions}")
-    if summary.warnings:
-        parts.append(f"Data warnings: {', '.join(summary.warnings)}")
+    if pack.get("investor_memory"):
+        parts.extend(["", "Investor memory:", pack["investor_memory"]])
     if focus:
         parts.append(f"\nPlease focus on: {focus}")
     else:
@@ -687,6 +748,7 @@ async def investment_review(focus: str = "") -> str:
 async def weekly_check_in() -> str:
     """Weekly portfolio check-in with PnL and recent activity."""
     from pfm.analytics import compute_net_worth
+    from pfm.analytics.flow_bridge import build_capital_flows_summary, build_internal_conversions_summary
     from pfm.analytics.pnl import PnlPeriod, compute_pnl
     from pfm.db.repository import Repository
     from pfm.server.daemon import get_db_path
@@ -697,8 +759,8 @@ async def weekly_check_in() -> str:
         pnl = await compute_pnl(repo, d, PnlPeriod.WEEKLY)
         txs = await repo.get_transactions(start=d - timedelta(days=7), end=d)
 
-    move_types = {"deposit", "withdrawal", "transfer"}
-    recent = [t for t in txs if t.tx_type.value in move_types]
+    recent_flows = build_capital_flows_summary(txs)
+    conversions = build_internal_conversions_summary(txs)
 
     parts = [
         f"Weekly check-in for my portfolio as of {d.isoformat()}.",
@@ -714,15 +776,35 @@ async def weekly_check_in() -> str:
     if pnl.top_losers:
         losers = ", ".join(f"{r.asset} ({r.percentage_change:+.1f}%)" for r in pnl.top_losers[:3])
         parts.append(f"  Top losers: {losers}")
-    if recent:
+    if recent_flows:
         parts.append("")
-        parts.append("Recent fund movements:")
-        parts.extend(f"  {t.date} | {t.source} | {t.tx_type.value} | {t.asset} {t.amount}" for t in recent[:20])
+        parts.append("Recent capital and income flows:")
+        parts.extend(
+            f"  {row['date']} | {row['source']} | {row['kind']} | {row['asset']} {row['amount']}"
+            for row in recent_flows[:20]
+        )
+    if conversions:
+        parts.append("")
+        parts.append("Recent internal conversions / redeployments:")
+        parts.extend(
+            f"  {row['date']} | {row['source']} | {row['from_asset']} {row['from_amount']} -> "
+            f"{row['to_asset']} {row['to_amount']}"
+            for row in conversions[:20]
+        )
     parts.append(
         "\nSummarize this week's performance, highlight any notable movements, "
         "and suggest what I should focus on next week."
     )
     return "\n".join(parts)
+
+
+def _memory_payload(memory: str) -> dict[str, object]:
+    return {
+        "memory": memory,
+        "length": len(memory),
+        "normalized": True,
+        "max_chars": AI_REPORT_MEMORY_MAX_CHARS,
+    }
 
 
 # ---------------------------------------------------------------------------
