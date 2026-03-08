@@ -308,17 +308,34 @@ async def test_restart_returns_500_when_restart_schedule_fails(client, db_path):
 def test_schedule_restart_uses_kickstart_k():
     fake_proc = Mock(pid=9876)
 
-    with patch("pfm.server.daemon.subprocess.Popen", return_value=fake_proc) as mock_popen:
+    with (
+        patch("pfm.server.daemon._find_restart_python_executable", return_value="/usr/bin/python3"),
+        patch("pfm.server.daemon.subprocess.Popen", return_value=fake_proc) as mock_popen,
+    ):
         pid = daemon_mod.schedule_restart(delay_seconds=0.25, uid=501)
 
     assert pid == 9876
     args, kwargs = mock_popen.call_args
-    assert args[0][0] == daemon_mod.sys.executable
+    assert args[0][0] == "/usr/bin/python3"
     helper_script = args[0][2]
     assert "time.sleep(0.25)" in helper_script
     assert '"/bin/launchctl", "kickstart", "-k"' in helper_script
     assert "'gui/501/finance.lurii.pfm'" in helper_script
     assert kwargs["start_new_session"] is True
+
+
+def test_find_restart_python_executable_falls_back_when_sys_executable_missing():
+    def _which(name: str) -> str | None:
+        return "/usr/bin/python3" if name == "python3" else None
+
+    with (
+        patch.object(daemon_mod.sys, "executable", "/missing/python"),
+        patch.object(daemon_mod.sys, "_base_executable", "/also-missing/python", create=True),
+        patch("pfm.server.daemon.shutil.which", side_effect=_which),
+        patch("pfm.server.daemon.Path.exists") as mock_exists,
+    ):
+        mock_exists.side_effect = lambda self: str(self) == "/usr/bin/python3"
+        assert daemon_mod._find_restart_python_executable() == "/usr/bin/python3"
 
 
 async def test_check_updates_restart_pending_when_installed(client, db_path):

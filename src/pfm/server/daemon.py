@@ -90,6 +90,22 @@ def _find_pfm_executable() -> str:
     return str(Path(sys.executable).parent / "pfm")
 
 
+def _find_restart_python_executable() -> str:
+    """Locate a stable Python executable for detached restart helpers."""
+    candidates = [
+        sys.executable,
+        getattr(sys, "_base_executable", ""),
+        "/opt/homebrew/bin/python3",
+        "/usr/bin/python3",
+        shutil.which("python3") or "",
+        shutil.which("python") or "",
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return str(candidate)
+    return sys.executable
+
+
 def is_launchd_service_loaded(uid: int | None = None) -> bool:
     """Return True when the launchd service target is currently loaded."""
     service_target = get_service_target(uid)
@@ -109,6 +125,7 @@ def schedule_restart(delay_seconds: float = 0.5, uid: int | None = None) -> int:
     process exiting before launchd performs the restart.
     """
     service_target = get_service_target(uid)
+    python_executable = _find_restart_python_executable()
     helper = textwrap.dedent(
         f"""\
         import subprocess
@@ -124,12 +141,17 @@ def schedule_restart(delay_seconds: float = 0.5, uid: int | None = None) -> int:
         """
     )
     proc = subprocess.Popen(  # noqa: S603
-        [sys.executable, "-c", helper],
+        [python_executable, "-c", helper],
         start_new_session=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    logger.info("Scheduled daemon restart helper pid=%s target=%s", proc.pid, service_target)
+    logger.info(
+        "Scheduled daemon restart helper pid=%s target=%s python=%s",
+        proc.pid,
+        service_target,
+        python_executable,
+    )
     return proc.pid
 
 
