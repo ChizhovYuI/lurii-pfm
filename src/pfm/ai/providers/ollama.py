@@ -1,4 +1,4 @@
-"""Ollama LLM provider using instructor + OpenAI-compatible /v1 endpoint."""
+"""Ollama LLM provider using raw OpenAI-compatible chat completions."""
 
 from __future__ import annotations
 
@@ -6,14 +6,11 @@ import logging
 from typing import Any
 
 import httpx
-import instructor
-from instructor.core import InstructorRetryException
 from openai import APIError, AsyncOpenAI
-from pydantic import ValidationError
 
-from pfm.ai.base import FALLBACK_COMMENTARY, CommentaryResult, LLMProvider, flatten_sections
+from pfm.ai.base import CommentaryResult, LLMProvider
+from pfm.ai.providers.openai_compat import _extract_openai_text
 from pfm.ai.providers.registry import register_provider
-from pfm.ai.schemas import CommentaryResponse
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +20,7 @@ _PULL_TIMEOUT_SECONDS = 600.0
 
 @register_provider
 class OllamaProvider(LLMProvider):
-    """Ollama local LLM provider using instructor for structured output."""
+    """Ollama local LLM provider using OpenAI-compatible completions."""
 
     name = "ollama"
     description = "Ollama — local/private inference, no API key needed"
@@ -51,12 +48,11 @@ class OllamaProvider(LLMProvider):
         if openai_client is not None:
             self._client = openai_client
         else:
-            raw = AsyncOpenAI(
+            self._client = AsyncOpenAI(
                 api_key="ollama",
                 base_url=f"{self._base_url}/v1",
                 timeout=_TIMEOUT_SECONDS,
             )
-            self._client = instructor.from_openai(raw, mode=instructor.Mode.JSON)
 
         self._owns_http_client = http_client is None
         self._http_client = http_client or httpx.AsyncClient(timeout=_TIMEOUT_SECONDS)
@@ -103,29 +99,25 @@ class OllamaProvider(LLMProvider):
         *,
         max_output_tokens: int,
     ) -> CommentaryResult:
-        """Send a structured chat request via instructor."""
+        """Send a chat request via Ollama's OpenAI-compatible endpoint."""
         try:
-            response: CommentaryResponse = await self._client.chat.completions.create(
+            response = await self._client.chat.completions.create(
                 model=self._model,
                 max_tokens=max_output_tokens,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                response_model=CommentaryResponse,
             )
         except APIError:
-            # Server/connection error — model may not exist, allow auto-pull.
             logger.warning("Ollama API error", exc_info=True)
             return CommentaryResult(text="", model=self._model)
-        except (ValidationError, InstructorRetryException):
-            # Model responded but generated invalid JSON — no point pulling.
-            logger.warning("Ollama structured output validation failed", exc_info=True)
-            return CommentaryResult(text=FALLBACK_COMMENTARY, model=self._model, error="structured_output_failed")
+        except (OSError, RuntimeError, TypeError, ValueError):
+            logger.warning("Ollama chat request failed", exc_info=True)
+            return CommentaryResult(text="", model=self._model)
 
-        sections = response.to_commentary_sections()
-        flat_text = flatten_sections(sections)
-        return CommentaryResult(text=flat_text, model=self._model, sections=sections)
+        text = _extract_openai_text(response)
+        return CommentaryResult(text=text, model=self._model)
 
     async def _try_pull_model(self) -> bool:
         """Pull the model via Ollama's ``/api/pull`` endpoint."""
@@ -140,14 +132,13 @@ class OllamaProvider(LLMProvider):
         except (httpx.HTTPError, OSError):
             logger.warning("Ollama model pull failed for %s.", self._model, exc_info=True)
             return False
-        else:
-            logger.info("Ollama model %s pulled successfully.", self._model)
-            return True
+        logger.info("Ollama model %s pulled successfully.", self._model)
+        return True
 
     async def close(self) -> None:
         """Close owned clients."""
-        if self._owns_openai_client:
-            await self._client.client.close()
+        if self._owns_openai_client and hasattr(self._client, "close"):
+            await self._client.close()
         if self._owns_http_client:
             await self._http_client.aclose()
 
@@ -165,4 +156,4 @@ async def list_installed_models(base_url: str | None = None) -> list[str]:
     models = body.get("models")
     if not isinstance(models, list):
         return []
-    return [str(m["name"]) for m in models if isinstance(m, dict) and "name" in m]
+    return [str(model["name"]) for model in models if isinstance(model, dict) and "name" in model]

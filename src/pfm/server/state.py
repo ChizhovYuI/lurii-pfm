@@ -24,6 +24,9 @@ class ServerRuntimeState:
     scheduler_task: asyncio.Task[None] | None = None
     generating_commentary: bool = False
     commentary_task: asyncio.Task[None] | None = None
+    commentary_completed_sections: int = 0
+    commentary_total_sections: int = 0
+    commentary_current_section: str | None = None
     bg_tasks: set[asyncio.Task[None]] = field(default_factory=set)
     db_locked: bool = False
     db_key: str | None = None

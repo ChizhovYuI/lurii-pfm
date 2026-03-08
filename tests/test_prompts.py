@@ -1,88 +1,85 @@
-"""Tests for AI prompt templates."""
+"""Tests for section-based AI prompt templates."""
 
 from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal
 
+from pfm.ai.base import CommentarySection
 from pfm.ai.prompts import (
+    REPORT_SECTION_SPECS,
     WEEKLY_REPORT_SYSTEM_PROMPT,
-    WEEKLY_REPORT_USER_PROMPT_TEMPLATE,
     AnalyticsSummary,
-    render_weekly_report_user_prompt,
+    render_report_section_prompt,
 )
+
+
+def _sample_analytics() -> AnalyticsSummary:
+    return AnalyticsSummary(
+        as_of_date=date(2024, 1, 15),
+        net_worth_usd=Decimal("12345.67"),
+        allocation_by_asset='[{"asset":"BTC","usd_value":"7000","asset_type":"crypto","percentage":"56.7"}]',
+        allocation_by_source='[{"source":"okx","usd_value":"7000","percentage":"56.7"}]',
+        allocation_by_category='[{"category":"crypto","usd_value":"7000","percentage":"56.7"}]',
+        currency_exposure='[{"currency":"USD","usd_value":"5000","percentage":"40"}]',
+        risk_metrics='{"concentration_percentage":"56.7"}',
+        recent_transactions='[{"date":"2024-01-14","source":"wise","type":"withdrawal","asset":"GBP","amount":"5000"}]',
+    )
 
 
 def test_prompt_templates_have_required_sections():
     assert "personal financial advisor" in WEEKLY_REPORT_SYSTEM_PROMPT
-    assert "Market Context" in WEEKLY_REPORT_USER_PROMPT_TEMPLATE
-    assert "Portfolio Health Assessment" in WEEKLY_REPORT_USER_PROMPT_TEMPLATE
-    assert "Rebalancing Opportunities" in WEEKLY_REPORT_USER_PROMPT_TEMPLATE
-    assert "Risk Alerts" in WEEKLY_REPORT_USER_PROMPT_TEMPLATE
-    assert "Actionable Recommendations for Next 7 Days" in WEEKLY_REPORT_USER_PROMPT_TEMPLATE
-    assert "JSON array" in WEEKLY_REPORT_USER_PROMPT_TEMPLATE
+    assert "Return only the markdown body" in WEEKLY_REPORT_SYSTEM_PROMPT
+    assert "Do not return JSON" in WEEKLY_REPORT_SYSTEM_PROMPT
+    assert [spec.title for spec in REPORT_SECTION_SPECS] == [
+        "Market Context",
+        "Portfolio Health Assessment",
+        "Rebalancing Opportunities",
+        "Risk Alerts",
+        "Actionable Recommendations for Next 7 Days",
+    ]
 
 
-def test_render_weekly_report_user_prompt_formats_analytics():
-    analytics = AnalyticsSummary(
-        as_of_date=date(2024, 1, 15),
-        net_worth_usd=Decimal("12345.67"),
-        allocation_by_asset='[{"asset":"BTC","usd_value":"7000","asset_type":"crypto","percentage":"56.7"}]',
-        allocation_by_source='[{"source":"okx","usd_value":"7000"}]',
-        allocation_by_category='[{"category":"crypto","usd_value":"7000"}]',
-        currency_exposure='[{"currency":"USD","usd_value":"5000"}]',
-        risk_metrics='{"concentration_percentage":"56.7"}',
-    )
+def test_render_report_section_prompt_formats_analytics():
+    prompt = render_report_section_prompt(REPORT_SECTION_SPECS[0], _sample_analytics())
 
-    prompt = render_weekly_report_user_prompt(analytics)
-    assert "2024-01-15" in prompt
+    assert "As of date: 2024-01-15" in prompt
     assert "Net worth (USD): 12345.67" in prompt
     assert '"asset": "BTC"' in prompt
     assert '"category": "crypto"' in prompt
-    assert '"asset_type": "crypto"' in prompt
+    assert '"currency": "USD"' in prompt
     assert '"concentration_percentage": "56.70%"' in prompt
-    assert "Top holdings" in prompt
-    assert "PnL summary" not in prompt
-    assert "Top weekly movers by asset" not in prompt
-    assert "Allocation by source" not in prompt
-    assert "Currency exposure" not in prompt
-
-
-def test_render_weekly_report_user_prompt_with_transactions():
-    analytics = AnalyticsSummary(
-        as_of_date=date(2024, 1, 15),
-        net_worth_usd=Decimal("12345.67"),
-        allocation_by_asset='[{"asset":"BTC","usd_value":"7000","asset_type":"crypto","percentage":"56.7"}]',
-        allocation_by_source="[]",
-        allocation_by_category='[{"category":"crypto","usd_value":"7000"}]',
-        currency_exposure="[]",
-        risk_metrics="{}",
-        recent_transactions='[{"date":"2024-01-14","source":"wise","type":"withdrawal","asset":"GBP","amount":"5000"},'
-        '{"date":"2024-01-14","source":"okx","type":"deposit","asset":"USDC","amount":"6300"}]',
-    )
-
-    prompt = render_weekly_report_user_prompt(analytics)
     assert "Recent transactions" in prompt
-    assert '"source": "wise"' in prompt
-    assert '"type": "withdrawal"' in prompt
-    assert '"asset": "GBP"' in prompt
-    assert '"source": "okx"' in prompt
+    assert "<analytics>" in prompt
+    assert "<investor_memory>" not in prompt
 
 
-def test_render_weekly_report_user_prompt_limits_holdings():
-    holdings = ",".join(
-        f'{{"asset":"A{i}","usd_value":"{100 - i}","asset_type":"other","percentage":"1"}}' for i in range(1, 15)
-    )
-    analytics = AnalyticsSummary(
-        as_of_date=date(2024, 1, 15),
-        net_worth_usd=Decimal("12345.67"),
-        allocation_by_asset=f"[{holdings}]",
-        allocation_by_source="[]",
-        allocation_by_category="[]",
-        currency_exposure="[]",
-        risk_metrics="{}",
+def test_render_report_section_prompt_includes_investor_memory():
+    prompt = render_report_section_prompt(
+        REPORT_SECTION_SPECS[1],
+        _sample_analytics(),
+        investor_memory="## Location & Expenses\nLiving in Thailand.",
     )
 
-    prompt = render_weekly_report_user_prompt(analytics)
-    assert '"asset": "A10"' in prompt
-    assert '"asset": "A11"' not in prompt
+    assert "<investor_memory>" in prompt
+    assert "Living in Thailand." in prompt
+
+
+def test_render_report_section_prompt_includes_clipped_prior_sections():
+    prior = (
+        CommentarySection(title="Market Context", description="A" * 500),
+        CommentarySection(title="Portfolio Health Assessment", description="B" * 500),
+        CommentarySection(title="Rebalancing Opportunities", description="C" * 500),
+    )
+
+    prompt = render_report_section_prompt(
+        REPORT_SECTION_SPECS[3],
+        _sample_analytics(),
+        prior_sections=prior,
+    )
+
+    assert "<prior_sections>" in prompt
+    assert "## Market Context" in prompt
+    assert "## Portfolio Health Assessment" in prompt
+    assert "## Rebalancing Opportunities" in prompt
+    assert "..." in prompt

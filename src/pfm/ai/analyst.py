@@ -1,31 +1,53 @@
-"""AI commentary orchestrator — thin layer delegating to pluggable providers."""
+"""AI weekly commentary orchestrator."""
 
 from __future__ import annotations
 
 import inspect
 import logging
+import re
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
-from pfm.ai.base import FALLBACK_COMMENTARY, CommentaryResult, ProviderName, flatten_sections
+from pfm.ai.base import FALLBACK_COMMENTARY, CommentaryResult, CommentarySection, ProviderName, flatten_sections
 from pfm.ai.commentary_parser import (
     escape_newlines_in_json_strings,
     finalize_commentary_text,
     parse_commentary_sections,
 )
-from pfm.ai.prompts import WEEKLY_REPORT_SYSTEM_PROMPT, render_weekly_report_user_prompt
+from pfm.ai.prompts import (
+    REPORT_SECTION_SPECS,
+    WEEKLY_REPORT_SYSTEM_PROMPT,
+    render_report_section_prompt,
+)
 from pfm.ai.providers.registry import PROVIDER_REGISTRY
 from pfm.config import get_settings
+from pfm.db.ai_report_memory_store import AIReportMemoryStore
 from pfm.db.ai_store import AIProviderStore
 
 if TYPE_CHECKING:
-    from pfm.ai.base import CommentarySection, LLMProvider
-    from pfm.ai.prompts import AnalyticsSummary
+    from pfm.ai.base import LLMProvider
+    from pfm.ai.prompts import AnalyticsSummary, ReportSectionSpec
     from pfm.db.models import AIProvider
 
 logger = logging.getLogger(__name__)
 
 GEMINI_MAX_OUTPUT_TOKENS = 4096
+_MIN_SECTION_TEXT_CHARS = 80
+_MIN_CODE_FENCE_LINES = 2
+_DATA_LIMITATION_MARKERS = (
+    "insufficient data",
+    "not enough data",
+    "limited data",
+    "data is missing",
+    "data was not available",
+    "no recent data",
+)
+
+
+class CommentaryProgressCallback(Protocol):
+    """Callable used to report section-by-section commentary progress."""
+
+    def __call__(self, completed_sections: int, total_sections: int, current_section: str) -> object: ...
 
 
 async def generate_commentary(
@@ -42,6 +64,8 @@ async def generate_commentary_with_model(
     analytics: AnalyticsSummary,
     *,
     db_path: str | Path | None = None,
+    progress_callback: CommentaryProgressCallback | None = None,
+    investor_memory: str | None = None,
 ) -> CommentaryResult:
     """Generate weekly portfolio commentary with model info."""
     provider = await _resolve_provider(db_path)
@@ -49,30 +73,177 @@ async def generate_commentary_with_model(
         logger.warning("No AI provider configured; returning fallback commentary.")
         return CommentaryResult(text=FALLBACK_COMMENTARY, model=None)
 
-    prompt = render_weekly_report_user_prompt(analytics)
+    resolved_path = _resolve_db_path(db_path)
+    if investor_memory is None:
+        investor_memory = await AIReportMemoryStore(resolved_path).get()
+
     try:
-        result = await provider.generate_commentary(
-            WEEKLY_REPORT_SYSTEM_PROMPT,
-            prompt,
-            max_output_tokens=GEMINI_MAX_OUTPUT_TOKENS,
+        sections, models, fallback_titles = await _generate_sections(
+            provider,
+            analytics,
+            investor_memory=investor_memory,
+            progress_callback=progress_callback,
         )
     finally:
         await provider.close()
 
-    if result.sections:
-        return result  # Pre-parsed by instructor — skip manual parsing
+    if not sections:
+        logger.warning("All report sections failed; using fallback commentary.")
+        return CommentaryResult(
+            text=FALLBACK_COMMENTARY,
+            model=None,
+            error="All report sections fell back to the generic commentary.",
+        )
 
-    if result.text and result.text != FALLBACK_COMMENTARY:
-        finalized = _finalize_commentary_text(result.text)
-        sections = _parse_sections(finalized)
-        if sections:
-            flat_text = flatten_sections(sections)
-            return CommentaryResult(text=flat_text, model=result.model, sections=sections, error=result.error)
-        return CommentaryResult(text=finalized, model=result.model, error=result.error)
+    model = _summarize_models(models)
+    error: str | None = None
+    if fallback_titles:
+        error = f"Some sections used fallback text: {', '.join(fallback_titles)}."
+    return CommentaryResult(
+        text=flatten_sections(sections),
+        model=model,
+        sections=sections,
+        error=error,
+    )
 
-    logger.warning("Provider returned empty text; using fallback commentary.")
-    error = result.error or "Provider returned empty response"
-    return CommentaryResult(text=FALLBACK_COMMENTARY, model=None, error=error)
+
+async def _generate_sections(
+    provider: LLMProvider,
+    analytics: AnalyticsSummary,
+    *,
+    investor_memory: str,
+    progress_callback: CommentaryProgressCallback | None,
+) -> tuple[tuple[CommentarySection, ...], tuple[str, ...], tuple[str, ...]]:
+    generated_sections: list[CommentarySection] = []
+    models: list[str] = []
+    fallback_titles: list[str] = []
+
+    total_sections = len(REPORT_SECTION_SPECS)
+    for spec in REPORT_SECTION_SPECS:
+        await _emit_progress(progress_callback, len(generated_sections), total_sections, spec.title)
+        section, model, used_fallback = await _generate_single_section(
+            provider,
+            spec,
+            analytics,
+            investor_memory=investor_memory,
+            prior_sections=tuple(generated_sections),
+        )
+        generated_sections.append(section)
+        if model:
+            models.append(model)
+        if used_fallback:
+            fallback_titles.append(spec.title)
+
+    if len(fallback_titles) == total_sections:
+        return (), tuple(models), tuple(fallback_titles)
+    return tuple(generated_sections), tuple(models), tuple(fallback_titles)
+
+
+async def _generate_single_section(
+    provider: LLMProvider,
+    spec: ReportSectionSpec,
+    analytics: AnalyticsSummary,
+    *,
+    investor_memory: str,
+    prior_sections: tuple[CommentarySection, ...],
+) -> tuple[CommentarySection, str | None, bool]:
+    prompt = render_report_section_prompt(
+        spec,
+        analytics,
+        investor_memory=investor_memory,
+        prior_sections=prior_sections,
+    )
+    retry_prompt = (
+        render_report_section_prompt(
+            spec,
+            analytics,
+            investor_memory=investor_memory,
+            prior_sections=(),
+        )
+        + "\n\n<retry_instruction>\n"
+        + "Your previous answer did not follow the contract. Return only the markdown body, no JSON and no heading.\n"
+        + "</retry_instruction>"
+    )
+
+    last_model: str | None = None
+    for attempt_prompt in (prompt, retry_prompt):
+        result = await provider.generate_commentary(
+            WEEKLY_REPORT_SYSTEM_PROMPT,
+            attempt_prompt,
+            max_output_tokens=min(spec.max_output_tokens, GEMINI_MAX_OUTPUT_TOKENS),
+        )
+        if result.model:
+            last_model = result.model
+        body = _sanitize_section_output(spec.title, result.text)
+        if _is_valid_section_body(body):
+            return CommentarySection(title=spec.title, description=body), last_model, False
+
+    return CommentarySection(title=spec.title, description=spec.fallback_text), last_model, True
+
+
+async def _emit_progress(
+    callback: CommentaryProgressCallback | None,
+    completed_sections: int,
+    total_sections: int,
+    current_section: str,
+) -> None:
+    if callback is None:
+        return
+    result = callback(completed_sections, total_sections, current_section)
+    if inspect.isawaitable(result):
+        await result
+
+
+def _sanitize_section_output(section_title: str, text: str) -> str:
+    finalized = _strip_code_fences(finalize_commentary_text(text))
+    if not finalized:
+        return ""
+
+    lines = finalized.splitlines()
+    while lines and not lines[0].strip():
+        lines.pop(0)
+
+    if lines and _normalize_heading(lines[0]) == _normalize_heading(section_title):
+        lines.pop(0)
+        while lines and not lines[0].strip():
+            lines.pop(0)
+
+    return "\n".join(lines).strip()
+
+
+def _strip_code_fences(text: str) -> str:
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        return stripped
+    lines = stripped.splitlines()
+    lines = lines[1:-1] if len(lines) >= _MIN_CODE_FENCE_LINES and lines[-1].strip().startswith("```") else lines[1:]
+    return "\n".join(lines).strip()
+
+
+def _normalize_heading(text: str) -> str:
+    normalized = re.sub(r"^[#>\-\s\d\.\)\(]+", "", text.strip().lower())
+    return normalized.rstrip(":").strip()
+
+
+def _is_valid_section_body(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped or stripped == FALLBACK_COMMENTARY:
+        return False
+    if stripped.startswith(("[", "{")):
+        return False
+    compact_len = len(re.sub(r"\s+", "", stripped))
+    if compact_len >= _MIN_SECTION_TEXT_CHARS:
+        return True
+    lowered = stripped.lower()
+    return any(marker in lowered for marker in _DATA_LIMITATION_MARKERS)
+
+
+def _summarize_models(models: tuple[str, ...]) -> str | None:
+    if not models:
+        return None
+    if all(model == models[0] for model in models):
+        return models[0]
+    return "multiple"
 
 
 async def _resolve_provider(db_path: str | Path | None) -> LLMProvider | None:
@@ -80,7 +251,6 @@ async def _resolve_provider(db_path: str | Path | None) -> LLMProvider | None:
     resolved_path = _resolve_db_path(db_path)
     store = AIProviderStore(resolved_path)
 
-    # Migrate legacy app_settings keys if needed
     try:
         await store.migrate_from_legacy()
     except (OSError, ValueError):  # pragma: no cover - defensive guardrail
@@ -95,7 +265,6 @@ async def _resolve_provider(db_path: str | Path | None) -> LLMProvider | None:
     if config is not None:
         return _build_provider_from_config(config, PROVIDER_REGISTRY)
 
-    # Env fallback for GEMINI_API_KEY
     settings = get_settings()
     env_key = settings.gemini_api_key.get_secret_value().strip()
     if env_key:

@@ -132,6 +132,98 @@ def _coerce_sections(parsed: list[object]) -> tuple[CommentarySection, ...]:
     return tuple(sections)
 
 
+def _find_value_quote(text: str, key: str) -> int | None:
+    match = re.search(rf'"{re.escape(key)}"\s*:\s*"', text)
+    if match is None:
+        return None
+    return match.end() - 1
+
+
+def _decode_json_string_payload(payload: str) -> str:
+    result: list[str] = []
+    idx = 0
+    length = len(payload)
+    escapes = {
+        '"': '"',
+        "\\": "\\",
+        "/": "/",
+        "b": "\b",
+        "f": "\f",
+        "n": "\n",
+        "r": "\r",
+        "t": "\t",
+    }
+    while idx < length:
+        ch = payload[idx]
+        if ch != "\\":
+            result.append(ch)
+            idx += 1
+            continue
+        idx += 1
+        if idx >= length:
+            break
+        esc = payload[idx]
+        if esc == "u":
+            if idx + 4 >= length:
+                break
+            codepoint = payload[idx + 1 : idx + 5]
+            if not re.fullmatch(r"[0-9a-fA-F]{4}", codepoint):
+                break
+            result.append(chr(int(codepoint, 16)))
+            idx += 5
+            continue
+        result.append(escapes.get(esc, esc))
+        idx += 1
+    return "".join(result)
+
+
+def _parse_json_string_at(text: str, quote_idx: int, *, allow_unterminated: bool) -> tuple[str, int] | None:
+    if quote_idx >= len(text) or text[quote_idx] != '"':
+        return None
+    idx = quote_idx + 1
+    payload: list[str] = []
+    escape_next = False
+    while idx < len(text):
+        ch = text[idx]
+        if escape_next:
+            payload.append(ch)
+            escape_next = False
+            idx += 1
+            continue
+        if ch == "\\":
+            payload.append(ch)
+            escape_next = True
+            idx += 1
+            continue
+        if ch == '"':
+            return _decode_json_string_payload("".join(payload)), idx + 1
+        payload.append(ch)
+        idx += 1
+    if allow_unterminated:
+        return _decode_json_string_payload("".join(payload)).strip(), idx
+    return None
+
+
+def _recover_partial_section(text: str) -> CommentarySection | None:
+    title_quote_idx = _find_value_quote(text, "title")
+    description_quote_idx = _find_value_quote(text, "description")
+    if title_quote_idx is None or description_quote_idx is None:
+        return None
+
+    title_result = _parse_json_string_at(text, title_quote_idx, allow_unterminated=False)
+    description_result = _parse_json_string_at(text, description_quote_idx, allow_unterminated=True)
+    if title_result is None or description_result is None:
+        return None
+
+    title, _ = title_result
+    description, _ = description_result
+    normalized_title = title.strip()
+    normalized_description = description.strip()
+    if not normalized_title or not normalized_description:
+        return None
+    return CommentarySection(title=normalized_title, description=normalized_description)
+
+
 def _skip_whitespace(text: str, idx: int) -> int:
     length = len(text)
     while idx < length and text[idx].isspace():
@@ -169,6 +261,9 @@ def _recover_sections_from_array_source(text: str) -> tuple[CommentarySection, .
 
         parsed = _consume_next_section(decoder, source, idx)
         if parsed is None:
+            partial = _recover_partial_section(source[idx:])
+            if partial is not None:
+                sections.append(partial)
             break
         section, idx = parsed
         if section is not None:

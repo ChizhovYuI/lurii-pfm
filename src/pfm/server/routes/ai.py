@@ -12,6 +12,8 @@ from aiohttp import web
 
 from pfm.ai.base import flatten_sections
 from pfm.ai.commentary_parser import parse_commentary_sections
+from pfm.ai.prompts import REPORT_PROMPT_VERSION, REPORT_SECTION_SPECS
+from pfm.db.ai_report_memory_store import AIReportMemoryStore, hash_ai_report_memory
 from pfm.db.ai_store import AIProviderStore
 from pfm.server.connection_validation import (
     ConnectionValidationError,
@@ -50,12 +52,21 @@ async def get_commentary(request: web.Request) -> web.Response:
             text = flatten_sections(recovered)
             sections = [{"title": section.title, "description": section.description} for section in recovered]
 
+    current_memory = await AIReportMemoryStore(request.app["db_path"]).get()
+    current_memory_hash = hash_ai_report_memory(current_memory)
+    cached_memory_hash = parsed.get("memory_hash", "")
+    prompt_version = parsed.get("prompt_version")
+    stale = bool(prompt_version == REPORT_PROMPT_VERSION and cached_memory_hash != current_memory_hash)
+    stale_reason = "AI report was generated before the report memory was updated." if stale else None
+
     return web.json_response(
         {
             "date": analysis_date.isoformat(),
             "text": text,
             "model": parsed.get("model"),
             "sections": sections if isinstance(sections, list) else [],
+            "stale": stale,
+            "stale_reason": stale_reason,
         }
     )
 
@@ -63,7 +74,15 @@ async def get_commentary(request: web.Request) -> web.Response:
 @routes.get("/api/v1/ai/commentary/status")
 async def commentary_status(request: web.Request) -> web.Response:
     """Return whether AI commentary generation is in progress."""
-    return web.json_response({"generating": get_runtime_state(request.app).generating_commentary})
+    state = get_runtime_state(request.app)
+    return web.json_response(
+        {
+            "generating": state.generating_commentary,
+            "completed_sections": state.commentary_completed_sections,
+            "total_sections": state.commentary_total_sections,
+            "current_section": state.commentary_current_section,
+        }
+    )
 
 
 @routes.post("/api/v1/ai/commentary")
@@ -79,6 +98,9 @@ async def generate_commentary(request: web.Request) -> web.Response:
         return web.json_response({"error": "No snapshots available"}, status=404)
 
     state.generating_commentary = True
+    state.commentary_completed_sections = 0
+    state.commentary_total_sections = len(REPORT_SECTION_SPECS)
+    state.commentary_current_section = REPORT_SECTION_SPECS[0].title if REPORT_SECTION_SPECS else None
     task = asyncio.create_task(_run_commentary(request.app))
     state.commentary_task = task
 
@@ -96,13 +118,40 @@ async def _run_commentary(app: web.Application) -> None:
     broadcaster = get_broadcaster(app)
 
     try:
-        await broadcaster.broadcast({"type": "commentary_started"})
+        await broadcaster.broadcast(
+            {
+                "type": "commentary_started",
+                "completed_sections": 0,
+                "total_sections": len(REPORT_SECTION_SPECS),
+                "current_section": REPORT_SECTION_SPECS[0].title if REPORT_SECTION_SPECS else None,
+            }
+        )
 
         latest = await repo.get_latest_snapshots()
         report_date = max(s.date for s in latest)
 
         analytics = await build_analytics_summary(repo, report_date, db_path=db_path)
-        result = await generate_commentary_with_model(analytics, db_path=db_path)
+        memory = await AIReportMemoryStore(db_path).get()
+
+        async def _report_progress(completed_sections: int, total_sections: int, current_section: str) -> None:
+            state.commentary_completed_sections = completed_sections
+            state.commentary_total_sections = total_sections
+            state.commentary_current_section = current_section
+            await broadcaster.broadcast(
+                {
+                    "type": "commentary_progress",
+                    "completed_sections": completed_sections,
+                    "total_sections": total_sections,
+                    "current_section": current_section,
+                }
+            )
+
+        result = await generate_commentary_with_model(
+            analytics,
+            db_path=db_path,
+            progress_callback=_report_progress,
+            investor_memory=memory,
+        )
 
         sections_dicts = [{"title": s.title, "description": s.description} for s in result.sections]
 
@@ -111,6 +160,8 @@ async def _run_commentary(app: web.Application) -> None:
             metric_payload["model"] = result.model
         if sections_dicts:
             metric_payload["sections"] = sections_dicts
+        metric_payload["prompt_version"] = REPORT_PROMPT_VERSION
+        metric_payload["memory_hash"] = hash_ai_report_memory(memory)
 
         await repo.save_analytics_metric(
             report_date,
@@ -136,6 +187,9 @@ async def _run_commentary(app: web.Application) -> None:
     finally:
         state.generating_commentary = False
         state.commentary_task = None
+        state.commentary_completed_sections = 0
+        state.commentary_total_sections = 0
+        state.commentary_current_section = None
 
 
 # ── Legacy single-provider endpoints (backward compat) ──────────────

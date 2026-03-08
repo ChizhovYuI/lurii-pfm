@@ -1,15 +1,14 @@
-"""Tests for OpenAI-compatible base provider using instructor."""
+"""Tests for OpenAI-compatible base provider using raw chat completions."""
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
-from instructor.core import InstructorRetryException
 from openai import APIError
 
 from pfm.ai.base import FALLBACK_COMMENTARY
 from pfm.ai.providers.openai_compat import OpenAICompatibleProvider
-from pfm.ai.schemas import CommentaryResponse, ReportSection
 
 
 class _TestProvider(OpenAICompatibleProvider):
@@ -19,33 +18,29 @@ class _TestProvider(OpenAICompatibleProvider):
 
 
 def _mock_client(response=None, side_effect=None):
-    """Create a mock instructor client."""
     client = MagicMock()
     create = AsyncMock(return_value=response, side_effect=side_effect)
     client.chat.completions.create = create
     return client
 
 
+def _response_with_text(text: str) -> object:
+    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=text))])
+
+
 async def test_generate_commentary_success():
-    response = CommentaryResponse(
-        sections=[
-            ReportSection(title="Market Context", description="BTC at **$95k**."),
-            ReportSection(title="Risk Alerts", description="High HHI."),
-        ]
-    )
-    client = _mock_client(response=response)
+    client = _mock_client(response=_response_with_text("Portfolio looks stable.\n- Concentration remains high."))
     provider = _TestProvider(client=client)
 
     result = await provider.generate_commentary("system", "user prompt")
 
     assert result.model == "test-model"
-    assert len(result.sections) == 2
-    assert result.sections[0].title == "Market Context"
-    assert "BTC at **$95k**." in result.text
+    assert result.sections == ()
+    assert "Portfolio looks stable." in result.text
 
     call_kwargs = client.chat.completions.create.call_args
     assert call_kwargs.kwargs["model"] == "test-model"
-    assert call_kwargs.kwargs["response_model"] is CommentaryResponse
+    assert "messages" in call_kwargs.kwargs
 
 
 async def test_generate_commentary_error_returns_fallback():
@@ -61,8 +56,7 @@ async def test_generate_commentary_error_returns_fallback():
 
 
 async def test_generate_commentary_custom_model():
-    response = CommentaryResponse(sections=[ReportSection(title="Summary", description="OK.")])
-    client = _mock_client(response=response)
+    client = _mock_client(response=_response_with_text("Custom model response"))
     provider = _TestProvider(model="custom-model", client=client)
 
     result = await provider.generate_commentary("sys", "usr")
@@ -72,20 +66,13 @@ async def test_generate_commentary_custom_model():
     assert call_kwargs.kwargs["model"] == "custom-model"
 
 
-async def test_generate_commentary_retry_exhausted_returns_fallback():
-    err = InstructorRetryException(
-        n_attempts=3,
-        total_usage=0,
-        messages=[],
-        last_completion=None,
-    )
-    client = _mock_client(side_effect=err)
+async def test_generate_commentary_empty_text_returns_fallback():
+    client = _mock_client(response=_response_with_text(""))
     provider = _TestProvider(client=client)
 
     result = await provider.generate_commentary("sys", "usr")
 
     assert result.text == FALLBACK_COMMENTARY
-    assert result.model is None
     assert result.error is not None
 
 
@@ -94,7 +81,7 @@ async def test_close_does_not_close_injected_client():
     provider = _TestProvider(client=client)
 
     await provider.close()
-    # Injected client should not be closed (owns_client is False)
+
     assert not hasattr(client, "close") or not getattr(client.close, "called", False)
 
 

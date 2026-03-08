@@ -1,4 +1,4 @@
-"""Prompt templates for AI weekly commentary."""
+"""Prompt templates for section-based AI weekly commentary."""
 
 from __future__ import annotations
 
@@ -7,59 +7,53 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
+from pfm.ai.base import CommentarySection
+
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from datetime import date
 
+REPORT_PROMPT_VERSION = 2
+_PRIOR_SECTION_DESCRIPTION_LIMIT = 300
+_PRIOR_SECTION_DESCRIPTION_TRUNCATED_LIMIT = _PRIOR_SECTION_DESCRIPTION_LIMIT - 3
+_PRIOR_SECTIONS_TOTAL_LIMIT = 1200
+
 WEEKLY_REPORT_SYSTEM_PROMPT = """
-You are a personal financial advisor. Analyze portfolio analytics and produce concise, practical guidance.
-Prioritize risk-aware recommendations and explicitly call out data limitations when confidence is low.
-Keep advice specific to the provided portfolio data and avoid generic education content.
+You are a personal financial advisor writing one section of a weekly portfolio report.
+Ground every claim in the supplied analytics and investor context.
+If investor context conflicts with live analytics, trust the live analytics.
+Be concise, practical, and risk-aware.
 
-Output format: respond ONLY with a valid JSON array of objects, no text before or after.
-Each object has two keys:
-  "title" — short section heading (plain text, no markdown)
-  "description" — section body in GitHub-flavored Markdown (use **bold**, bullet lists, numbers from data)
-
-Rules:
-- Ground every claim in provided data.
-- If data is missing or noisy, state that clearly.
-- Include concrete numbers and percentages from the provided data.
-- Give enough detail to explain reasoning and actions.
-- When recent transactions are provided, use them to explain asset movements.
-  Correlated withdrawals and deposits across sources (e.g. GBP withdrawal from Wise
-  + USDC deposit to OKX at similar amounts) indicate inter-account transfers with
-  currency conversion — not market gains/losses. Do not flag these as anomalies.
+Output contract:
+- Return only the markdown body for the requested section.
+- Do not return JSON.
+- Do not wrap the answer in code fences.
+- Do not repeat the section title as a heading or first line.
+- Use GitHub-flavored Markdown when it helps clarity.
+- If data is missing or noisy, say so explicitly instead of guessing.
 """.strip()
 
-WEEKLY_REPORT_USER_PROMPT_TEMPLATE = """
-You are given portfolio analytics for {as_of_date}.
-Net worth (USD): {net_worth_usd}
-
-Top holdings:
-{top_holdings}
-
-Allocation by category:
-{allocation_by_category}
-{extra_sections}Risk metrics:
-{risk_metrics}
-{transactions_section}
-Data warnings:
-{warnings}
-
-Write a compact report with exactly these 5 sections:
-1) Market Context
-2) Portfolio Health Assessment
-3) Rebalancing Opportunities
-4) Risk Alerts
-5) Actionable Recommendations for Next 7 Days
-
-Respond with a JSON array of 5 objects, each with "title" and "description" keys.
-Example format:
-[
-  {{"title": "Market Context", "description": "Bitcoin is trading at **$95,432**..."}},
-  ...
-]
+REPORT_SECTION_USER_PROMPT_TEMPLATE = """
+<section_contract>
+Write only the body for the section titled "{title}".
+Purpose: {purpose}
+Style requirements:
+{output_style}
+</section_contract>
+{investor_memory_block}
+<analytics>
+{analytics_context}
+</analytics>
+{prior_sections_block}
+<output_example>
+- One or two short paragraphs grounded in the data.
+- Use bullets only when they improve readability.
+- Include concrete numbers or percentages where useful.
+</output_example>
 """.strip()
+
+# Backward-compat export retained for internal imports/tests.
+WEEKLY_REPORT_USER_PROMPT_TEMPLATE = REPORT_SECTION_USER_PROMPT_TEMPLATE
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,42 +73,186 @@ class AnalyticsSummary:
     recent_transactions: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class ReportSectionSpec:
+    """Backend-defined weekly report section."""
+
+    slug: str
+    title: str
+    purpose: str
+    output_style: str
+    fallback_text: str
+    max_output_tokens: int = 1400
+
+
+REPORT_SECTION_SPECS: tuple[ReportSectionSpec, ...] = (
+    ReportSectionSpec(
+        slug="market-context",
+        title="Market Context",
+        purpose="Summarize what the portfolio data suggests about the last week and current positioning backdrop.",
+        output_style=(
+            "- Explain performance drivers from the portfolio itself.\n"
+            "- Mention material 7-day PnL, top movers, or transaction context.\n"
+            "- Avoid macro storytelling that is not supported by the data."
+        ),
+        fallback_text=(
+            "Recent portfolio movement was mixed. Use the 7-day PnL, top movers, and recent transfers as the main "
+            "context for the week, and treat missing market data cautiously."
+        ),
+    ),
+    ReportSectionSpec(
+        slug="portfolio-health",
+        title="Portfolio Health Assessment",
+        purpose="Assess diversification, liquidity, income mix, and whether the portfolio matches the stated profile.",
+        output_style=(
+            "- Focus on concentration, cash buffer, category balance, and yield exposure.\n"
+            "- Call out strengths before weaknesses.\n"
+            "- Relate the assessment to the investor context when available."
+        ),
+        fallback_text=(
+            "Portfolio health should be assessed through concentration risk, liquidity buffer, source diversification, "
+            "and whether current holdings still match the intended long-term strategy."
+        ),
+    ),
+    ReportSectionSpec(
+        slug="rebalancing",
+        title="Rebalancing Opportunities",
+        purpose="Highlight concrete rebalancing or allocation adjustments worth considering.",
+        output_style=(
+            "- Point to specific assets, categories, or currencies.\n"
+            "- Prefer actionable reweighting ideas over generic diversification advice.\n"
+            "- Skip forced recommendations if the data does not justify rebalancing."
+        ),
+        fallback_text=(
+            "Review outsized positions, category drift, and cash deployment opportunities. Rebalance only where the "
+            "current allocation materially diverges from the intended risk profile."
+        ),
+    ),
+    ReportSectionSpec(
+        slug="risk-alerts",
+        title="Risk Alerts",
+        purpose="List the most important portfolio-specific risks that deserve monitoring.",
+        output_style=(
+            "- Prioritize the top one to three risks.\n"
+            "- Mention data quality limits if they affect confidence.\n"
+            "- Focus on concentration, liquidity, counterparty, or behavioral risk visible from the data."
+        ),
+        fallback_text=(
+            "The main risks to monitor are concentration, liquidity, and any source-specific exposure that could cause "
+            "outsized damage if one position or platform moves sharply."
+        ),
+    ),
+    ReportSectionSpec(
+        slug="next-7-days",
+        title="Actionable Recommendations for Next 7 Days",
+        purpose="End with a short practical checklist for the coming week.",
+        output_style=(
+            "- Use a short numbered list when helpful.\n"
+            "- Keep actions realistic for a one-week horizon.\n"
+            "- Separate must-do items from optional improvements."
+        ),
+        fallback_text=(
+            "For the next 7 days, review concentration risk, confirm cash and emergency reserves, and make only the "
+            "highest-conviction allocation adjustments supported by current data."
+        ),
+    ),
+)
+
+
+def render_report_section_prompt(
+    spec: ReportSectionSpec,
+    analytics: AnalyticsSummary,
+    *,
+    investor_memory: str = "",
+    prior_sections: Sequence[CommentarySection] = (),
+) -> str:
+    """Render the user prompt for a single report section."""
+    investor_memory_block = ""
+    normalized_memory = investor_memory.strip()
+    if normalized_memory:
+        investor_memory_block = f"\n<investor_memory>\n{normalized_memory}\n</investor_memory>\n"
+
+    prior_sections_block = ""
+    clipped_prior = _clip_prior_sections(prior_sections)
+    if clipped_prior:
+        lines = []
+        for section in clipped_prior:
+            lines.append(f"## {section.title}")
+            lines.append(section.description)
+        prior_sections_block = f"\n<prior_sections>\n{'\n'.join(lines)}\n</prior_sections>\n"
+
+    return REPORT_SECTION_USER_PROMPT_TEMPLATE.format(
+        title=spec.title,
+        purpose=spec.purpose,
+        output_style=spec.output_style,
+        investor_memory_block=investor_memory_block.strip("\n"),
+        analytics_context=_render_analytics_context(analytics),
+        prior_sections_block=prior_sections_block.strip("\n"),
+    )
+
+
 def render_weekly_report_user_prompt(analytics: AnalyticsSummary) -> str:
-    """Render the user prompt from analytics data."""
+    """Legacy compatibility helper used by older imports/tests."""
+    return render_report_section_prompt(REPORT_SECTION_SPECS[0], analytics)
+
+
+def _clip_prior_sections(prior_sections: Sequence[CommentarySection]) -> tuple[CommentarySection, ...]:
+    if not prior_sections:
+        return ()
+    clipped: list[CommentarySection] = []
+    total_chars = 0
+    for section in prior_sections:
+        description = section.description.strip()
+        if len(description) > _PRIOR_SECTION_DESCRIPTION_LIMIT:
+            description = description[:_PRIOR_SECTION_DESCRIPTION_TRUNCATED_LIMIT].rstrip() + "..."
+        section_chars = len(section.title) + len(description)
+        if clipped and total_chars + section_chars > _PRIOR_SECTIONS_TOTAL_LIMIT:
+            break
+        clipped.append(CommentarySection(title=section.title, description=description))
+        total_chars += section_chars
+    return tuple(clipped)
+
+
+def _render_analytics_context(analytics: AnalyticsSummary) -> str:
     top_holdings = _compact_top_holdings(analytics.allocation_by_asset)
     allocation_by_category = _compact_allocation_by_category(analytics.allocation_by_category)
+    allocation_by_source = _compact_allocation_by_source(analytics.allocation_by_source)
+    currency_exposure = _compact_currency_exposure(analytics.currency_exposure)
     risk_metrics = _compact_risk_metrics(analytics.risk_metrics)
-    warnings_text = "\n".join(analytics.warnings) if analytics.warnings else "None"
+    warnings_text = "\n".join(f"- {warning}" for warning in analytics.warnings) if analytics.warnings else "- None"
 
-    extra_parts: list[str] = []
+    parts = [
+        f"As of date: {analytics.as_of_date.isoformat()}",
+        f"Net worth (USD): {_fmt_usd(analytics.net_worth_usd)}",
+        "Top holdings:",
+        _pretty_json(top_holdings),
+        "Allocation by category:",
+        _pretty_json(allocation_by_category),
+        "Allocation by source:",
+        _pretty_json(allocation_by_source),
+        "Currency exposure:",
+        _pretty_json(currency_exposure),
+        "Risk metrics:",
+        _pretty_json(risk_metrics),
+    ]
+
     if analytics.earn_positions:
         earn = _compact_earn_positions(analytics.earn_positions)
         if earn:
-            extra_parts.append(f"DeFi/Earn positions (assets generating yield):\n{_pretty_json(earn)}")
+            parts.extend(["Earn/yield positions:", _pretty_json(earn)])
+
     if analytics.weekly_pnl:
         pnl = _compact_weekly_pnl(analytics.weekly_pnl)
         if pnl:
-            extra_parts.append(f"7-Day portfolio change:\n{_pretty_json(pnl)}")
-    extra_sections = "\n".join(extra_parts) + "\n" if extra_parts else ""
+            parts.extend(["7-day portfolio change:", _pretty_json(pnl)])
 
-    transactions_section = ""
     if analytics.recent_transactions:
         txs = _compact_recent_transactions(analytics.recent_transactions)
         if txs:
-            transactions_section = (
-                "\nRecent transactions (last 7 days, deposits/withdrawals/transfers):\n" f"{_pretty_json(txs)}\n"
-            )
+            parts.extend(["Recent transactions (last 7 days):", _pretty_json(txs)])
 
-    return WEEKLY_REPORT_USER_PROMPT_TEMPLATE.format(
-        as_of_date=analytics.as_of_date.isoformat(),
-        net_worth_usd=_fmt_usd(analytics.net_worth_usd),
-        top_holdings=_pretty_json(top_holdings),
-        allocation_by_category=_pretty_json(allocation_by_category),
-        extra_sections=extra_sections,
-        risk_metrics=_pretty_json(risk_metrics),
-        transactions_section=transactions_section,
-        warnings=warnings_text,
-    )
+    parts.extend(["Data warnings:", warnings_text])
+    return "\n".join(parts)
 
 
 def _pretty_json(raw: str | list[dict[str, object]] | dict[str, object]) -> str:
@@ -158,6 +296,34 @@ def _compact_allocation_by_category(raw: str) -> list[dict[str, object]]:
         )
     compact.sort(key=lambda row: _to_decimal(row.get("usd_value", "0")), reverse=True)
     return compact[:6]
+
+
+def _compact_allocation_by_source(raw: str) -> list[dict[str, object]]:
+    rows = _parse_list(raw)
+    compact: list[dict[str, object]] = [
+        {
+            "source": str(row.get("source", "unknown")),
+            "usd_value": _fmt_usd(row.get("usd_value", "0")),
+            "percentage": _fmt_pct(row.get("percentage", "0")),
+        }
+        for row in rows
+    ]
+    compact.sort(key=lambda row: _to_decimal(row.get("usd_value", "0")), reverse=True)
+    return compact[:8]
+
+
+def _compact_currency_exposure(raw: str) -> list[dict[str, object]]:
+    rows = _parse_list(raw)
+    compact: list[dict[str, object]] = [
+        {
+            "currency": str(row.get("currency", "unknown")),
+            "usd_value": _fmt_usd(row.get("usd_value", "0")),
+            "percentage": _fmt_pct(row.get("percentage", "0")),
+        }
+        for row in rows
+    ]
+    compact.sort(key=lambda row: _to_decimal(row.get("usd_value", "0")), reverse=True)
+    return compact[:8]
 
 
 def _compact_risk_metrics(raw: str) -> dict[str, object]:
@@ -210,12 +376,10 @@ def _to_decimal(value: object) -> Decimal:
 
 
 def _fmt_usd(value: object) -> str:
-    """Format USD value rounded to 2 decimals."""
     return str(_to_decimal(value).quantize(Decimal("0.01")))
 
 
 def _fmt_pct(value: object) -> str:
-    """Format percentage with '%' suffix to prevent AI misinterpretation."""
     return f"{_to_decimal(value).quantize(Decimal('0.01'))}%"
 
 
@@ -231,7 +395,7 @@ def _compact_earn_positions(raw: str) -> list[dict[str, object]]:
         }
         for row in rows
     ]
-    compact.sort(key=lambda r: _to_decimal(r.get("usd_value", "0")), reverse=True)
+    compact.sort(key=lambda row: _to_decimal(row.get("usd_value", "0")), reverse=True)
     return compact
 
 
@@ -263,13 +427,8 @@ def _compact_weekly_pnl(raw: str) -> dict[str, object] | None:
 
 
 def _compact_recent_transactions(raw: str) -> list[dict[str, object]]:
-    """Compact recent transactions for the AI prompt.
-
-    Groups by (date, source, type, asset) and sums amounts to avoid duplicates.
-    Filters out tiny amounts (< $10 equivalent).
-    """
+    """Compact recent transactions for the AI prompt."""
     rows = _parse_list(raw)
-    # Deduplicate by grouping
     grouped: dict[tuple[str, ...], Decimal] = {}
     for row in rows:
         key = (
@@ -293,5 +452,5 @@ def _compact_recent_transactions(raw: str) -> list[dict[str, object]]:
                 "amount": str(amount.quantize(Decimal("0.01"))),
             }
         )
-    compact.sort(key=lambda r: str(r.get("date", "")), reverse=True)
+    compact.sort(key=lambda row: str(row.get("date", "")), reverse=True)
     return compact[:30]

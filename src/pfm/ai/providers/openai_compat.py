@@ -1,17 +1,13 @@
-"""Shared base for OpenAI-compatible LLM providers (OpenRouter, Grok) using instructor."""
+"""Shared base for OpenAI-compatible LLM providers using raw chat completions."""
 
 from __future__ import annotations
 
 import logging
 from typing import Any
 
-import instructor
-from instructor.core import InstructorRetryException
 from openai import APIError, AsyncOpenAI
-from pydantic import ValidationError
 
-from pfm.ai.base import FALLBACK_COMMENTARY, CommentaryResult, LLMProvider, flatten_sections
-from pfm.ai.schemas import CommentaryResponse
+from pfm.ai.base import FALLBACK_COMMENTARY, CommentaryResult, LLMProvider
 
 logger = logging.getLogger(__name__)
 
@@ -42,16 +38,14 @@ class OpenAICompatibleProvider(LLMProvider):
         self._raw_client: Any
         if client is not None:
             self._client = client
-            self._raw_client = raw_client if raw_client is not None else getattr(client, "client", client)
+            self._raw_client = raw_client if raw_client is not None else client
         else:
             self._raw_client = raw_client or AsyncOpenAI(
                 api_key=self._api_key or "not-needed",
                 base_url=f"{self._base_url}/v1",
                 timeout=_TIMEOUT_SECONDS,
             )
-            self._client = instructor.from_openai(self._raw_client, mode=instructor.Mode.JSON)
-
-    # -- public API ------------------------------------------------------------
+            self._client = self._raw_client
 
     async def validate_connection(self) -> None:
         """Validate auth/base URL using the provider's /models endpoint."""
@@ -64,27 +58,55 @@ class OpenAICompatibleProvider(LLMProvider):
         *,
         max_output_tokens: int = 4096,
     ) -> CommentaryResult:
-        """Call instructor-patched ``/v1/chat/completions`` and return a :class:`CommentaryResult`."""
+        """Call ``/v1/chat/completions`` and return plain markdown text."""
         try:
-            response: CommentaryResponse = await self._client.chat.completions.create(
+            response = await self._client.chat.completions.create(
                 model=self._model,
                 max_tokens=max_output_tokens,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                response_model=CommentaryResponse,
             )
-        except (APIError, ValidationError, InstructorRetryException):
+        except APIError:
             error_msg = f"{self.name} API request failed"
             logger.warning("%s", error_msg, exc_info=True)
             return CommentaryResult(text=FALLBACK_COMMENTARY, model=None, error=error_msg)
 
-        sections = response.to_commentary_sections()
-        flat_text = flatten_sections(sections)
-        return CommentaryResult(text=flat_text, model=self._model, sections=sections)
+        text = _extract_openai_text(response)
+        if not text:
+            error_msg = f"{self.name} API returned empty response"
+            logger.warning("%s", error_msg)
+            return CommentaryResult(text=FALLBACK_COMMENTARY, model=None, error=error_msg)
+
+        return CommentaryResult(text=text, model=self._model)
 
     async def close(self) -> None:
         """Close the underlying OpenAI client if owned."""
-        if self._owns_client:
+        if self._owns_client and hasattr(self._raw_client, "close"):
             await self._raw_client.close()
+
+
+def _extract_openai_text(response: object) -> str:
+    choices = _field_value(response, "choices")
+    if not isinstance(choices, list) or not choices:
+        return ""
+
+    message = _field_value(choices[0], "message")
+    content = _field_value(message, "content")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            text = _field_value(item, "text")
+            if isinstance(text, str) and text.strip():
+                parts.append(text.strip())
+        return "\n".join(parts).strip()
+    return ""
+
+
+def _field_value(body: object, field: str) -> object | None:
+    if isinstance(body, dict):
+        return body.get(field)
+    return getattr(body, field, None)

@@ -10,6 +10,7 @@ import aiosqlite
 from aiohttp import web
 
 from pfm.ai.providers.registry import PROVIDER_REGISTRY
+from pfm.db.ai_report_memory_store import AI_REPORT_MEMORY_KEY, normalize_ai_report_memory
 from pfm.db.ai_store import AIProviderStore
 from pfm.server.serializers import mask_secret
 
@@ -170,6 +171,12 @@ async def update_settings(request: web.Request) -> web.Response:
 
     if not body:
         return web.json_response({"error": "Request body must be a non-empty JSON object"}, status=400)
+
+    if AI_REPORT_MEMORY_KEY in body:
+        try:
+            body[AI_REPORT_MEMORY_KEY] = normalize_ai_report_memory(str(body[AI_REPORT_MEMORY_KEY]))
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
 
     async with aiosqlite.connect(str(db_path)) as db:
         for key, value in body.items():
