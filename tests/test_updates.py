@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path as RealPath
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -11,6 +10,7 @@ import pytest
 
 from pfm import __version__
 from pfm.db.models import init_db
+from pfm.server import daemon as daemon_mod
 from pfm.server.app import create_app
 from pfm.server.routes import updates as updates_mod
 
@@ -47,7 +47,7 @@ def _mock_installed_versions(monkeypatch):
     monkeypatch.setattr(updates_mod, "_get_locally_installed_versions", fake_get_locally_installed_versions)
 
 
-async def _wait_for_status(db_path: RealPath, expected_status: str) -> dict[str, Any]:
+async def _wait_for_status(db_path, expected_status: str) -> dict[str, Any]:
     for _ in range(200):
         state = await updates_mod._load_install_state(db_path)
         if state["status"] == expected_status:
@@ -228,7 +228,7 @@ async def test_install_conflict_when_already_installing(client, db_path):
     assert resp.status == 409
 
 
-async def test_restart_returns_404_when_no_plist(client, db_path):
+async def test_restart_returns_409_when_not_launchd_managed(client, db_path):
     await updates_mod._save_install_state(
         db_path,
         {
@@ -241,16 +241,16 @@ async def test_restart_returns_404_when_no_plist(client, db_path):
         },
     )
 
-    with patch("pfm.server.routes.updates.Path.home") as mock_home:
-        mock_home.return_value = RealPath("/nonexistent")
+    with patch.object(updates_mod, "is_launchd_service_loaded", return_value=False):
         resp = await client.post("/api/v1/updates/restart")
 
-    assert resp.status == 404
+    assert resp.status == 409
+    assert await resp.json() == {"error": "Daemon restart is only supported for the launchd-managed service."}
     state = await updates_mod._load_install_state(db_path)
     assert state["status"] == "installed"
 
 
-async def test_restart_resets_install_state(client, db_path):
+async def test_restart_schedules_launchctl_kickstart(client, db_path):
     await updates_mod._save_install_state(
         db_path,
         {
@@ -264,27 +264,61 @@ async def test_restart_resets_install_state(client, db_path):
     )
 
     with (
-        patch("pfm.server.routes.updates.Path.home") as mock_home,
-        patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+        patch.object(updates_mod, "is_launchd_service_loaded", return_value=True),
+        patch.object(updates_mod, "schedule_restart", return_value=4321) as mock_schedule,
+        patch.object(updates_mod, "_exec", new_callable=AsyncMock) as mock_exec,
     ):
-        tmp = RealPath("/tmp/test_launchagent")
-        la_dir = tmp / "Library/LaunchAgents"
-        la_dir.mkdir(parents=True, exist_ok=True)
-        plist = la_dir / "finance.lurii.pfm.plist"
-        plist.write_text("<plist/>")
-        mock_home.return_value = tmp
-
-        proc = AsyncMock()
-        proc.communicate.return_value = (b"", b"")
-        proc.returncode = 0
-        mock_exec.return_value = proc
-
         resp = await client.post("/api/v1/updates/restart")
 
     assert resp.status == 200
+    mock_schedule.assert_called_once()
+    called_uid = mock_schedule.call_args.kwargs["uid"]
+    assert daemon_mod.get_service_target(called_uid) == f"gui/{called_uid}/finance.lurii.pfm"
+    mock_exec.assert_not_awaited()
     state = await updates_mod._load_install_state(db_path)
     assert state["status"] == "idle"
     assert state["progress"] == 0.0
+
+
+async def test_restart_returns_500_when_restart_schedule_fails(client, db_path):
+    await updates_mod._save_install_state(
+        db_path,
+        {
+            "status": "installed",
+            "progress": 1.0,
+            "message": "Updates installed",
+            "target": "all",
+            "installed_versions": {"app": _TEST_APP_VERSION},
+            "updated_at": "2026-03-08T00:00:00+00:00",
+        },
+    )
+
+    with (
+        patch.object(updates_mod, "is_launchd_service_loaded", return_value=True),
+        patch.object(updates_mod, "schedule_restart", side_effect=OSError("boom")),
+    ):
+        resp = await client.post("/api/v1/updates/restart")
+
+    assert resp.status == 500
+    assert await resp.json() == {"error": "Failed to schedule daemon restart."}
+    state = await updates_mod._load_install_state(db_path)
+    assert state["status"] == "installed"
+
+
+def test_schedule_restart_uses_kickstart_k():
+    fake_proc = Mock(pid=9876)
+
+    with patch("pfm.server.daemon.subprocess.Popen", return_value=fake_proc) as mock_popen:
+        pid = daemon_mod.schedule_restart(delay_seconds=0.25, uid=501)
+
+    assert pid == 9876
+    args, kwargs = mock_popen.call_args
+    assert args[0][0] == daemon_mod.sys.executable
+    helper_script = args[0][2]
+    assert "time.sleep(0.25)" in helper_script
+    assert '"/bin/launchctl", "kickstart", "-k"' in helper_script
+    assert "'gui/501/finance.lurii.pfm'" in helper_script
+    assert kwargs["start_new_session"] is True
 
 
 async def test_check_updates_restart_pending_when_installed(client, db_path):

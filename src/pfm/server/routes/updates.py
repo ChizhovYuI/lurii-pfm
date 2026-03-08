@@ -8,15 +8,18 @@ import logging
 import os
 import time
 from datetime import UTC, datetime
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import aiosqlite
 import httpx
 from aiohttp import web
 
 from pfm import __version__
+from pfm.server.daemon import get_service_target, is_launchd_service_loaded, schedule_restart
 from pfm.server.state import get_broadcaster, get_runtime_state
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +32,6 @@ _REPOS = {
 }
 _CACHE_TTL = 3600  # 1 hour
 _BREW = "/opt/homebrew/bin/brew"
-_LAUNCHD_LABEL = "finance.lurii.pfm"
 _PFM_FORMULA = "lurii-pfm"
 _APP_CASK = "lurii-finance"
 
@@ -480,12 +482,21 @@ async def install_updates(request: web.Request) -> web.Response:
 @routes.post("/api/v1/updates/restart")
 async def restart_services(request: web.Request) -> web.Response:
     """Restart the pfm daemon via launchctl."""
-    uid = str(os.getuid())
-    plist = Path.home() / "Library/LaunchAgents" / f"{_LAUNCHD_LABEL}.plist"
-    if not plist.exists():
-        return web.json_response({"error": "LaunchAgent plist not found"}, status=404)
+    uid = os.getuid()
+    service_target = get_service_target(uid)
+    if not is_launchd_service_loaded(uid):
+        logger.warning("Restart requested for non-launchd daemon target=%s", service_target)
+        return web.json_response(
+            {"error": "Daemon restart is only supported for the launchd-managed service."},
+            status=409,
+        )
 
+    try:
+        helper_pid = schedule_restart(uid=uid)
+    except OSError:
+        logger.exception("Failed to schedule daemon restart target=%s", service_target)
+        return web.json_response({"error": "Failed to schedule daemon restart."}, status=500)
+
+    logger.info("Restart accepted for target=%s helper_pid=%s", service_target, helper_pid)
     await _reset_install_state(request.app["db_path"])
-    await _exec("launchctl", "bootout", f"gui/{uid}/{_LAUNCHD_LABEL}")
-    await _exec("launchctl", "bootstrap", f"gui/{uid}", str(plist))
     return web.json_response({"status": "restarting"})

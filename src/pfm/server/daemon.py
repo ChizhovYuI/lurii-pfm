@@ -41,6 +41,12 @@ def get_plist_path() -> Path:
     return Path.home() / "Library" / "LaunchAgents" / f"{BUNDLE_ID}.plist"
 
 
+def get_service_target(uid: int | None = None) -> str:
+    """Return the launchctl service target for the current user."""
+    resolved_uid = os.getuid() if uid is None else uid
+    return f"gui/{resolved_uid}/{BUNDLE_ID}"
+
+
 def is_daemon_running() -> tuple[bool, int | None]:
     """Check if the daemon is running via PID file + signal probe.
 
@@ -82,6 +88,49 @@ def _find_pfm_executable() -> str:
     if pfm_path:
         return pfm_path
     return str(Path(sys.executable).parent / "pfm")
+
+
+def is_launchd_service_loaded(uid: int | None = None) -> bool:
+    """Return True when the launchd service target is currently loaded."""
+    service_target = get_service_target(uid)
+    result = subprocess.run(  # noqa: S603
+        ["/bin/launchctl", "print", service_target],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return result.returncode == 0
+
+
+def schedule_restart(delay_seconds: float = 0.5, uid: int | None = None) -> int:
+    """Schedule a detached launchctl kickstart for the daemon.
+
+    The helper runs in a separate session so it survives the current daemon
+    process exiting before launchd performs the restart.
+    """
+    service_target = get_service_target(uid)
+    helper = textwrap.dedent(
+        f"""\
+        import subprocess
+        import time
+
+        time.sleep({delay_seconds!r})
+        subprocess.run(
+            ["/bin/launchctl", "kickstart", "-k", {service_target!r}],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        """
+    )
+    proc = subprocess.Popen(  # noqa: S603
+        [sys.executable, "-c", helper],
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    logger.info("Scheduled daemon restart helper pid=%s target=%s", proc.pid, service_target)
+    return proc.pid
 
 
 def generate_plist(port: int) -> str:
