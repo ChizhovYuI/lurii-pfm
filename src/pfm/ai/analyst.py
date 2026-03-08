@@ -19,9 +19,11 @@ from pfm.ai.commentary_parser import (
     parse_commentary_sections,
 )
 from pfm.ai.prompts import (
+    GEMINI_WEEKLY_REPORT_JSON_SYSTEM_PROMPT,
     REPORT_SECTION_SPECS,
     WEEKLY_REPORT_JSON_SYSTEM_PROMPT,
     WEEKLY_REPORT_SYSTEM_PROMPT,
+    render_gemini_weekly_report_json_prompt,
     render_report_section_prompt,
     render_weekly_report_json_prompt,
 )
@@ -32,6 +34,8 @@ from pfm.db.ai_report_memory_store import AIReportMemoryStore
 from pfm.db.ai_store import AIProviderStore
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from pfm.ai.base import LLMProvider
     from pfm.ai.prompts import AnalyticsSummary, ReportSectionSpec
     from pfm.db.models import AIProvider
@@ -53,6 +57,7 @@ _MAX_NUMBERED_ITEMS = 5
 _MAX_BULLET_ITEM_CHARS = 220
 _DEEPSEEK_REASONER_MIN_OUTPUT_TOKENS = 6000
 _DEEPSEEK_JSON_MAX_OUTPUT_TOKENS = 6000
+_GEMINI_JSON_MAX_OUTPUT_TOKENS = 4096
 _DATA_LIMITATION_MARKERS = (
     "insufficient data",
     "not enough data",
@@ -191,6 +196,21 @@ async def generate_commentary_with_model(
                 analytics,
                 investor_memory=investor_memory,
                 progress_callback=progress_callback,
+                strategy="deepseek_json_single_shot",
+                system_prompt=WEEKLY_REPORT_JSON_SYSTEM_PROMPT,
+                prompt_renderer=render_weekly_report_json_prompt,
+                max_output_tokens=_DEEPSEEK_JSON_MAX_OUTPUT_TOKENS,
+            )
+        if _should_use_gemini_json_mode(provider):
+            return await _generate_single_shot_commentary(
+                provider,
+                analytics,
+                investor_memory=investor_memory,
+                progress_callback=progress_callback,
+                strategy="gemini_json_single_shot",
+                system_prompt=GEMINI_WEEKLY_REPORT_JSON_SYSTEM_PROMPT,
+                prompt_renderer=render_gemini_weekly_report_json_prompt,
+                max_output_tokens=_GEMINI_JSON_MAX_OUTPUT_TOKENS,
             )
 
         sections, models, diagnostics = await _generate_sections(
@@ -263,26 +283,24 @@ async def _generate_sections(
     return tuple(generated_sections), tuple(models), tuple(diagnostics)
 
 
-async def _generate_single_shot_commentary(
+async def _generate_single_shot_commentary(  # noqa: PLR0913
     provider: LLMProvider,
     analytics: AnalyticsSummary,
     *,
     investor_memory: str,
     progress_callback: CommentaryProgressCallback | None,
+    strategy: str,
+    system_prompt: str,
+    prompt_renderer: Callable[..., str],
+    max_output_tokens: int,
 ) -> CommentaryResult:
     provider_name = _provider_name(provider)
     configured_model = _provider_model_name(provider)
     await _emit_progress(progress_callback, 0, 1, "Weekly Report")
 
-    prompt = render_weekly_report_json_prompt(
-        analytics,
-        investor_memory=investor_memory,
-    )
+    prompt = prompt_renderer(analytics, investor_memory=investor_memory)
     retry_prompt = (
-        render_weekly_report_json_prompt(
-            analytics,
-            investor_memory=investor_memory,
-        )
+        prompt_renderer(analytics, investor_memory=investor_memory)
         + "\n\n<retry_instruction>\n"
         + "Your previous answer was rejected.\n"
         + "Return one valid JSON object only.\n"
@@ -290,6 +308,7 @@ async def _generate_single_shot_commentary(
         + "Do not include any wrapper text.\n"
         + "Do not leave blank lines between bullet items or numbered items.\n"
         + "Keep bullets to one sentence when possible.\n"
+        + "Do not place bullets or numbered items inline after prose.\n"
         + "If fiat was redeployed into another asset, describe it as redeployed or converted.\n"
         + "</retry_instruction>"
     )
@@ -302,12 +321,12 @@ async def _generate_single_shot_commentary(
             provider_name,
             configured_model,
             attempt_number,
-            _DEEPSEEK_JSON_MAX_OUTPUT_TOKENS,
+            max_output_tokens,
         )
         result = await provider.generate_commentary_json(
-            WEEKLY_REPORT_JSON_SYSTEM_PROMPT,
+            system_prompt,
             attempt_prompt,
-            max_output_tokens=_DEEPSEEK_JSON_MAX_OUTPUT_TOKENS,
+            max_output_tokens=max_output_tokens,
         )
         last_finish_reason = result.finish_reason
         parsed_sections, reason = _parse_single_shot_sections(result, analytics)
@@ -327,7 +346,7 @@ async def _generate_single_shot_commentary(
                 provider=provider_name,
                 finish_reason=result.finish_reason,
                 generation_meta=SingleShotReportDiagnostic(
-                    strategy="deepseek_json_single_shot",
+                    strategy=strategy,
                     provider=provider_name,
                     model=result.model or configured_model,
                     status="generated",
@@ -353,7 +372,7 @@ async def _generate_single_shot_commentary(
         provider=provider_name,
         finish_reason=last_finish_reason,
         generation_meta=SingleShotReportDiagnostic(
-            strategy="deepseek_json_single_shot",
+            strategy=strategy,
             provider=provider_name,
             model=configured_model,
             status="failed",
@@ -428,11 +447,15 @@ async def _generate_single_section(
                 status,
                 result.finish_reason,
             )
-            return CommentarySection(title=spec.title, description=body), last_model, SectionGenerationDiagnostic(
-                title=spec.title,
-                status=status,
-                reason="ok" if status == "generated" else attempt_failure_reason,
-                finish_reason=result.finish_reason,
+            return (
+                CommentarySection(title=spec.title, description=body),
+                last_model,
+                SectionGenerationDiagnostic(
+                    title=spec.title,
+                    status=status,
+                    reason="ok" if status == "generated" else attempt_failure_reason,
+                    finish_reason=result.finish_reason,
+                ),
             )
 
         attempt_failure_reason = failure_reason
@@ -455,11 +478,15 @@ async def _generate_single_section(
         spec.title,
         attempt_failure_reason,
     )
-    return CommentarySection(title=spec.title, description=spec.fallback_text), last_model, SectionGenerationDiagnostic(
-        title=spec.title,
-        status="fallback",
-        reason=attempt_failure_reason,
-        finish_reason=result.finish_reason,
+    return (
+        CommentarySection(title=spec.title, description=spec.fallback_text),
+        last_model,
+        SectionGenerationDiagnostic(
+            title=spec.title,
+            status="fallback",
+            reason=attempt_failure_reason,
+            finish_reason=result.finish_reason,
+        ),
     )
 
 
@@ -602,9 +629,9 @@ def _has_readable_structure(text: str, structure: str) -> bool:
     if structure == "two_paragraphs":
         is_valid = len(blocks) == _EXACT_TWO_BLOCKS and not list_lines
     elif structure == "two_paragraphs_or_bullets":
-        is_valid = (
-            len(blocks) == _EXACT_TWO_BLOCKS and not list_lines
-        ) or _valid_list_block(list_lines, _MIN_LIST_ITEMS, _MAX_LIST_ITEMS)
+        is_valid = (len(blocks) == _EXACT_TWO_BLOCKS and not list_lines) or _valid_list_block(
+            list_lines, _MIN_LIST_ITEMS, _MAX_LIST_ITEMS
+        )
     elif structure == "paragraph_then_bullets":
         is_valid = (
             len(blocks) == _EXACT_TWO_BLOCKS
@@ -710,6 +737,10 @@ def _classify_attempt_failure(result: CommentaryResult, body: str) -> str:
 
 def _should_use_deepseek_json_mode(provider: LLMProvider) -> bool:
     return _provider_name(provider) == ProviderName.deepseek and _provider_model_name(provider) == "deepseek-chat"
+
+
+def _should_use_gemini_json_mode(provider: LLMProvider) -> bool:
+    return _provider_name(provider) == ProviderName.gemini
 
 
 def _effective_max_output_tokens(provider: LLMProvider, spec: ReportSectionSpec) -> int:

@@ -108,18 +108,15 @@ async def generate_commentary(request: web.Request) -> web.Response:
         return web.json_response({"error": "No snapshots available"}, status=404)
 
     active_provider = await AIProviderStore(request.app["db_path"]).get_active()
-    is_single_shot = bool(
-        active_provider
-        and active_provider.type == "deepseek"
-        and (active_provider.model or "").strip() == "deepseek-chat"
-    )
+    strategy = _commentary_strategy_for_provider(active_provider)
+    is_single_shot = strategy != "section_by_section"
     state.generating_commentary = True
     state.commentary_completed_sections = 0
     state.commentary_total_sections = 1 if is_single_shot else len(REPORT_SECTION_SPECS)
     state.commentary_current_section = (
         "Weekly Report" if is_single_shot else (REPORT_SECTION_SPECS[0].title if REPORT_SECTION_SPECS else None)
     )
-    state.commentary_strategy = "deepseek_json_single_shot" if is_single_shot else "section_by_section"
+    state.commentary_strategy = strategy
     state.commentary_last_error = None
     task = asyncio.create_task(_run_commentary(request.app))
     state.commentary_task = task
@@ -272,6 +269,18 @@ async def _save_commentary_metric(
         "ai_commentary",
         json.dumps(metric_payload),
     )
+
+
+def _commentary_strategy_for_provider(provider: object | None) -> str:
+    if provider is None:
+        return "section_by_section"
+    provider_type = getattr(provider, "type", None)
+    model = (getattr(provider, "model", None) or "").strip()
+    if provider_type == "deepseek" and model == "deepseek-chat":
+        return "deepseek_json_single_shot"
+    if provider_type == "gemini":
+        return "gemini_json_single_shot"
+    return "section_by_section"
 
 
 # ── Legacy single-provider endpoints (backward compat) ──────────────

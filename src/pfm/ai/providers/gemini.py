@@ -9,10 +9,11 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from google import genai
-from google.genai import errors
+from google.genai import errors, types
 
 from pfm.ai.base import CommentaryResult, LLMProvider
 from pfm.ai.providers.registry import register_provider
+from pfm.ai.schemas import CommentaryResponse
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,7 @@ GEMINI_TOKEN_ESTIMATE_CHARS = 4
 GEMINI_RATE_LIMIT_STATE_FILE = Path("data/gemini_last_request_at.txt")
 HTTP_TOO_MANY_REQUESTS = 429
 HTTP_UNAVAILABLE = 503
+GEMINI_JSON_MAX_OUTPUT_TOKENS = 4096
 
 
 @register_provider
@@ -105,6 +107,104 @@ class GeminiProvider(LLMProvider):
             return CommentaryResult(text=text, model=model)
         logger.warning("Gemini model %s returned empty text.", model)
         return CommentaryResult(text="", model=model, error=f"Gemini model {model} returned empty text")
+
+    async def generate_commentary_json(  # noqa: PLR0911
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        max_output_tokens: int = GEMINI_JSON_MAX_OUTPUT_TOKENS,
+    ) -> CommentaryResult:
+        """Generate a whole weekly report as one structured JSON object."""
+        model = self._validation_model
+        prompt_chars = len(user_prompt)
+        prompt_tokens_est = _estimate_tokens(prompt_chars)
+        logger.info(
+            "gemini_json_input_size model=%s prompt_chars=%d prompt_tokens_est=%d max_output_tokens=%d",
+            model,
+            prompt_chars,
+            prompt_tokens_est,
+            max_output_tokens,
+        )
+
+        generate_content = getattr(self._client.aio.models, "generate_content", None)
+        if generate_content is None:
+            msg = "Gemini SDK client is missing generate_content"
+            logger.warning("%s", msg)
+            return CommentaryResult(text="", model=model, error=msg, provider=self.name)
+
+        config = types.GenerateContentConfig(
+            system_instruction=system_prompt,
+            max_output_tokens=max_output_tokens,
+            response_mime_type="application/json",
+            response_json_schema=CommentaryResponse.model_json_schema(),
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+        )
+        try:
+            if self._owns_client:
+                await _apply_local_rate_limit(model)
+            response = await generate_content(
+                model=model,
+                contents=user_prompt,
+                config=config,
+            )
+        except errors.APIError as exc:
+            status = exc.code
+            if status == HTTP_TOO_MANY_REQUESTS:
+                logger.warning(
+                    "Gemini JSON mode rate limited (HTTP 429). model=%s input_chars=%d input_tokens_est=%d",
+                    model,
+                    prompt_chars,
+                    prompt_tokens_est,
+                )
+                return CommentaryResult(
+                    text="",
+                    model=model,
+                    error="Gemini JSON request was rate limited",
+                    provider=self.name,
+                )
+            if status == HTTP_UNAVAILABLE:
+                logger.warning("Gemini JSON mode temporarily unavailable (HTTP 503) for model %s.", model)
+                return CommentaryResult(
+                    text="",
+                    model=model,
+                    error="Gemini JSON service is temporarily unavailable",
+                    provider=self.name,
+                )
+            logger.warning("Gemini JSON request failed with HTTP %d.", status, exc_info=True)
+            return CommentaryResult(
+                text="",
+                model=model,
+                error=f"Gemini JSON request failed with HTTP {status}",
+                provider=self.name,
+            )
+        except Exception as exc:  # pragma: no cover - defensive guardrail
+            logger.exception("Unexpected Gemini JSON API error")
+            return CommentaryResult(
+                text="",
+                model=model,
+                error=str(exc) or "Gemini JSON request failed",
+                provider=self.name,
+            )
+
+        _log_token_usage(response, model=model)
+        text = _extract_text(response)
+        finish_reason = _extract_finish_reason(response)
+        if not text:
+            logger.warning("Gemini model %s returned empty JSON text. finish_reason=%s", model, finish_reason)
+            return CommentaryResult(
+                text="",
+                model=model,
+                error="Gemini JSON response was empty",
+                provider=self.name,
+                finish_reason=finish_reason,
+            )
+        return CommentaryResult(
+            text=text,
+            model=model,
+            provider=self.name,
+            finish_reason=finish_reason,
+        )
 
     async def close(self) -> None:
         """Close the SDK client if owned."""
@@ -279,6 +379,15 @@ def _extract_text(body: object) -> str:
                 parts.append(part_text.strip())
 
     return "\n".join(parts).strip()
+
+
+def _extract_finish_reason(body: object) -> str | None:
+    candidates = _field_value(body, "candidates")
+    if isinstance(candidates, list) and candidates:
+        finish_reason = _field_value(candidates[0], "finish_reason")
+        if finish_reason is not None:
+            return str(finish_reason)
+    return None
 
 
 def _log_token_usage(body: object, *, model: str) -> None:

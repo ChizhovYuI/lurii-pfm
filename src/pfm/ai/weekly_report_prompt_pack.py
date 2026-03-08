@@ -6,10 +6,12 @@ from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any
 
 from pfm.ai.prompts import (
+    GEMINI_WEEKLY_REPORT_JSON_SYSTEM_PROMPT,
     REPORT_PROMPT_VERSION,
     REPORT_SECTION_SPECS,
     WEEKLY_REPORT_JSON_SYSTEM_PROMPT,
     WEEKLY_REPORT_SYSTEM_PROMPT,
+    render_gemini_weekly_report_json_prompt,
     render_report_section_prompt,
     render_weekly_report_json_prompt,
 )
@@ -75,21 +77,23 @@ async def build_weekly_report_prompt_pack(
     analytics = await build_analytics_summary(repo, as_of, db_path=db_path)
     investor_memory = await AIReportMemoryStore(db_path).get()
     active_provider = await AIProviderStore(db_path).get_active()
-    use_single_shot_json = bool(
-        active_provider
-        and active_provider.type == "deepseek"
-        and (active_provider.model or "").strip() == "deepseek-chat"
-    )
+    workflow = _workflow_for_provider(active_provider)
 
-    if use_single_shot_json:
-        prompt = render_weekly_report_json_prompt(analytics, investor_memory=investor_memory)
+    if workflow == "single_shot_json":
+        is_deepseek = bool(active_provider and active_provider.type == "deepseek")
+        system_prompt = WEEKLY_REPORT_JSON_SYSTEM_PROMPT if is_deepseek else GEMINI_WEEKLY_REPORT_JSON_SYSTEM_PROMPT
+        prompt = (
+            render_weekly_report_json_prompt(analytics, investor_memory=investor_memory)
+            if is_deepseek
+            else render_gemini_weekly_report_json_prompt(analytics, investor_memory=investor_memory)
+        )
         return {
             "kind": "weekly_report_prompt_pack",
             "prompt_version": REPORT_PROMPT_VERSION,
             "as_of_date": as_of.isoformat(),
-            "workflow": "single_shot_json",
+            "workflow": workflow,
             "includes_memory": True,
-            "system_prompt": WEEKLY_REPORT_JSON_SYSTEM_PROMPT,
+            "system_prompt": system_prompt,
             "investor_memory": investor_memory,
             "analytics_context": _extract_analytics_block(prompt),
             "execution_notes": (
@@ -153,6 +157,18 @@ async def build_weekly_report_prompt_pack(
         sections=sections,
     )
     return asdict(pack)
+
+
+def _workflow_for_provider(provider: object | None) -> str:
+    if provider is None:
+        return "section_by_section"
+    provider_type = getattr(provider, "type", None)
+    model = (getattr(provider, "model", None) or "").strip()
+    if provider_type == "deepseek" and model == "deepseek-chat":
+        return "single_shot_json"
+    if provider_type == "gemini":
+        return "single_shot_json"
+    return "section_by_section"
 
 
 def _extract_analytics_block(prompt: str) -> str:

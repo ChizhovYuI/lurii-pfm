@@ -7,10 +7,12 @@ from decimal import Decimal
 
 from pfm.ai.base import CommentarySection
 from pfm.ai.prompts import (
+    GEMINI_WEEKLY_REPORT_JSON_SYSTEM_PROMPT,
     REPORT_SECTION_SPECS,
     WEEKLY_REPORT_JSON_SYSTEM_PROMPT,
     WEEKLY_REPORT_SYSTEM_PROMPT,
     AnalyticsSummary,
+    render_gemini_weekly_report_json_prompt,
     render_report_section_prompt,
     render_weekly_report_json_prompt,
 )
@@ -72,6 +74,10 @@ def test_prompt_templates_have_required_sections():
     assert "fiat balance bridge" in json_prompt_lower
     assert "internal conversions" in json_prompt_lower
     assert "used to fund purchases" in json_prompt_lower
+    gemini_json_prompt_lower = GEMINI_WEEKLY_REPORT_JSON_SYSTEM_PROMPT.lower()
+    assert "return structured json only" in gemini_json_prompt_lower
+    assert "do not wrap the response in markdown or code fences" in gemini_json_prompt_lower
+    assert "internal conversions before fx or valuation" in gemini_json_prompt_lower
 
 
 def test_render_report_section_prompt_formats_analytics():
@@ -155,3 +161,17 @@ def test_render_weekly_report_json_prompt_includes_investor_memory():
 
     assert "<investor_memory>" in prompt
     assert "Goal: FIRE." in prompt
+
+
+def test_render_gemini_weekly_report_json_prompt_includes_exact_titles_and_rules():
+    prompt = render_gemini_weekly_report_json_prompt(_sample_analytics())
+
+    assert "Return one valid JSON object only." in prompt
+    assert '"title": "Market Context"' in prompt
+    assert '"title": "Portfolio Health Assessment"' in prompt
+    assert '"title": "Rebalancing Opportunities"' in prompt
+    assert '"title": "Risk Alerts"' in prompt
+    assert '"title": "Actionable Recommendations for Next 7 Days"' in prompt
+    assert "Do not include code fences or wrapper text." in prompt
+    assert "Do not place bullets or numbered items inline after prose on the same line." in prompt
+    assert "If fiat was redeployed into other assets" in prompt

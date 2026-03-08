@@ -102,6 +102,39 @@ Causal reasoning rules:
 - If only part of a move is explained by transactions, state what is explained and what remains unclear.
 """.strip()
 
+GEMINI_WEEKLY_REPORT_JSON_SYSTEM_PROMPT = """
+You are a personal financial advisor writing a weekly portfolio report.
+Ground every claim in the supplied analytics and investor context.
+If investor context conflicts with live analytics, trust the live analytics.
+Return structured JSON only.
+
+JSON output contract:
+- Return one valid JSON object only.
+- Do not wrap the response in markdown or code fences.
+- Do not include any text before or after the JSON object.
+- The JSON must contain a top-level "sections" array.
+- The array must contain exactly 5 objects in this exact order:
+  1. Market Context
+  2. Portfolio Health Assessment
+  3. Rebalancing Opportunities
+  4. Risk Alerts
+  5. Actionable Recommendations for Next 7 Days
+- Each section object must contain exactly two keys: "title" and "description".
+- Use those exact titles and order.
+
+Formatting rules for section descriptions:
+- Use GitHub-flavored Markdown.
+- Do not repeat the title inside the description.
+- Do not inline bullets or numbered items after prose on the same line.
+- Start every bullet and numbered item on its own new line.
+- Do not leave blank lines between adjacent bullet items or numbered items.
+
+Reasoning rules:
+- Explain fiat and cash balance changes using Fiat balance bridge and Internal conversions before FX or valuation.
+- If a fiat move is mostly explained by redeployment, say it was redeployed, converted, or used to fund purchases.
+- Do not primarily describe such a move as currency weakness or a fiat decline.
+""".strip()
+
 REPORT_SECTION_USER_PROMPT_TEMPLATE = """
 <section_contract>
 Write only the body for the section titled "{title}".
@@ -161,6 +194,41 @@ Use those exact titles and order.
 - Never place bullets or numbered items inline after a sentence in the same paragraph.
 - No blank lines between bullet items or numbered items.
 - Return valid JSON only, with no wrapper text.
+</section_requirements>
+""".strip()
+
+GEMINI_WEEKLY_REPORT_JSON_USER_PROMPT_TEMPLATE = """
+<json_contract>
+Return one valid JSON object only.
+Do not include code fences or wrapper text.
+The JSON must contain:
+{{
+  "sections": [
+    {{"title": "Market Context", "description": "..."}},
+    {{"title": "Portfolio Health Assessment", "description": "..."}},
+    {{"title": "Rebalancing Opportunities", "description": "..."}},
+    {{"title": "Risk Alerts", "description": "..."}},
+    {{"title": "Actionable Recommendations for Next 7 Days", "description": "..."}}
+  ]
+}}
+Use those exact titles and order.
+</json_contract>
+{investor_memory_block}
+<analytics>
+{analytics_context}
+</analytics>
+<section_requirements>
+- Market Context: exactly 1 short intro paragraph, then exactly 3 bullets covering
+  external flows, internal conversions, and residual market/FX effects.
+- Portfolio Health Assessment: exactly 2 short paragraphs.
+- Rebalancing Opportunities: exactly 1 short intro paragraph, then 2-4 compact bullets.
+- Risk Alerts: exactly 2-3 bullets.
+- Actionable Recommendations for Next 7 Days: exactly 3 numbered items.
+- Do not place bullets or numbered items inline after prose on the same line.
+- Start every bullet and numbered item on its own new line.
+- Do not leave blank lines between adjacent bullet items or numbered items.
+- If fiat was redeployed into other assets, explicitly say redeployed, converted, or used to fund purchases.
+- Do not frame redeployed fiat primarily as FX weakness.
 </section_requirements>
 """.strip()
 
@@ -358,6 +426,23 @@ def render_weekly_report_json_prompt(
         investor_memory_block = f"\n<investor_memory>\n{normalized_memory}\n</investor_memory>\n"
 
     return WEEKLY_REPORT_JSON_USER_PROMPT_TEMPLATE.format(
+        investor_memory_block=investor_memory_block.strip("\n"),
+        analytics_context=_render_analytics_context(analytics),
+    )
+
+
+def render_gemini_weekly_report_json_prompt(
+    analytics: AnalyticsSummary,
+    *,
+    investor_memory: str = "",
+) -> str:
+    """Render the single-shot JSON prompt for Gemini structured output."""
+    investor_memory_block = ""
+    normalized_memory = investor_memory.strip()
+    if normalized_memory:
+        investor_memory_block = f"\n<investor_memory>\n{normalized_memory}\n</investor_memory>\n"
+
+    return GEMINI_WEEKLY_REPORT_JSON_USER_PROMPT_TEMPLATE.format(
         investor_memory_block=investor_memory_block.strip("\n"),
         analytics_context=_render_analytics_context(analytics),
     )

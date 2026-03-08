@@ -79,3 +79,30 @@ async def test_build_weekly_report_prompt_pack_keeps_section_pipeline_for_other_
 
     assert pack["workflow"] == "section_by_section"
     assert len(pack["sections"]) == 5
+
+
+@pytest.mark.asyncio
+async def test_build_weekly_report_prompt_pack_uses_single_shot_json_for_gemini():
+    repo = AsyncMock()
+    repo.get_latest_snapshots.return_value = [SimpleNamespace(date=date(2024, 1, 15))]
+    build_summary = AsyncMock(return_value=_sample_analytics())
+
+    with (
+        patch("pfm.ai.weekly_report_prompt_pack.build_analytics_summary", new=build_summary),
+        patch("pfm.ai.weekly_report_prompt_pack.AIReportMemoryStore") as memory_store_cls,
+        patch("pfm.ai.weekly_report_prompt_pack.AIProviderStore") as provider_store_cls,
+    ):
+        memory_store = AsyncMock()
+        memory_store.get.return_value = "## Profile\nGoal: FIRE."
+        memory_store_cls.return_value = memory_store
+
+        provider_store = AsyncMock()
+        provider_store.get_active.return_value = SimpleNamespace(type="gemini", model="gemini-2.5-flash")
+        provider_store_cls.return_value = provider_store
+
+        pack = await build_weekly_report_prompt_pack(repo, Path("/tmp/test.db"), date(2024, 1, 15))
+
+    assert pack["workflow"] == "single_shot_json"
+    assert "structured JSON only" in pack["system_prompt"]
+    assert pack["investor_memory"] == "## Profile\nGoal: FIRE."
+    assert pack["sections"] == ()

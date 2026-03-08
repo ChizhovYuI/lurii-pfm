@@ -7,11 +7,13 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx
-from google.genai import errors
+from google.genai import errors, types
 
 from pfm.ai.providers.gemini import (
+    GEMINI_JSON_MAX_OUTPUT_TOKENS,
     GEMINI_MODELS,
     GeminiProvider,
+    _extract_finish_reason,
     _extract_text,
     _field_value,
     _log_token_usage,
@@ -159,6 +161,61 @@ async def test_gemini_provider_explicit_flash_stays_on_selected_model():
     assert [call["model"] for call in fake_models.calls] == ["gemini-2.5-flash"]
 
 
+async def test_gemini_provider_json_mode_uses_structured_output_config():
+    fake_models = _FakeAsyncModels(responses=[SimpleNamespace(text='{"sections": []}')])
+    fake_client = _FakeClient(aio=_FakeAioClient(models=fake_models))
+
+    provider = GeminiProvider(api_key="key", model="gemini-2.5-flash", client=fake_client)  # type: ignore[arg-type]
+    result = await provider.generate_commentary_json("system prompt", "user prompt")
+    await provider.close()
+
+    assert result.text == '{"sections": []}'
+    assert result.model == "gemini-2.5-flash"
+    assert len(fake_models.calls) == 1
+    config = fake_models.calls[0]["config"]
+    assert isinstance(config, types.GenerateContentConfig)
+    assert config.response_mime_type == "application/json"
+    assert config.response_json_schema is not None
+    assert config.max_output_tokens == GEMINI_JSON_MAX_OUTPUT_TOKENS
+    assert config.automatic_function_calling is not None
+    assert config.automatic_function_calling.disable is True
+
+
+async def test_gemini_provider_json_mode_empty_text_returns_failure():
+    fake_models = _FakeAsyncModels(
+        responses=[SimpleNamespace(text="", candidates=[SimpleNamespace(finish_reason="STOP")])]
+    )
+    fake_client = _FakeClient(aio=_FakeAioClient(models=fake_models))
+
+    provider = GeminiProvider(api_key="key", model="gemini-2.5-flash", client=fake_client)  # type: ignore[arg-type]
+    result = await provider.generate_commentary_json("sys", "usr")
+    await provider.close()
+
+    assert result.text == ""
+    assert result.model == "gemini-2.5-flash"
+    assert result.error == "Gemini JSON response was empty"
+    assert result.finish_reason == "STOP"
+
+
+async def test_gemini_provider_json_mode_api_error_returns_failure():
+    response = httpx.Response(
+        500,
+        json={"error": {"message": "boom"}},
+        request=httpx.Request("POST", "https://example.invalid/gemini"),
+    )
+    error = errors.ServerError(500, {"error": {"status": "INTERNAL", "message": "boom"}}, response)
+    fake_models = _FakeAsyncModels(responses=[error])
+    fake_client = _FakeClient(aio=_FakeAioClient(models=fake_models))
+
+    provider = GeminiProvider(api_key="key", client=fake_client)  # type: ignore[arg-type]
+    result = await provider.generate_commentary_json("sys", "usr")
+    await provider.close()
+
+    assert result.text == ""
+    assert result.model == GEMINI_MODELS[0]
+    assert result.error == "Gemini JSON request failed with HTTP 500"
+
+
 async def test_gemini_provider_closes_owned_client():
     fake_models = _FakeAsyncModels(responses=[SimpleNamespace(text="ok")])
     fake_aio = _FakeAioClient(models=fake_models)
@@ -213,6 +270,11 @@ def test_extract_text_from_simple_response():
 def test_extract_text_from_candidates():
     resp = {"candidates": [{"content": {"parts": [{"text": "Part 1"}, {"text": "Part 2"}]}}]}
     assert _extract_text(resp) == "Part 1\nPart 2"
+
+
+def test_extract_finish_reason_from_candidates():
+    resp = {"candidates": [{"finish_reason": "STOP"}]}
+    assert _extract_finish_reason(resp) == "STOP"
 
 
 def test_field_value_from_mapping():

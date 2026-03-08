@@ -470,9 +470,7 @@ async def test_generate_commentary_with_model_reports_progress(tmp_path):
 
 def test_normalize_section_body_compacts_blank_lines_between_list_items():
     raw = "Short intro paragraph.\n\n* First item\n\n* Second item\n\n* Third item"
-    assert _normalize_section_body(raw) == (
-        "Short intro paragraph.\n\n- First item\n- Second item\n- Third item"
-    )
+    assert _normalize_section_body(raw) == ("Short intro paragraph.\n\n- First item\n- Second item\n- Third item")
 
 
 def test_is_valid_section_body_accepts_dense_market_context():
@@ -527,16 +525,18 @@ async def test_generate_commentary_with_model_records_generation_meta_for_fallba
     await AIProviderStore(db_path).add("gemini", api_key="key", active=True)
 
     responses = [
-        CommentaryResult(text=_section_text(1), model="gemini-2.5-flash", provider="gemini"),
-        CommentaryResult(text="[]", model="gemini-2.5-flash", provider="gemini", finish_reason="length"),
-        CommentaryResult(text="[]", model="gemini-2.5-flash", provider="gemini", finish_reason="length"),
-        CommentaryResult(text=_section_text(3), model="gemini-2.5-flash", provider="gemini"),
-        CommentaryResult(text=_section_text(4), model="gemini-2.5-flash", provider="gemini"),
-        CommentaryResult(text=_section_text(5), model="gemini-2.5-flash", provider="gemini"),
+        CommentaryResult(text="{bad json", model="gemini-2.5-flash", provider="gemini", finish_reason="STOP"),
+        CommentaryResult(
+            text=_deepseek_json_report(),
+            model="gemini-2.5-flash",
+            provider="gemini",
+            finish_reason="STOP",
+        ),
     ]
 
     mock_provider = MagicMock()
-    mock_provider.generate_commentary = AsyncMock(side_effect=responses)
+    mock_provider.generate_commentary_json = AsyncMock(side_effect=responses)
+    mock_provider.generate_commentary = AsyncMock()
     mock_provider.close = AsyncMock()
     mock_provider.name = "gemini"
     mock_provider._model = "gemini-2.5-flash"
@@ -554,13 +554,9 @@ async def test_generate_commentary_with_model_records_generation_meta_for_fallba
     assert result.generation_meta is not None
     assert result.generation_meta["provider"] == "gemini"
     assert result.generation_meta["model"] == "gemini-2.5-flash"
-    diagnostics = result.generation_meta["sections"]
-    assert diagnostics[1] == {
-        "title": "Portfolio Health Assessment",
-        "status": "fallback",
-        "reason": "length_truncated",
-        "finish_reason": "length",
-    }
+    assert result.generation_meta["strategy"] == "gemini_json_single_shot"
+    assert result.generation_meta["attempts"] == 2
+    assert result.generation_meta["status"] == "generated"
 
 
 async def test_generate_commentary_with_model_reasoner_empty_content_triggers_retry(tmp_path):

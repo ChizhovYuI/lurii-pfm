@@ -309,3 +309,75 @@ async def test_failed_generation_does_not_overwrite_previous_cached_report(clien
     assert status_resp.status == 200
     status_data = await status_resp.json()
     assert status_data["last_error"] == "JSON output was invalid after retry."
+
+
+async def test_gemini_generation_start_sets_single_shot_status(client, db_path):
+    repo = get_repo(client.app)
+    snapshot_date = date(2024, 1, 20)
+    await _seed_snapshot(repo, snapshot_date)
+    await AIProviderStore(db_path).add("gemini", api_key="gem-key", model="gemini-2.5-flash", active=True)
+
+    async def _fake_generate(*_args, **_kwargs) -> CommentaryResult:
+        return CommentaryResult(
+            text="## Market Context\n\nGemini weekly report.",
+            model="gemini-2.5-flash",
+            provider="gemini",
+            sections=(*(),),
+        )
+
+    with patch("pfm.ai.generate_commentary_with_model", new=_fake_generate):
+        resp = await client.post("/api/v1/ai/commentary")
+        assert resp.status == 202
+        status_resp = await client.get("/api/v1/ai/commentary/status")
+        status_data = await status_resp.json()
+        assert status_data["strategy"] == "gemini_json_single_shot"
+        assert status_data["total_sections"] == 1
+        assert status_data["current_section"] == "Weekly Report"
+        await get_runtime_state(client.app).commentary_task
+
+
+async def test_failed_gemini_generation_does_not_overwrite_previous_cached_report(client):
+    repo = get_repo(client.app)
+    snapshot_date = date(2024, 1, 21)
+    await _seed_snapshot(repo, snapshot_date)
+    await repo.save_analytics_metric(
+        snapshot_date,
+        "ai_commentary",
+        json.dumps(
+            {
+                "text": "## Market Context\n\nPrevious successful Gemini report.",
+                "model": "gemini-2.5-flash",
+                "sections": [{"title": "Market Context", "description": "Previous successful Gemini report."}],
+            }
+        ),
+    )
+
+    async def _fake_generate(*_args, **_kwargs) -> CommentaryResult:
+        return CommentaryResult(
+            text="",
+            model="gemini-2.5-flash",
+            provider="gemini",
+            error="JSON output was invalid after retry.",
+            generation_meta={
+                "strategy": "gemini_json_single_shot",
+                "provider": "gemini",
+                "model": "gemini-2.5-flash",
+                "status": "failed",
+                "finish_reason": "STOP",
+                "attempts": 2,
+                "reason": "invalid_json",
+            },
+        )
+
+    with patch("pfm.ai.generate_commentary_with_model", new=_fake_generate):
+        await client.post("/api/v1/ai/commentary")
+        await get_runtime_state(client.app).commentary_task
+
+    resp = await client.get("/api/v1/ai/commentary")
+    data = await resp.json()
+    assert data["text"] == "## Market Context\n\nPrevious successful Gemini report."
+    assert data["sections"] == [{"title": "Market Context", "description": "Previous successful Gemini report."}]
+
+    status_resp = await client.get("/api/v1/ai/commentary/status")
+    status_data = await status_resp.json()
+    assert status_data["last_error"] == "JSON output was invalid after retry."
