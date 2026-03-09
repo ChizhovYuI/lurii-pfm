@@ -73,6 +73,20 @@ SOURCE_TYPES: dict[str, list[CredentialField]] = {
         ),
         CredentialField("api_secret", "API Secret"),
     ],
+    "cash": [
+        CredentialField(
+            "fiat_currencies",
+            "Fiat currencies (comma-separated, e.g. USD,EUR)",
+            required=False,
+            default="USD",
+            secret=False,
+            tip=(
+                "1. This is a manual cash source\n"
+                "2. Select fiat currencies you want to track\n"
+                "3. You can edit daily balances from the dashboard"
+            ),
+        ),
+    ],
     "mexc": [
         CredentialField(
             "api_key",

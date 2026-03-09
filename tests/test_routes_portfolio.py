@@ -9,6 +9,7 @@ import pytest
 
 from pfm.db.models import Snapshot, init_db
 from pfm.db.repository import Repository
+from pfm.db.source_store import SourceStore
 from pfm.server.app import create_app
 
 
@@ -87,3 +88,42 @@ async def test_portfolio_holdings(client):
 async def test_portfolio_holdings_empty(empty_client):
     resp = await empty_client.get("/api/v1/portfolio/holdings")
     assert resp.status == 404
+
+
+async def test_portfolio_summary_uses_last_filled_cash_snapshot(db_path, aiohttp_client):
+    store = SourceStore(db_path)
+    await store.add("cash", "cash", {"fiat_currencies": "USD"})
+
+    async with Repository(db_path) as repo:
+        await repo.save_snapshots(
+            [
+                Snapshot(
+                    date=date(2024, 1, 6),
+                    source="cash",
+                    source_name="cash",
+                    asset="USD",
+                    amount=Decimal(100),
+                    usd_value=Decimal(100),
+                    price=Decimal(1),
+                ),
+                Snapshot(
+                    date=date(2024, 1, 7),
+                    source="okx",
+                    asset="BTC",
+                    amount=Decimal(1),
+                    usd_value=Decimal(40000),
+                ),
+            ]
+        )
+
+    app = create_app(db_path)
+    client = await aiohttp_client(app)
+
+    resp = await client.get("/api/v1/portfolio/summary")
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["date"] == "2024-01-07"
+    assert data["net_worth"]["usd"] == "40100"
+    assert any(
+        row["source"] == "cash" and row["asset"] == "USD" and row["usd_value"] == "100" for row in data["holdings"]
+    )

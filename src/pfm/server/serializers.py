@@ -7,6 +7,8 @@ from datetime import date
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
+from pfm.source_types import SOURCE_TYPES
+
 if TYPE_CHECKING:
     from pfm.db.models import CollectorResult, Snapshot, Source
 
@@ -60,7 +62,10 @@ def source_to_dict(source: Source, *, mask_secrets: bool = True) -> dict[str, An
     """Convert a Source dataclass to a JSON-safe dict."""
     creds: dict[str, str] = json.loads(source.credentials)
     if mask_secrets:
-        creds = {k: mask_secret(v) for k, v in creds.items()}
+        secret_flags = {field.name: field.secret for field in SOURCE_TYPES.get(source.type, [])}
+        creds = {
+            key: value if secret_flags.get(key, True) is False else mask_secret(value) for key, value in creds.items()
+        }
     return {
         "name": source.name,
         "type": source.type,

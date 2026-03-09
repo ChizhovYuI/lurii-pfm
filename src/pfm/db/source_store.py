@@ -48,7 +48,7 @@ class SourceStore:
     ) -> Source:
         """Add a new source. Raises on duplicate name or invalid type."""
         if source_type not in SOURCE_TYPES:
-            msg = f"Unknown source type: {source_type!r}. " f"Valid types: {', '.join(sorted(SOURCE_TYPES))}"
+            msg = f"Unknown source type: {source_type!r}. Valid types: {', '.join(sorted(SOURCE_TYPES))}"
             raise InvalidSourceTypeError(msg)
 
         errors = validate_credentials(source_type, credentials)
@@ -58,6 +58,14 @@ class SourceStore:
         creds_json = json.dumps(credentials)
 
         async with aiosqlite.connect(self._db_path) as db:
+            if source_type == "cash":
+                existing_cash = await (
+                    await db.execute("SELECT name FROM sources WHERE type = 'cash' LIMIT 1")
+                ).fetchone()
+                if existing_cash is not None:
+                    existing_name = str(existing_cash[0])
+                    msg = f"Cash source already exists: {existing_name!r}"
+                    raise DuplicateSourceError(msg)
             try:
                 cursor = await db.execute(
                     "INSERT INTO sources (name, type, credentials) VALUES (?, ?, ?)",

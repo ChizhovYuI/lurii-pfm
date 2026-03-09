@@ -47,6 +47,11 @@ class TestSourceToDict:
         result = source_to_dict(src, mask_secrets=False)
         assert result["credentials"]["token"] == "secret12345678"
 
+    def test_masked_respects_non_secret_fields(self):
+        src = Source(name="cash", type="cash", credentials='{"fiat_currencies": "USD,EUR"}')
+        result = source_to_dict(src, mask_secrets=True)
+        assert result["credentials"]["fiat_currencies"] == "USD,EUR"
+
 
 class TestSnapshotToDict:
     def test_basic(self):

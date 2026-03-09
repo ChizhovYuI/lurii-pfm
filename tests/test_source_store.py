@@ -32,12 +32,13 @@ async def store(tmp_path: Path) -> SourceStore:
 
 
 def test_all_source_types_defined():
-    assert len(SOURCE_TYPES) == 17
+    assert len(SOURCE_TYPES) == 18
     expected = {
         "okx",
         "binance",
         "binance_th",
         "bybit",
+        "cash",
         "mexc",
         "mexc_earn",
         "bitget_wallet",
@@ -90,6 +91,11 @@ def test_validate_credentials_optional_fields():
     assert errors == []
 
 
+def test_validate_credentials_cash_optional_field():
+    errors = validate_credentials("cash", {})
+    assert errors == []
+
+
 def test_validate_credentials_kbank():
     errors = validate_credentials(
         "kbank",
@@ -127,6 +133,13 @@ async def test_add_duplicate_raises(store: SourceStore):
     await store.add("okx-main", "okx", creds)
     with pytest.raises(DuplicateSourceError, match="already exists"):
         await store.add("okx-main", "okx", creds)
+
+
+@pytest.mark.asyncio
+async def test_add_second_cash_source_raises_duplicate(store: SourceStore):
+    await store.add("cash", "cash", {"fiat_currencies": "USD"})
+    with pytest.raises(DuplicateSourceError, match="Cash source already exists"):
+        await store.add("cash-alt", "cash", {"fiat_currencies": "EUR"})
 
 
 @pytest.mark.asyncio

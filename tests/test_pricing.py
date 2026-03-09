@@ -136,6 +136,15 @@ async def test_get_prices_usd_batch(pricing):
     assert results["ETH"] == Decimal(3000)
 
 
+async def test_additional_fiat_tickers_use_fiat_path(pricing):
+    pricing._fetch_fiat_rate = AsyncMock(return_value=Decimal("0.62"))  # type: ignore[method-assign]
+
+    price = await pricing.get_price_usd("NZD")
+
+    assert price == Decimal("0.62")
+    pricing._fetch_fiat_rate.assert_awaited_once_with("NZD")
+
+
 async def test_retries_on_rate_limit_429(pricing):
     rate_limited = MagicMock(spec=httpx.Response)
     rate_limited.status_code = 429

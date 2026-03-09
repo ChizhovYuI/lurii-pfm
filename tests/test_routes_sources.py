@@ -51,12 +51,13 @@ async def test_list_source_types(client):
     assert resp.status == 200
     data = await resp.json()
     # Should return all configured source types
-    assert len(data) == 17
+    assert len(data) == 18
     expected_types = {
         "okx",
         "binance",
         "binance_th",
         "bybit",
+        "cash",
         "mexc",
         "mexc_earn",
         "bitget_wallet",
@@ -123,6 +124,15 @@ async def test_list_source_types_trading212_fields(client):
     assert set(fields) == {"api_key", "api_secret"}
     assert fields["api_key"]["secret"] is True
     assert fields["api_secret"]["secret"] is True
+
+
+async def test_list_source_types_cash_fields(client):
+    resp = await client.get("/api/v1/source-types")
+    data = await resp.json()
+    fields = {field["name"]: field for field in data["cash"]["fields"]}
+    assert set(fields) == {"fiat_currencies"}
+    assert fields["fiat_currencies"]["required"] is False
+    assert fields["fiat_currencies"]["secret"] is False
 
 
 async def test_list_sources_empty(client):
@@ -203,6 +213,50 @@ async def test_add_source_duplicate(client):
         )
     assert resp.status == 409
     start_mock.assert_called_once_with(client.app, "wise-main")
+
+
+async def test_add_second_cash_source_by_type_rejected(client):
+    with patch("pfm.server.routes.sources.start_collection_task", return_value=True) as start_mock:
+        first = await client.post(
+            "/api/v1/sources",
+            json={
+                "name": "cash",
+                "type": "cash",
+                "credentials": {"fiat_currencies": "USD"},
+            },
+        )
+        second = await client.post(
+            "/api/v1/sources",
+            json={
+                "name": "cash-alt",
+                "type": "cash",
+                "credentials": {"fiat_currencies": "EUR"},
+            },
+        )
+
+    assert first.status == 201
+    assert second.status == 409
+    start_mock.assert_called_once_with(client.app, "cash")
+
+
+async def test_cash_credentials_not_masked_in_source_responses(client):
+    with patch("pfm.server.routes.sources.start_collection_task", return_value=True):
+        create = await client.post(
+            "/api/v1/sources",
+            json={
+                "name": "cash",
+                "type": "cash",
+                "credentials": {"fiat_currencies": "USD,EUR"},
+            },
+        )
+    assert create.status == 201
+    created_data = await create.json()
+    assert created_data["credentials"]["fiat_currencies"] == "USD,EUR"
+
+    get_resp = await client.get("/api/v1/sources/cash")
+    assert get_resp.status == 200
+    get_data = await get_resp.json()
+    assert get_data["credentials"]["fiat_currencies"] == "USD,EUR"
 
 
 async def test_add_source_invalid_type(client):

@@ -13,6 +13,7 @@ def setup_routes(app: web.Application) -> None:
     from pfm.server.routes.ai import routes as ai_routes
     from pfm.server.routes.analytics import routes as analytics_routes
     from pfm.server.routes.apy_rules import routes as apy_rules_routes
+    from pfm.server.routes.cash_manual import routes as cash_manual_routes
     from pfm.server.routes.collect import routes as collect_routes
     from pfm.server.routes.earn import routes as earn_routes
     from pfm.server.routes.ext_snapshot import routes as ext_snapshot_routes
@@ -26,6 +27,7 @@ def setup_routes(app: web.Application) -> None:
 
     app.router.add_routes(health_routes)
     app.router.add_routes(sources_routes)
+    app.router.add_routes(cash_manual_routes)
     app.router.add_routes(portfolio_routes)
     app.router.add_routes(analytics_routes)
     app.router.add_routes(ai_routes)
