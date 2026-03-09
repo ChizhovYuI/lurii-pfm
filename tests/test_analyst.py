@@ -15,13 +15,13 @@ from pfm.ai.analyst import (
     _escape_newlines_in_json_strings,
     _finalize_commentary_text,
     _is_valid_section_body,
-    _normalize_section_body,
     _parse_sections,
     generate_commentary,
     generate_commentary_with_model,
 )
 from pfm.ai.base import FALLBACK_COMMENTARY, CommentaryResult, CommentarySection
 from pfm.ai.prompts import REPORT_SECTION_SPECS, AnalyticsSummary
+from pfm.ai.report_markdown_formatter import normalize_report_section_body
 from pfm.db.ai_report_memory_store import AIReportMemoryStore
 from pfm.db.ai_store import AIProviderStore
 from pfm.db.models import init_db
@@ -138,6 +138,16 @@ def _deepseek_json_report() -> str:
             ]
         }
     )
+
+
+def test_normalize_report_section_body_splits_inline_unordered_list():
+    body = normalize_report_section_body("Sentence. - A - B - C")
+    assert body == "Sentence.\n\n- A\n- B\n- C"
+
+
+def test_normalize_report_section_body_splits_inline_ordered_list():
+    body = normalize_report_section_body("Sentence: 1. A 2. B 3. C")
+    assert body == "Sentence:\n\n1. A\n2. B\n3. C"
 
 
 async def test_generate_commentary_uses_provider(tmp_path):
@@ -470,7 +480,7 @@ async def test_generate_commentary_with_model_reports_progress(tmp_path):
 
 def test_normalize_section_body_compacts_blank_lines_between_list_items():
     raw = "Short intro paragraph.\n\n* First item\n\n* Second item\n\n* Third item"
-    assert _normalize_section_body(raw) == ("Short intro paragraph.\n\n- First item\n- Second item\n- Third item")
+    assert normalize_report_section_body(raw) == ("Short intro paragraph.\n\n- First item\n- Second item\n- Third item")
 
 
 def test_is_valid_section_body_accepts_dense_market_context():

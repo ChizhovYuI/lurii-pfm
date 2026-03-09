@@ -28,6 +28,7 @@ from pfm.ai.prompts import (
     render_weekly_report_json_prompt,
 )
 from pfm.ai.providers.registry import PROVIDER_REGISTRY
+from pfm.ai.report_markdown_formatter import normalize_report_section_body, normalize_report_sections
 from pfm.ai.schemas import CommentaryResponse
 from pfm.config import get_settings
 from pfm.db.ai_report_memory_store import AIReportMemoryStore
@@ -243,9 +244,9 @@ async def generate_commentary_with_model(
     if fallback_titles:
         error = f"Some sections used fallback text: {', '.join(fallback_titles)}."
     return CommentaryResult(
-        text=flatten_sections(sections),
+        text=flatten_sections(normalize_report_sections(sections)),
         model=model,
-        sections=sections,
+        sections=normalize_report_sections(sections),
         error=error,
         provider=provider_name,
         generation_meta=generation_meta,
@@ -331,6 +332,7 @@ async def _generate_single_shot_commentary(  # noqa: PLR0913
         last_finish_reason = result.finish_reason
         parsed_sections, reason = _parse_single_shot_sections(result, analytics)
         if parsed_sections is not None:
+            normalized_sections = normalize_report_sections(parsed_sections)
             logger.info(
                 "weekly_report_json_generated provider=%s model=%s attempts=%d finish_reason=%s",
                 provider_name,
@@ -340,9 +342,9 @@ async def _generate_single_shot_commentary(  # noqa: PLR0913
             )
             await _emit_progress(progress_callback, 1, 1, "Weekly Report")
             return CommentaryResult(
-                text=flatten_sections(parsed_sections),
+                text=flatten_sections(normalized_sections),
                 model=result.model or configured_model,
-                sections=parsed_sections,
+                sections=normalized_sections,
                 provider=provider_name,
                 finish_reason=result.finish_reason,
                 generation_meta=SingleShotReportDiagnostic(
@@ -435,7 +437,7 @@ async def _generate_single_section(
         )
         if result.model:
             last_model = result.model
-        body = _normalize_section_body(_sanitize_section_output(spec.title, result.text))
+        body = normalize_report_section_body(_normalize_section_body(_sanitize_section_output(spec.title, result.text)))
         failure_reason = _classify_attempt_failure(result, body)
         if _is_valid_section_body(body, spec, context):
             status = "retried" if attempt_number > 1 else "generated"
@@ -544,7 +546,9 @@ def _parse_single_shot_sections(
     context = _build_section_input_context(analytics)
     normalized: list[CommentarySection] = []
     for expected_spec, section in zip(REPORT_SECTION_SPECS, response.to_commentary_sections(), strict=True):
-        body = _normalize_section_body(_sanitize_section_output(expected_spec.title, section.description))
+        body = normalize_report_section_body(
+            _normalize_section_body(_sanitize_section_output(expected_spec.title, section.description))
+        )
         if not _is_valid_section_body(body, expected_spec, context):
             return None, "validation_failed"
         normalized.append(CommentarySection(title=expected_spec.title, description=body))
@@ -565,36 +569,7 @@ def _normalize_section_body(text: str) -> str:
     normalized = text.replace("\r\n", "\n").replace("\r", "\n").strip()
     if not normalized:
         return ""
-    lines = [_normalize_markdown_line(line) for line in normalized.splitlines()]
-
-    blocks: list[list[str]] = []
-    current: list[str] = []
-    for line in lines:
-        if line.strip():
-            current.append(line)
-            continue
-        if current:
-            blocks.append(current)
-            current = []
-    if current:
-        blocks.append(current)
-
-    merged_blocks: list[list[str]] = []
-    for block in blocks:
-        if merged_blocks and _block_is_list_lines(merged_blocks[-1]) and _block_is_list_lines(block):
-            merged_blocks[-1].extend(block)
-        else:
-            merged_blocks.append(block)
-
-    normalized_blocks: list[str] = []
-    for block in merged_blocks:
-        stripped_lines = [line.strip() for line in block if line.strip()]
-        if _block_is_list_lines(stripped_lines):
-            normalized_blocks.append("\n".join(stripped_lines))
-        else:
-            normalized_blocks.append(" ".join(stripped_lines))
-
-    return "\n\n".join(normalized_blocks).strip()
+    return "\n".join(_normalize_markdown_line(line) for line in normalized.splitlines()).strip()
 
 
 def _normalize_heading(text: str) -> str:

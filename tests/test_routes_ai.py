@@ -179,6 +179,78 @@ async def test_get_ai_commentary_does_not_invent_sections_for_plain_text(client)
     assert data["stale"] is False
 
 
+async def test_get_ai_commentary_normalizes_inline_unordered_lists_in_sections(client):
+    repo = get_repo(client.app)
+    snapshot_date = date(2024, 1, 16)
+    await _seed_snapshot(repo, snapshot_date)
+
+    await repo.save_analytics_metric(
+        snapshot_date,
+        "ai_commentary",
+        json.dumps(
+            {
+                "text": "ignored",
+                "model": "gemini-2.5-flash",
+                "sections": [
+                    {
+                        "title": "Market Context",
+                        "description": "Sentence. - External flows - Internal conversions - Residual effects",
+                    }
+                ],
+            }
+        ),
+    )
+
+    resp = await client.get("/api/v1/ai/commentary")
+
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["sections"] == [
+        {
+            "title": "Market Context",
+            "description": "Sentence.\n\n- External flows\n- Internal conversions\n- Residual effects",
+        }
+    ]
+    assert data["text"] == (
+        "## Market Context\n\nSentence.\n\n- External flows\n- Internal conversions\n- Residual effects"
+    )
+
+
+async def test_get_ai_commentary_normalizes_inline_numbered_lists_in_sections(client):
+    repo = get_repo(client.app)
+    snapshot_date = date(2024, 1, 16)
+    await _seed_snapshot(repo, snapshot_date)
+
+    await repo.save_analytics_metric(
+        snapshot_date,
+        "ai_commentary",
+        json.dumps(
+            {
+                "text": "ignored",
+                "model": "gemini-2.5-flash",
+                "sections": [
+                    {
+                        "title": "Actionable Recommendations for Next 7 Days",
+                        "description": "Intro: 1. First 2. Second 3. Third",
+                    }
+                ],
+            }
+        ),
+    )
+
+    resp = await client.get("/api/v1/ai/commentary")
+
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["sections"] == [
+        {
+            "title": "Actionable Recommendations for Next 7 Days",
+            "description": "Intro:\n\n1. First\n2. Second\n3. Third",
+        }
+    ]
+    assert data["text"] == ("## Actionable Recommendations for Next 7 Days\n\nIntro:\n\n1. First\n2. Second\n3. Third")
+
+
 async def test_get_ai_commentary_marks_stale_when_memory_hash_changes(client):
     repo = get_repo(client.app)
     snapshot_date = date(2024, 1, 17)

@@ -10,9 +10,14 @@ from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
-from pfm.ai.base import flatten_sections
+from pfm.ai.base import CommentarySection, flatten_sections
 from pfm.ai.commentary_parser import parse_commentary_sections
 from pfm.ai.prompts import REPORT_PROMPT_VERSION, REPORT_SECTION_SPECS
+from pfm.ai.report_markdown_formatter import (
+    normalize_report_section_body,
+    normalize_report_sections,
+    normalize_report_text,
+)
 from pfm.db.ai_report_memory_store import AIReportMemoryStore, hash_ai_report_memory
 from pfm.db.ai_store import AIProviderStore
 from pfm.server.connection_validation import (
@@ -55,8 +60,36 @@ async def get_commentary(request: web.Request) -> web.Response:
     if (not isinstance(sections, list) or not sections) and isinstance(text, str):
         recovered = parse_commentary_sections(text)
         if recovered:
-            text = flatten_sections(recovered)
-            sections = [{"title": section.title, "description": section.description} for section in recovered]
+            normalized_recovered = normalize_report_sections(recovered)
+            text = flatten_sections(normalized_recovered)
+            sections = [
+                {"title": section.title, "description": section.description} for section in normalized_recovered
+            ]
+    elif isinstance(sections, list) and sections:
+        normalized_sections = [
+            {
+                "title": title,
+                "description": normalize_report_section_body(description),
+            }
+            for section in sections
+            if isinstance(section, dict)
+            for title, description in [(section.get("title"), section.get("description"))]
+            if isinstance(title, str) and isinstance(description, str)
+        ]
+        if normalized_sections:
+            sections = normalized_sections
+
+    if isinstance(sections, list) and sections:
+        commentary_sections = tuple(
+            CommentarySection(title=section["title"], description=section["description"])
+            for section in sections
+            if isinstance(section, dict)
+            and isinstance(section.get("title"), str)
+            and isinstance(section.get("description"), str)
+        )
+        text = flatten_sections(commentary_sections) if commentary_sections else normalize_report_text(text)
+    elif isinstance(text, str):
+        text = normalize_report_text(text)
 
     current_memory = await AIReportMemoryStore(request.app["db_path"]).get()
     current_memory_hash = hash_ai_report_memory(current_memory)
