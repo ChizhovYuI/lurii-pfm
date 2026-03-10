@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import json
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from aiohttp import web
 
 from pfm.server.serializers import _str_decimal, asset_type_for_snapshot
 from pfm.server.state import get_repo
+
+if TYPE_CHECKING:
+    from pfm.db.models import Snapshot
 
 routes = web.RouteTableDef()
 
@@ -21,7 +26,7 @@ async def earn_summary(request: web.Request) -> web.Response:
         return web.json_response({"error": "No snapshots available"}, status=404)
 
     analysis_date = max(s.date for s in latest)
-    positions = [s for s in latest if s.apy > 0]
+    positions = [s for s in latest if _is_earn_position(s)]
 
     total_usd_value = sum((s.usd_value for s in positions), Decimal(0))
     weighted_avg_apy = (
@@ -49,3 +54,20 @@ async def earn_summary(request: web.Request) -> web.Response:
             ],
         }
     )
+
+
+def _is_earn_position(snapshot: Snapshot) -> bool:
+    if snapshot.apy > 0:
+        return True
+    if snapshot.source != "coinex":
+        return False
+    if not snapshot.raw_json:
+        return False
+    try:
+        raw = json.loads(snapshot.raw_json)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(raw, dict):
+        return False
+    account_type = raw.get("account_type")
+    return isinstance(account_type, str) and account_type.lower() == "financial"

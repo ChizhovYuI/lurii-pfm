@@ -163,3 +163,43 @@ async def test_earn_summary_no_earning(no_earning_client):
     assert data["total_usd_value"] == "0"
     assert data["weighted_avg_apy"] == "0"
     assert data["positions"] == []
+
+
+async def test_earn_summary_includes_coinex_financial_when_apy_zero(db_path, aiohttp_client):
+    async with Repository(db_path) as repo:
+        snaps = [
+            Snapshot(
+                date=date(2024, 1, 7),
+                source="coinex",
+                source_name="coinex",
+                asset="USDT",
+                amount=Decimal(1000),
+                usd_value=Decimal(1000),
+                price=Decimal(1),
+                apy=Decimal(0),
+                raw_json='{"account_type":"financial","row":{"ccy":"USDT"}}',
+            ),
+            Snapshot(
+                date=date(2024, 1, 7),
+                source="coinex",
+                source_name="coinex",
+                asset="USDC",
+                amount=Decimal(500),
+                usd_value=Decimal(500),
+                price=Decimal(1),
+                apy=Decimal(0),
+                raw_json='{"account_type":"spot","row":{"ccy":"USDC"}}',
+            ),
+        ]
+        await repo.save_snapshots(snaps)
+
+    app = create_app(db_path)
+    client = await aiohttp_client(app)
+    resp = await client.get("/api/v1/earn/summary")
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["total_usd_value"] == "1000"
+    assert data["weighted_avg_apy"] == "0"
+    assert len(data["positions"]) == 1
+    assert data["positions"][0]["source"] == "coinex"
+    assert data["positions"][0]["asset"] == "USDT"
