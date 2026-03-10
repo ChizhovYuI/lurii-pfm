@@ -30,7 +30,7 @@ _FIAT_ASSETS: frozenset[str] = frozenset(
     },
 )
 _CRYPTO_SOURCES: frozenset[str] = frozenset(
-    {"okx", "binance", "binance_th", "bybit", "mexc", "mexc_earn", "lobstr", "rabby"}
+    {"okx", "binance", "binance_th", "bybit", "coinex", "mexc", "mexc_earn", "lobstr", "rabby"}
 )
 _FIAT_SOURCES: frozenset[str] = frozenset({"wise", "kbank"})
 _STOCK_SOURCES: frozenset[str] = frozenset({"ibkr", "trading212"})

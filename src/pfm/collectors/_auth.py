@@ -32,3 +32,12 @@ def sign_bybit(timestamp: str, api_key: str, recv_window: str, payload: str, sec
     """
     message = f"{timestamp}{api_key}{recv_window}{payload}"
     return hmac.new(secret.encode(), message.encode(), hashlib.sha256).hexdigest()
+
+
+def sign_coinex(method: str, request_path: str, body: str, timestamp: str, secret: str) -> str:
+    """Generate CoinEx API signature.
+
+    Signature = HMAC-SHA256(method + request_path + body + timestamp, secret) as hex.
+    """
+    message = f"{method}{request_path}{body}{timestamp}"
+    return hmac.new(secret.encode(), message.encode(), hashlib.sha256).hexdigest().lower()

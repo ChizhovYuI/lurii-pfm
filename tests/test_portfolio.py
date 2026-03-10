@@ -77,6 +77,20 @@ async def test_compute_allocation_by_asset_with_prices(repo):
     assert rows[1].price == Decimal("1.26")
 
 
+async def test_compute_allocation_by_asset_coinex_classified_as_crypto(repo):
+    target_date = date(2024, 1, 15)
+    await repo.save_snapshots(
+        [
+            Snapshot(target_date, "coinex", "BTC", Decimal("0.1"), Decimal(5000)),
+        ]
+    )
+
+    rows = await compute_allocation_by_asset(repo, target_date)
+    assert len(rows) == 1
+    assert rows[0].asset == "BTC"
+    assert rows[0].asset_type == "crypto"
+
+
 async def test_compute_allocation_by_source(repo):
     target_date = date(2024, 1, 15)
     await repo.save_snapshots(

@@ -1669,6 +1669,7 @@ def test_collector_registry_populated():
     assert "binance_th" in COLLECTOR_REGISTRY
     assert "mexc" in COLLECTOR_REGISTRY
     assert "cash" in COLLECTOR_REGISTRY
+    assert "coinex" in COLLECTOR_REGISTRY
     assert "okx" in COLLECTOR_REGISTRY
     assert "bybit" in COLLECTOR_REGISTRY
     assert "wise" in COLLECTOR_REGISTRY
