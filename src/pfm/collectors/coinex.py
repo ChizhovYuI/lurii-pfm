@@ -32,6 +32,7 @@ _SPOT_BALANCE_PATH = "/v2/assets/spot/balance"
 _FUTURES_BALANCE_PATH = "/v2/assets/futures/balance"
 _FINANCIAL_BALANCE_PATH = "/v2/assets/financial/balance"
 _SPOT_HISTORY_PATH = "/v2/assets/spot/transcation-history"
+_PUBLIC_INVEST_SUMMARY_URL = "https://www.coinex.com/res/invest/summary/new"
 _HISTORY_TYPES: tuple[str, ...] = (
     "deposit",
     "withdraw",
@@ -59,6 +60,7 @@ class CoinexCollector(BaseCollector):
         self._api_key = api_key
         self._api_secret = api_secret
         self._client = httpx.AsyncClient(base_url=_BASE_URL, timeout=30.0)
+        self._public_client = httpx.AsyncClient(timeout=30.0)
 
     @staticmethod
     def _request_path(path: str, params: dict[str, str] | None = None) -> str:
@@ -92,6 +94,21 @@ class CoinexCollector(BaseCollector):
             msg = f"CoinEx API error ({code}) on {path}: {message}"
             raise ValueError(msg)
         return payload
+
+    @retry()
+    async def _get_public_invest_summary(self) -> list[dict[str, Any]]:
+        resp = await self._public_client.get(_PUBLIC_INVEST_SUMMARY_URL)
+        resp.raise_for_status()
+        payload = resp.json()
+        if not isinstance(payload, dict):
+            msg = "CoinEx invest summary payload must be an object"
+            raise TypeError(msg)
+        code = payload.get("code")
+        if code != 0:
+            message = str(payload.get("message") or "unknown error")
+            msg = f"CoinEx invest summary API error ({code}): {message}"
+            raise ValueError(msg)
+        return _as_dict_rows(payload.get("data"))
 
     async def fetch_raw_balances(self) -> list[RawBalance]:
         """Fetch spot + futures + financial balances."""
@@ -141,6 +158,37 @@ class CoinexCollector(BaseCollector):
         if not balances:
             return {}
 
+        apy_by_asset = await self._financial_apy_from_public_summary(balances)
+        missing_balances = {asset: amount for asset, amount in balances.items() if asset not in apy_by_asset}
+        if not missing_balances:
+            return apy_by_asset
+
+        fallback_apy = await self._financial_apy_from_interest(missing_balances)
+        apy_by_asset.update(fallback_apy)
+        return apy_by_asset
+
+    async def _financial_apy_from_public_summary(self, balances: dict[str, Decimal]) -> dict[str, Decimal]:
+        try:
+            rows = await self._get_public_invest_summary()
+        except (httpx.HTTPStatusError, httpx.TransportError, httpx.TimeoutException, TypeError, ValueError) as exc:
+            logger.warning("CoinEx: failed to fetch public invest APY summary: %s", exc)
+            return {}
+
+        apy_by_asset: dict[str, Decimal] = {}
+        for row in rows:
+            asset = str(row.get("asset", "")).upper().strip()
+            if not asset:
+                continue
+            balance = balances.get(asset)
+            if balance is None or balance <= 0:
+                continue
+            apy = _effective_public_apy(row, amount=balance)
+            if apy is None:
+                continue
+            apy_by_asset[asset] = apy
+        return apy_by_asset
+
+    async def _financial_apy_from_interest(self, balances: dict[str, Decimal]) -> dict[str, Decimal]:
         end_ms = int(datetime.now(tz=UTC).timestamp() * 1000)
         start_ms = end_ms - _MS_IN_DAY
 
@@ -345,6 +393,37 @@ def _to_decimal(value: object) -> Decimal:
         return Decimal(str(value))
     except (ArithmeticError, TypeError, ValueError):
         return Decimal(0)
+
+
+def _parse_decimal(value: object) -> Decimal | None:
+    try:
+        return Decimal(str(value))
+    except (ArithmeticError, TypeError, ValueError):
+        return None
+
+
+def _effective_public_apy(row: dict[str, Any], *, amount: Decimal) -> Decimal | None:
+    if amount <= 0:
+        return None
+
+    base_rate = _parse_decimal(row.get("rate"))
+    if base_rate is None or base_rate < 0:
+        return None
+
+    apy = base_rate
+    ladder = row.get("ladder_rule")
+    if not isinstance(ladder, dict):
+        return apy
+
+    ladder_rate = _parse_decimal(ladder.get("rate"))
+    ladder_limit = _parse_decimal(ladder.get("limit"))
+    if ladder_rate is None or ladder_limit is None:
+        return apy
+    if ladder_rate <= 0 or ladder_limit <= 0:
+        return apy
+
+    bonus_portion = min(amount, ladder_limit) / amount
+    return apy + (ladder_rate * bonus_portion)
 
 
 def _to_int(value: object) -> int:

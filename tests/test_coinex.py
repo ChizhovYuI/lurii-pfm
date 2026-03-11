@@ -13,9 +13,11 @@ from pfm.collectors._auth import sign_coinex
 from pfm.collectors.coinex import (
     _FINANCIAL_BALANCE_PATH,
     _FUTURES_BALANCE_PATH,
+    _PUBLIC_INVEST_SUMMARY_URL,
     _SPOT_BALANCE_PATH,
     _SPOT_HISTORY_PATH,
     CoinexCollector,
+    _effective_public_apy,
     _map_history_type,
     _parse_history_transaction,
 )
@@ -59,7 +61,7 @@ async def test_coinex_signed_headers_include_query_string(monkeypatch, pricing):
     assert headers["X-COINEX-SIGN"] == expected
 
 
-async def test_fetch_raw_balances_parses_rows_and_estimates_financial_apy(pricing):
+async def test_fetch_raw_balances_uses_public_summary_for_financial_apy(pricing):
     collector = CoinexCollector(pricing, api_key="k", api_secret="s")
 
     async def fake_get(path: str, params=None):
@@ -67,11 +69,92 @@ async def test_fetch_raw_balances_parses_rows_and_estimates_financial_apy(pricin
             return {
                 "code": 0,
                 "data": [
-                    {"ccy": "USDT", "available": "10", "frozen": "1"},
-                    {"ccy": "BTC", "available": "0", "frozen": "0"},
+                    {"ccy": "ETH", "available": "2", "frozen": "0"},
                 ],
                 "message": "OK",
             }
+        if path == _FUTURES_BALANCE_PATH:
+            return {"code": 0, "data": None, "message": "OK"}
+        if path == _FINANCIAL_BALANCE_PATH:
+            return {
+                "code": 0,
+                "data": [
+                    {"ccy": "USDC", "available": "500", "frozen": "0"},
+                    {"ccy": "USDT", "available": "2000", "frozen": "0"},
+                ],
+                "message": "OK",
+            }
+        raise AssertionError(f"Unexpected path={path} params={params}")
+
+    collector._get = fake_get  # type: ignore[method-assign]
+    collector._get_public_invest_summary = AsyncMock(  # type: ignore[method-assign]
+        return_value=[
+            {"asset": "USDC", "rate": "0.05", "ladder_rule": {"rate": "0.1", "limit": "1000"}},
+            {"asset": "USDT", "rate": "0.04", "ladder_rule": {"rate": "0.1", "limit": "1000"}},
+        ]
+    )
+    raw = await collector.fetch_raw_balances()
+
+    financial_rows = {}
+    for row in raw:
+        if '"account_type": "financial"' in row.raw_json:
+            financial_rows[row.asset] = row
+
+    assert financial_rows["USDC"].amount == Decimal(500)
+    assert financial_rows["USDT"].amount == Decimal(2000)
+    assert financial_rows["USDC"].apy == Decimal("0.15")
+    assert financial_rows["USDT"].apy == Decimal("0.09")
+
+
+async def test_fetch_raw_balances_public_summary_missing_asset_falls_back_to_interest(pricing):
+    collector = CoinexCollector(pricing, api_key="k", api_secret="s")
+
+    async def fake_get(path: str, params=None):
+        if path == _SPOT_BALANCE_PATH:
+            return {"code": 0, "data": [], "message": "OK"}
+        if path == _FUTURES_BALANCE_PATH:
+            return {"code": 0, "data": None, "message": "OK"}
+        if path == _FINANCIAL_BALANCE_PATH:
+            return {
+                "code": 0,
+                "data": [
+                    {"ccy": "USDC", "available": "100", "frozen": "0"},
+                    {"ccy": "USDT", "available": "200", "frozen": "0"},
+                ],
+                "message": "OK",
+            }
+        if path == _SPOT_HISTORY_PATH and params and params.get("type") == "investment_interest":
+            return {
+                "code": 0,
+                "data": [
+                    {"type": "investment_interest", "ccy": "USDT", "change": "0.2", "created_at": 1700000000000},
+                ],
+                "pagination": {"has_next": False},
+                "message": "OK",
+            }
+        raise AssertionError(f"Unexpected path={path} params={params}")
+
+    collector._get = fake_get  # type: ignore[method-assign]
+    collector._get_public_invest_summary = AsyncMock(  # type: ignore[method-assign]
+        return_value=[{"asset": "USDC", "rate": "0.05", "ladder_rule": None}]
+    )
+    raw = await collector.fetch_raw_balances()
+
+    financial_rows = {}
+    for row in raw:
+        if '"account_type": "financial"' in row.raw_json:
+            financial_rows[row.asset] = row
+
+    assert financial_rows["USDC"].apy == Decimal("0.05")
+    assert financial_rows["USDT"].apy == Decimal("0.365")
+
+
+async def test_fetch_raw_balances_public_summary_failure_falls_back_to_interest(pricing):
+    collector = CoinexCollector(pricing, api_key="k", api_secret="s")
+
+    async def fake_get(path: str, params=None):
+        if path == _SPOT_BALANCE_PATH:
+            return {"code": 0, "data": [], "message": "OK"}
         if path == _FUTURES_BALANCE_PATH:
             return {"code": 0, "data": None, "message": "OK"}
         if path == _FINANCIAL_BALANCE_PATH:
@@ -88,14 +171,41 @@ async def test_fetch_raw_balances_parses_rows_and_estimates_financial_apy(pricin
         raise AssertionError(f"Unexpected path={path} params={params}")
 
     collector._get = fake_get  # type: ignore[method-assign]
+    collector._get_public_invest_summary = AsyncMock(side_effect=httpx.ConnectError("connection failed"))  # type: ignore[method-assign]
     raw = await collector.fetch_raw_balances()
 
-    by_asset = {row.asset: row for row in raw}
-    assert set(by_asset) == {"USDT", "USDC"}
-    assert by_asset["USDT"].amount == Decimal(11)
-    assert by_asset["USDT"].apy == Decimal(0)
-    assert by_asset["USDC"].amount == Decimal(100)
-    assert by_asset["USDC"].apy == Decimal("1.825")
+    financial = next(row for row in raw if row.asset == "USDC")
+    assert financial.apy == Decimal("1.825")
+
+
+def test_public_summary_effective_apy_ladder_and_min_amount_handling():
+    row = {
+        "asset": "USDT",
+        "rate": "0.04151901",
+        "min_amount": "10",  # ignored by design
+        "ladder_rule": {"rate": "0.1", "limit": "1000"},
+    }
+
+    assert _effective_public_apy(row, amount=Decimal(5)) == Decimal("0.14151901")
+    assert _effective_public_apy(row, amount=Decimal(1000)) == Decimal("0.14151901")
+    assert _effective_public_apy(row, amount=Decimal(2000)) == Decimal("0.09151901")
+
+
+async def test_get_public_invest_summary_parses_payload(pricing):
+    collector = CoinexCollector(pricing, api_key="k", api_secret="s")
+    response = _mock_response(
+        {
+            "code": 0,
+            "data": [{"asset": "USDT", "rate": "0.04", "ladder_rule": {"rate": "0.1", "limit": "1000"}}],
+            "message": "OK",
+        }
+    )
+    collector._public_client.get = AsyncMock(return_value=response)
+
+    rows = await collector._get_public_invest_summary()
+
+    assert rows == [{"asset": "USDT", "rate": "0.04", "ladder_rule": {"rate": "0.1", "limit": "1000"}}]
+    collector._public_client.get.assert_awaited_once_with(_PUBLIC_INVEST_SUMMARY_URL)
 
 
 async def test_fetch_history_rows_handles_null_data(pricing):
