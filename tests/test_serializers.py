@@ -158,6 +158,9 @@ class TestAssetTypeForSnapshot:
     def test_defi_bitget_wallet(self):
         assert asset_type_for_snapshot("bitget_wallet", "USDC") == "defi"
 
+    def test_deposit_emcd(self):
+        assert asset_type_for_snapshot("emcd", "BTC") == "deposit"
+
     def test_fiat_asset(self):
         assert asset_type_for_snapshot("unknown", "USD") == "fiat"
 

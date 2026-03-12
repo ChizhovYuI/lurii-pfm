@@ -35,6 +35,7 @@ _CRYPTO_SOURCES: frozenset[str] = frozenset(
 _FIAT_SOURCES: frozenset[str] = frozenset({"wise", "kbank"})
 _STOCK_SOURCES: frozenset[str] = frozenset({"ibkr", "trading212"})
 _DEFI_SOURCES: frozenset[str] = frozenset({"blend", "yo", "bitget_wallet"})
+_DEPOSIT_SOURCES: frozenset[str] = frozenset({"emcd"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,6 +255,8 @@ def _asset_type(source: str, asset: str) -> str:
     """Classify an asset by its source and ticker."""
     src = source.lower()
     tkr = asset.upper()
+    if src in _DEPOSIT_SOURCES:
+        return "deposit"
     if src in _DEFI_SOURCES:
         return "defi"
     if src in _FIAT_SOURCES:
@@ -271,6 +274,8 @@ def _category_for_snapshot(snap: Snapshot) -> str:
     source = snap.source.lower()
     asset = snap.asset.upper()
 
+    if source in _DEPOSIT_SOURCES:
+        return "deposit"
     if source in _DEFI_SOURCES:
         return "DeFi"
     if source in _FIAT_SOURCES:

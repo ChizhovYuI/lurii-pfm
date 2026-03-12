@@ -35,6 +35,7 @@ _CRYPTO_SOURCES: frozenset[str] = frozenset(
 _FIAT_SOURCES: frozenset[str] = frozenset({"wise", "kbank"})
 _STOCK_SOURCES: frozenset[str] = frozenset({"ibkr", "trading212"})
 _DEFI_SOURCES: frozenset[str] = frozenset({"blend", "yo", "bitget_wallet"})
+_DEPOSIT_SOURCES: frozenset[str] = frozenset({"emcd"})
 
 
 # ── Decimal formatting ─────────────────────────────────────────────────
@@ -119,6 +120,8 @@ def asset_type_for_snapshot(source: str, asset: str) -> str:
     """Classify an asset by its source and ticker."""
     source_lower = source.lower()
     asset_upper = asset.upper()
+    if source_lower in _DEPOSIT_SOURCES:
+        return "deposit"
     if source_lower in _DEFI_SOURCES:
         return "defi"
     if source_lower in _FIAT_SOURCES:

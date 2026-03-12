@@ -86,6 +86,13 @@ class BybitCollector(BaseCollector):
         except (ArithmeticError, TypeError, ValueError):
             return Decimal(0)
 
+    @classmethod
+    def _to_apr(cls, value: object) -> Decimal:
+        """Parse APR-like fields that may be fraction (0.06) or percent-like (6, 6%)."""
+        apr_raw = str(value).strip().rstrip("%")
+        apr = cls._to_decimal(apr_raw)
+        return apr / 100 if apr > 1 else apr
+
     async def _fetch_unified(self, totals: dict[str, Decimal]) -> None:
         """Fetch unified trading account balances."""
         try:
@@ -121,6 +128,7 @@ class BybitCollector(BaseCollector):
         """Fetch Bybit Earn positions with APY as separate raw balances."""
         raw: list[RawBalance] = []
         for category in ("FlexibleSaving", "OnChain"):
+            apr_by_product_id, apr_by_coin = await self._fetch_earn_product_apr_maps(category)
             try:
                 data = await self._get(
                     "/v5/earn/position",
@@ -142,10 +150,13 @@ class BybitCollector(BaseCollector):
                     apr = yesterday_yield * 365 / amount
                 else:
                     # Fallback: estimateApr string from position
-                    est_apr_str = str(item.get("estimateApr", "0"))
-                    est_apr_str = est_apr_str.rstrip("%")
-                    est_apr = self._to_decimal(est_apr_str)
-                    apr = est_apr / 100 if est_apr > 1 else est_apr
+                    apr = self._to_apr(item.get("estimateApr", "0"))
+                    if apr <= 0:
+                        product_id = str(item.get("productId", "")).strip()
+                        if product_id:
+                            apr = apr_by_product_id.get(product_id, Decimal(0))
+                    if apr <= 0:
+                        apr = apr_by_coin.get(ticker, Decimal(0))
 
                 apy = apr_to_apy(apr)
                 raw.append(
@@ -153,10 +164,36 @@ class BybitCollector(BaseCollector):
                         asset=ticker,
                         amount=amount,
                         apy=apy,
+                        raw_json=json.dumps({"account_type": "earn", "category": category, "row": item}),
                     )
                 )
 
         return raw
+
+    async def _fetch_earn_product_apr_maps(self, category: str) -> tuple[dict[str, Decimal], dict[str, Decimal]]:
+        """Fetch Earn product APR maps keyed by productId and coin symbol."""
+        try:
+            data = await self._get(
+                "/v5/earn/product",
+                params={"category": category},
+            )
+        except (httpx.HTTPStatusError, ValueError):
+            logger.warning("Bybit: failed to fetch %s earn products", category)
+            return {}, {}
+
+        apr_by_product_id: dict[str, Decimal] = {}
+        apr_by_coin: dict[str, Decimal] = {}
+        for item in data.get("result", {}).get("list", []):
+            product_id = str(item.get("productId", "")).strip()
+            apr = self._to_apr(item.get("estimateApr", "0"))
+            if apr <= 0:
+                continue
+            if product_id:
+                apr_by_product_id[product_id] = apr
+            coin = str(item.get("coin", "")).upper().strip()
+            if coin:
+                apr_by_coin[coin] = apr
+        return apr_by_product_id, apr_by_coin
 
     async def fetch_raw_balances(self) -> list[RawBalance]:
         """Fetch unified + funding + earn account balances."""

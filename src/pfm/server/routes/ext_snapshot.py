@@ -12,7 +12,7 @@ from aiohttp import web
 
 from pfm.db.models import Snapshot, Source
 from pfm.db.source_store import SourceStore
-from pfm.server.state import get_pricing, get_repo
+from pfm.server.state import get_broadcaster, get_pricing, get_repo
 
 if TYPE_CHECKING:
     from pfm.pricing.coingecko import PricingService
@@ -74,6 +74,7 @@ async def ingest_extension_snapshot(request: web.Request) -> web.Response:
 
     repo = get_repo(request.app)
     await repo.save_snapshots(snapshots)
+    await get_broadcaster(request.app).broadcast({"type": "snapshot_updated"})
 
     return web.json_response(
         {

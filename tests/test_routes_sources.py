@@ -116,6 +116,8 @@ async def test_list_source_types_mexc_earn_uid_field(client):
     assert "uid" in fields
     assert fields["uid"]["required"] is True
     assert fields["uid"]["secret"] is False
+    assert "Connect" in fields["uid"]["tip"]
+    assert "Sync now" in fields["uid"]["tip"]
 
 
 async def test_list_source_types_trading212_fields(client):
@@ -125,6 +127,17 @@ async def test_list_source_types_trading212_fields(client):
     assert set(fields) == {"api_key", "api_secret"}
     assert fields["api_key"]["secret"] is True
     assert fields["api_secret"]["secret"] is True
+
+
+async def test_list_source_types_emcd_tip_mentions_app_sync(client):
+    resp = await client.get("/api/v1/source-types")
+    data = await resp.json()
+    fields = {field["name"]: field for field in data["emcd"]["fields"]}
+    assert "email" in fields
+    tip = fields["email"]["tip"]
+    assert "Connect" in tip
+    assert "Sync now" in tip
+    assert "Chrome extension" not in tip
 
 
 async def test_list_source_types_cash_fields(client):

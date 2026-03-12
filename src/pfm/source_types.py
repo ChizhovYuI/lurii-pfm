@@ -119,9 +119,9 @@ SOURCE_TYPES: dict[str, list[CredentialField]] = {
             "MEXC digitalId (UID)",
             secret=False,
             tip=(
-                "1. Open mexc.com while logged in\n"
-                "2. Call POST /ucenter/api/user_info from browser session\n"
-                "3. Use response.data.digitalId as UID"
+                "1. Open Lurii Finance app → Sources\n"
+                "2. Use Connect on MEXC Earn to log in at mexc.com\n"
+                "3. Run Sync now to auto-detect and save your UID"
             ),
         ),
     ],
@@ -290,9 +290,9 @@ SOURCE_TYPES: dict[str, list[CredentialField]] = {
             "EMCD account email",
             secret=False,
             tip=(
-                "1. Log in to emcd.io\n"
-                "2. Use the email address of your EMCD account\n"
-                "3. Data is synced via the Lurii Finance Chrome extension"
+                "1. Open Lurii Finance app → Sources\n"
+                "2. Use Connect on EMCD to log in at emcd.io\n"
+                "3. Run Sync now to detect your email and sync balances"
             ),
         ),
     ],

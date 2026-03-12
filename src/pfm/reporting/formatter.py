@@ -19,6 +19,7 @@ _HOLDING_TYPE_ICONS = {
     "fiat": "💵",
     "stocks": "📈",
     "defi": "🏦",
+    "deposit": "🔐",
     "other": "📦",
 }
 _FIAT_ASSETS = {

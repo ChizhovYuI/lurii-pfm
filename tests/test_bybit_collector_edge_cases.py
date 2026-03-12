@@ -60,3 +60,59 @@ async def test_bybit_fetch_earn_invalid_yesterday_yield_uses_estimate_apr(pricin
     assert usdt.amount == Decimal(200)
     # 0.6% APR should map to non-zero APY via fallback.
     assert usdt.apy > Decimal(0)
+
+
+async def test_bybit_fetch_onchain_earn_uses_product_apr_fallback(pricing):
+    pricing._set_cache("USDT", Decimal(1))
+    collector = BybitCollector(pricing, api_key="key", api_secret="secret")
+
+    async def mock_get(path, **kwargs):
+        params = kwargs.get("params", {})
+        category = params.get("category", "")
+        acct_type = params.get("accountType", "")
+        if acct_type == "UNIFIED":
+            return _mock_response({"retCode": 0, "result": {"list": []}})
+        if acct_type == "FUND":
+            return _mock_response({"retCode": 0, "result": {"balance": []}})
+        if "earn/product" in path and category == "OnChain":
+            return _mock_response(
+                {
+                    "retCode": 0,
+                    "result": {
+                        "list": [
+                            {
+                                "productId": "onchain-usdt-1",
+                                "coin": "USDT",
+                                "estimateApr": "10.0%",
+                            }
+                        ]
+                    },
+                }
+            )
+        if "earn/position" in path and category == "OnChain":
+            return _mock_response(
+                {
+                    "retCode": 0,
+                    "result": {
+                        "list": [
+                            {
+                                "productId": "onchain-usdt-1",
+                                "coin": "USDT",
+                                "amount": "1000",
+                                # Some OnChain rows can miss these fields.
+                                "yesterdayYield": "",
+                                "estimateApr": "",
+                            }
+                        ]
+                    },
+                }
+            )
+        return _mock_response({"retCode": 0, "result": {"list": []}})
+
+    collector._client.get = AsyncMock(side_effect=mock_get)
+
+    snapshots = await collector.fetch_balances()
+    usdt = next(s for s in snapshots if s.asset == "USDT")
+    assert usdt.amount == Decimal(1000)
+    # 10% APR converted to APY.
+    assert usdt.apy > Decimal("0.10")

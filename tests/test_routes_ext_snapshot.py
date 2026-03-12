@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date
 from decimal import Decimal
 
 import pytest
+from aiohttp import WSMsgType
 
 from pfm.db.models import init_db
 from pfm.db.repository import Repository
@@ -102,6 +104,19 @@ async def test_ext_snapshot_ingest_requires_uid(client):
     assert resp.status == 400
     data = await resp.json()
     assert data["error"] == "uid is required"
+
+
+async def test_ext_snapshot_ingest_broadcasts_snapshot_updated(client, db_path):
+    store = SourceStore(db_path)
+    await store.add("mexc-earn-main", "mexc_earn", {"uid": "65064080"})
+
+    async with client.ws_connect("/api/v1/ws") as ws:
+        resp = await client.post("/api/v1/ext/snapshot?source_type=mexc_earn&uid=65064080", json=_payload())
+        assert resp.status == 200
+
+        msg = await ws.receive()
+        assert msg.type == WSMsgType.TEXT
+        assert json.loads(msg.data) == {"type": "snapshot_updated"}
 
 
 async def test_ext_snapshot_ingest_replaces_same_day_rows_for_mexc_earn(client, db_path):
