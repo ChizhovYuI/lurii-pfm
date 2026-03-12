@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import email
+import hashlib
 import imaplib
 import json
 import logging
@@ -306,16 +307,23 @@ class KbankCollector(BaseCollector):
             date_tail = dates_raw[date_idx].split()[-1] if dates_raw[date_idx].strip() else ""
             desc_cont = descs_raw[i] if i < len(descs_raw) else ""
             description = date_tail + desc_cont
+            tx_type = TransactionType.DEPOSIT if is_deposit else TransactionType.WITHDRAWAL
 
             transactions.append(
                 Transaction(
                     date=tx_date,
                     source=self.source_name,
-                    tx_type=TransactionType.DEPOSIT if is_deposit else TransactionType.WITHDRAWAL,
+                    tx_type=tx_type,
                     asset="THB",
                     amount=amount,
                     usd_value=Decimal(0),
-                    tx_id="",
+                    tx_id=self._build_tx_id(
+                        tx_date=tx_date,
+                        tx_type=tx_type,
+                        amount=amount,
+                        description=description,
+                        balance=curr_bal,
+                    ),
                     raw_json=json.dumps(
                         {"description": description, "balance": str(curr_bal or "")},
                     ),
@@ -323,6 +331,29 @@ class KbankCollector(BaseCollector):
             )
 
         return transactions
+
+    @staticmethod
+    def _build_tx_id(
+        *,
+        tx_date: date,
+        tx_type: TransactionType,
+        amount: Decimal,
+        description: str,
+        balance: Decimal | None,
+    ) -> str:
+        """Build a deterministic transaction id from parsed statement fields."""
+        canonical = "|".join(
+            [
+                tx_date.isoformat(),
+                tx_type.value,
+                "THB",
+                format(amount.normalize(), "f"),
+                description.strip(),
+                format(balance.normalize(), "f") if balance is not None else "",
+            ]
+        )
+        digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]
+        return f"kbank:{digest}"
 
     @staticmethod
     def _parse_tx_date(date_str: str) -> date | None:

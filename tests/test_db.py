@@ -28,7 +28,7 @@ async def test_init_db(tmp_path):
     async with aiosqlite.connect(str(db_path)) as db:
         version_row = await (await db.execute("SELECT version_num FROM alembic_version")).fetchone()
     assert version_row is not None
-    assert version_row[0] == "e7b9c1d4a5f0"
+    assert version_row[0] == "f2c7e6a9d1b4"
 
 
 def test_runner_uses_package_relative_migration_path(tmp_path):
@@ -237,6 +237,51 @@ async def test_init_db_keeps_existing_transaction_source_name_rows_without_backf
     ]
     assert index_row is not None
     assert "source_name != ''" in str(index_row[0])
+
+
+async def test_init_db_deduplicates_kbank_rows_with_empty_tx_id(tmp_path):
+    db_path = tmp_path / "kbank-empty-txid.db"
+    await init_db(db_path)
+
+    duplicate_payload = '{"description":"QRyment","balance":"45457.78"}'
+    async with aiosqlite.connect(str(db_path)) as db:
+        await db.executemany(
+            (
+                "INSERT INTO transactions "
+                "(date, source, source_name, tx_type, asset, amount, usd_value, tx_id, raw_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            ),
+            [
+                ("2026-03-10", "kbank", "kbank-main", "deposit", "THB", "45000.00", "0", "", duplicate_payload),
+                ("2026-03-10", "kbank", "kbank-main", "deposit", "THB", "45000.00", "0", "", duplicate_payload),
+                ("2026-03-10", "kbank", "kbank-main", "deposit", "THB", "45000.00", "0", "", duplicate_payload),
+                ("2026-03-10", "wise", "wise-main", "deposit", "THB", "45000.00", "0", "", duplicate_payload),
+                ("2026-03-10", "wise", "wise-main", "deposit", "THB", "45000.00", "0", "", duplicate_payload),
+            ],
+        )
+        await db.execute("DELETE FROM alembic_version")
+        await db.execute("INSERT INTO alembic_version (version_num) VALUES (?)", ("e7b9c1d4a5f0",))
+        await db.commit()
+
+    await init_db(db_path)
+
+    async with aiosqlite.connect(str(db_path)) as db:
+        version_row = await (await db.execute("SELECT version_num FROM alembic_version")).fetchone()
+        cursor = await db.execute(
+            "SELECT source, source_name, COUNT(*) "
+            "FROM transactions "
+            "WHERE tx_id = '' "
+            "GROUP BY source, source_name "
+            "ORDER BY source, source_name"
+        )
+        rows = await cursor.fetchall()
+
+    assert version_row is not None
+    assert version_row[0] == "f2c7e6a9d1b4"
+    assert rows == [
+        ("kbank", "kbank-main", 1),
+        ("wise", "wise-main", 2),
+    ]
 
 
 async def test_save_and_get_snapshot(repo):

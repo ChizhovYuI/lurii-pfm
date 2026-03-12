@@ -1592,6 +1592,11 @@ def test_kbank_parse_transaction_table(pricing):
     assert txs[2].tx_type == TransactionType.DEPOSIT  # balance increased
     assert txs[2].amount == Decimal("45000.00")
     assert txs[2].date == date(2026, 2, 2)
+    assert all(tx.tx_id.startswith("kbank:") for tx in txs)
+    assert len({tx.tx_id for tx in txs}) == len(txs)
+
+    txs_repeat = collector._parse_transaction_table(table)
+    assert [tx.tx_id for tx in txs_repeat] == [tx.tx_id for tx in txs]
 
 
 def test_kbank_parse_transaction_table_too_short(pricing):
