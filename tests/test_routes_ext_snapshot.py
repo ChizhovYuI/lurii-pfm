@@ -9,7 +9,7 @@ from decimal import Decimal
 import pytest
 from aiohttp import WSMsgType
 
-from pfm.db.models import init_db
+from pfm.db.models import SYNC_MARKER_ASSET, init_db
 from pfm.db.repository import Repository
 from pfm.db.source_store import SourceStore
 from pfm.server.app import create_app
@@ -41,7 +41,8 @@ def _payload(
         "source": {"type": source_type, "uid": uid},
         "snapshot": {
             "assets": assets
-            or [
+            if assets is not None
+            else [
                 {
                     "symbol": "USDC",
                     "amount": 300,
@@ -249,3 +250,21 @@ async def test_ext_snapshot_ingest_replaces_same_day_rows_for_emcd(client, db_pa
     assert snap.amount == Decimal("0.02")
     assert snap.usd_value == Decimal(1400)
     assert all(saved_snap.asset != "USDT" for saved_snap in snapshots)
+
+
+async def test_ext_snapshot_ingest_saves_sync_marker_when_assets_are_empty(client, db_path):
+    store = SourceStore(db_path)
+    await store.add("mexc-earn-main", "mexc_earn", {"uid": "65064080"})
+
+    resp = await client.post(
+        "/api/v1/ext/snapshot?source_type=mexc_earn&uid=65064080",
+        json=_payload(assets=[]),
+    )
+    assert resp.status == 200
+
+    async with Repository(db_path) as repo:
+        snapshots = await repo.get_snapshots_by_date(date(2026, 3, 3))
+
+    assert len(snapshots) == 1
+    assert snapshots[0].asset == SYNC_MARKER_ASSET
+    assert snapshots[0].source_name == "mexc-earn-main"

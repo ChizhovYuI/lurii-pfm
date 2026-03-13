@@ -14,7 +14,7 @@ from pfm.analytics.portfolio import (
     compute_net_worth,
     compute_risk_metrics,
 )
-from pfm.db.models import Price, Snapshot
+from pfm.db.models import Price, Snapshot, Source
 
 
 async def test_compute_net_worth(repo):
@@ -219,11 +219,19 @@ async def test_compute_allocation_by_category_unknown_source_fallbacks(repo):
 # ── Data Warnings ────────────────────────────────────────────────────
 
 
+def _enabled_source(name: str, source_type: str) -> Source:
+    return Source(name=name, type=source_type, credentials="{}", enabled=True)
+
+
 def test_data_warnings_missing_source():
     snapshots = [
         Snapshot(date(2024, 1, 15), "okx", "BTC", Decimal(1), Decimal(45000)),
     ]
-    enabled = {"okx", "kbank", "wise"}
+    enabled = [
+        _enabled_source("okx", "okx"),
+        _enabled_source("kbank", "kbank"),
+        _enabled_source("wise", "wise"),
+    ]
     warnings = compute_data_warnings(snapshots, enabled, date(2024, 1, 15))
     assert "No snapshot data for source: kbank" in warnings
     assert "No snapshot data for source: wise" in warnings
@@ -233,29 +241,31 @@ def test_data_warnings_missing_source():
 def test_data_warnings_kbank_outdated():
     snapshots = [
         Snapshot(date(2024, 1, 15), "okx", "BTC", Decimal(1), Decimal(45000)),
-        Snapshot(date(2023, 12, 1), "kbank", "THB", Decimal(1000), Decimal(28)),
+        Snapshot(date(2023, 12, 1), "kbank", "THB", Decimal(1000), Decimal(28), source_name="kbank-main"),
     ]
-    enabled = {"okx", "kbank"}
+    enabled = [_enabled_source("okx", "okx"), _enabled_source("kbank-main", "kbank")]
     warnings = compute_data_warnings(snapshots, enabled, date(2024, 1, 15))
+    assert "Source not synced today: kbank-main (latest 2023-12-01)" in warnings
     assert any("KBank statement is outdated" in w for w in warnings)
 
 
 def test_data_warnings_kbank_fresh():
     snapshots = [
         Snapshot(date(2024, 1, 15), "okx", "BTC", Decimal(1), Decimal(45000)),
-        Snapshot(date(2024, 1, 14), "kbank", "THB", Decimal(1000), Decimal(28)),
+        Snapshot(date(2024, 1, 14), "kbank", "THB", Decimal(1000), Decimal(28), source_name="kbank-main"),
     ]
-    enabled = {"okx", "kbank"}
+    enabled = [_enabled_source("okx", "okx"), _enabled_source("kbank-main", "kbank")]
     warnings = compute_data_warnings(snapshots, enabled, date(2024, 1, 15))
-    assert not any("KBank" in w for w in warnings)
+    assert "Source not synced today: kbank-main (latest 2024-01-14)" in warnings
+    assert not any("KBank statement is outdated" in w for w in warnings)
 
 
 def test_data_warnings_no_issues():
     snapshots = [
-        Snapshot(date(2024, 1, 15), "okx", "BTC", Decimal(1), Decimal(45000)),
-        Snapshot(date(2024, 1, 15), "wise", "GBP", Decimal(100), Decimal(125)),
+        Snapshot(date(2024, 1, 15), "okx", "BTC", Decimal(1), Decimal(45000), source_name="okx-main"),
+        Snapshot(date(2024, 1, 15), "wise", "GBP", Decimal(100), Decimal(125), source_name="wise-main"),
     ]
-    enabled = {"okx", "wise"}
+    enabled = [_enabled_source("okx-main", "okx"), _enabled_source("wise-main", "wise")]
     warnings = compute_data_warnings(snapshots, enabled, date(2024, 1, 15))
     assert warnings == []
 
@@ -265,5 +275,5 @@ def test_data_warnings_no_enabled_sources():
     snapshots = [
         Snapshot(date(2024, 1, 15), "okx", "BTC", Decimal(1), Decimal(45000)),
     ]
-    warnings = compute_data_warnings(snapshots, set(), date(2024, 1, 15))
+    warnings = compute_data_warnings(snapshots, [], date(2024, 1, 15))
     assert warnings == []

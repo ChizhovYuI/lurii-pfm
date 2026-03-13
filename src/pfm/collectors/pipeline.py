@@ -9,7 +9,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from pfm.collectors._retry import is_dns_resolution_error
-from pfm.db.models import CollectorResult
+from pfm.db.models import CollectorResult, is_sync_marker_snapshot
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -113,7 +113,7 @@ async def _process_single(
             snapshots = collector._build_snapshots(raw, prices)  # noqa: SLF001
             if snapshots:
                 await repo.save_snapshots(snapshots)
-                result.snapshots_count = len(snapshots)
+                result.snapshots_count = sum(1 for snapshot in snapshots if not is_sync_marker_snapshot(snapshot))
                 result.snapshots_usd_total = sum((s.usd_value for s in snapshots), start=Decimal(0))
         except Exception as exc:
             msg = f"Failed to save snapshots for {source_name}: {exc}"

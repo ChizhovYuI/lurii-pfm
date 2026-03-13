@@ -6,10 +6,12 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
+from pfm.db.models import is_sync_marker_snapshot
+
 if TYPE_CHECKING:
     from datetime import date
 
-    from pfm.db.models import Snapshot
+    from pfm.db.models import Snapshot, Source
     from pfm.db.repository import Repository
 
 _HUNDRED = Decimal(100)
@@ -91,7 +93,7 @@ async def compute_net_worth(repo: Repository, snapshot_date: date) -> Decimal:
 
 async def compute_allocation_by_asset(repo: Repository, snapshot_date: date) -> list[AssetAllocation]:
     """Compute per-(asset, asset_type) allocation with sources list and cached price."""
-    snapshots = await repo.get_snapshots_resolved(snapshot_date)
+    snapshots = [snap for snap in await repo.get_snapshots_resolved(snapshot_date) if not is_sync_marker_snapshot(snap)]
     total_usd = _sum_usd(snapshots)
     by_key: dict[tuple[str, str], tuple[Decimal, Decimal, set[str]]] = {}
 
@@ -127,7 +129,7 @@ async def compute_allocation_by_asset(repo: Repository, snapshot_date: date) -> 
 
 async def compute_allocation_by_source(repo: Repository, snapshot_date: date) -> list[BucketAllocation]:
     """Compute per-source allocation as share of total portfolio value."""
-    snapshots = await repo.get_snapshots_resolved(snapshot_date)
+    snapshots = [snap for snap in await repo.get_snapshots_resolved(snapshot_date) if not is_sync_marker_snapshot(snap)]
     total_usd = _sum_usd(snapshots)
     by_source: dict[str, Decimal] = {}
 
@@ -148,7 +150,7 @@ async def compute_allocation_by_source(repo: Repository, snapshot_date: date) ->
 
 async def compute_allocation_by_category(repo: Repository, snapshot_date: date) -> list[BucketAllocation]:
     """Compute allocation across category buckets: crypto/fiat/stocks/DeFi."""
-    snapshots = await repo.get_snapshots_resolved(snapshot_date)
+    snapshots = [snap for snap in await repo.get_snapshots_resolved(snapshot_date) if not is_sync_marker_snapshot(snap)]
     total_usd = _sum_usd(snapshots)
     by_category: dict[str, Decimal] = {}
 
@@ -170,7 +172,7 @@ async def compute_allocation_by_category(repo: Repository, snapshot_date: date) 
 
 async def compute_currency_exposure(repo: Repository, snapshot_date: date) -> list[CurrencyExposure]:
     """Compute fiat currency exposure as share of total portfolio value."""
-    snapshots = await repo.get_snapshots_resolved(snapshot_date)
+    snapshots = [snap for snap in await repo.get_snapshots_resolved(snapshot_date) if not is_sync_marker_snapshot(snap)]
     total_usd = _sum_usd(snapshots)
     by_currency: dict[str, Decimal] = {}
 
@@ -216,27 +218,32 @@ _KBANK_STALE_DAYS = 3
 
 def compute_data_warnings(
     snapshots: list[Snapshot],
-    enabled_source_types: set[str],
+    enabled_sources: list[Source],
     analysis_date: date,
 ) -> list[str]:
-    """Generate warnings about stale KBank data and missing sources."""
-    # Sources present in resolved snapshots (with their latest date)
+    """Generate warnings about unsynced sources and stale KBank statements."""
     source_dates: dict[str, date] = {}
     for snap in snapshots:
-        src = snap.source
-        if src not in source_dates or snap.date > source_dates[src]:
-            source_dates[src] = snap.date
+        source_name = snap.source_name or snap.source
+        if source_name not in source_dates or snap.date > source_dates[source_name]:
+            source_dates[source_name] = snap.date
 
-    # Warn about enabled sources with no snapshot data at all
-    missing = sorted(enabled_source_types - set(source_dates))
-    warnings = [f"No snapshot data for source: {src}" for src in missing]
+    warnings: list[str] = []
+    for source in enabled_sources:
+        latest_date = source_dates.get(source.name)
+        if latest_date is None:
+            warnings.append(f"No snapshot data for source: {source.name}")
+            continue
 
-    # Warn if KBank statement is outdated
-    kbank_date = source_dates.get("kbank")
-    if kbank_date is not None:
-        age_days = (analysis_date - kbank_date).days
-        if age_days > _KBANK_STALE_DAYS:
-            warnings.append(f"KBank statement is outdated ({kbank_date.isoformat()}, {age_days} days old)")
+        if latest_date < analysis_date:
+            warnings.append(f"Source not synced today: {source.name} (latest {latest_date.isoformat()})")
+
+        if source.type == "kbank":
+            age_days = (analysis_date - latest_date).days
+            if age_days > _KBANK_STALE_DAYS:
+                warnings.append(
+                    f"KBank statement is outdated: {source.name} ({latest_date.isoformat()}, {age_days} days old)"
+                )
 
     return warnings
 
@@ -255,35 +262,37 @@ def _asset_type(source: str, asset: str) -> str:
     """Classify an asset by its source and ticker."""
     src = source.lower()
     tkr = asset.upper()
+    result = "other"
     if src in _DEPOSIT_SOURCES:
-        return "deposit"
-    if src in _DEFI_SOURCES:
-        return "defi"
-    if src in _FIAT_SOURCES:
-        return "fiat"
-    if src in _STOCK_SOURCES:
-        return "fiat" if tkr in _FIAT_ASSETS else "stocks"
-    if tkr in _FIAT_ASSETS:
-        return "fiat"
-    if src in _CRYPTO_SOURCES:
-        return "crypto"
-    return "other"
+        result = "deposit"
+    elif src in _DEFI_SOURCES:
+        result = "defi"
+    elif src in _FIAT_SOURCES:
+        result = "fiat"
+    elif src in _STOCK_SOURCES:
+        result = "fiat" if tkr in _FIAT_ASSETS else "stocks"
+    elif tkr in _FIAT_ASSETS:
+        result = "fiat"
+    elif src in _CRYPTO_SOURCES:
+        result = "crypto"
+    return result
 
 
 def _category_for_snapshot(snap: Snapshot) -> str:
     source = snap.source.lower()
     asset = snap.asset.upper()
+    category = "crypto"
 
     if source in _DEPOSIT_SOURCES:
-        return "deposit"
-    if source in _DEFI_SOURCES:
-        return "DeFi"
-    if source in _FIAT_SOURCES:
-        return "fiat"
-    if source in _STOCK_SOURCES:
-        return "fiat" if asset in _FIAT_ASSETS else "stocks"
-    if asset in _FIAT_ASSETS:
-        return "fiat"
-    if source in _CRYPTO_SOURCES:
-        return "crypto"
-    return "crypto"
+        category = "deposit"
+    elif source in _DEFI_SOURCES:
+        category = "DeFi"
+    elif source in _FIAT_SOURCES:
+        category = "fiat"
+    elif source in _STOCK_SOURCES:
+        category = "fiat" if asset in _FIAT_ASSETS else "stocks"
+    elif asset in _FIAT_ASSETS:
+        category = "fiat"
+    elif source in _CRYPTO_SOURCES:
+        category = "crypto"
+    return category

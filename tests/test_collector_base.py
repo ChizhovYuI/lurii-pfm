@@ -8,7 +8,7 @@ import httpx
 import pytest
 
 from pfm.collectors.base import BaseCollector
-from pfm.db.models import Snapshot, Transaction, TransactionType
+from pfm.db.models import SYNC_MARKER_ASSET, Snapshot, Transaction, TransactionType
 from pfm.db.repository import Repository
 from pfm.pricing.coingecko import PricingService
 
@@ -38,6 +38,21 @@ class MockCollector(BaseCollector):
         if self._fail_transactions:
             msg = "transaction fetch failed"
             raise ValueError(msg)
+        return self._transactions
+
+
+class RawOnlyCollector(BaseCollector):
+    source_name = "raw-only"
+
+    def __init__(self, pricing, raw_balances=None, transactions=None):
+        super().__init__(pricing)
+        self._raw_balances = raw_balances or []
+        self._transactions = transactions or []
+
+    async def fetch_raw_balances(self):
+        return self._raw_balances
+
+    async def fetch_transactions(self, since=None):
         return self._transactions
 
 
@@ -144,6 +159,19 @@ async def test_collect_formats_dns_error_with_country_access_hint(repo, pricing)
         in result.errors[0]
     )
     assert transactions_called is False
+
+
+async def test_collect_saves_sync_marker_for_zero_balance_source(repo, pricing):
+    collector = RawOnlyCollector(pricing, raw_balances=[])
+
+    result = await collector.collect(repo)
+
+    assert result.snapshots_count == 0
+
+    db_snapshots = await repo.get_snapshots_by_date(pricing.today())
+    assert len(db_snapshots) == 1
+    assert db_snapshots[0].asset == SYNC_MARKER_ASSET
+    assert db_snapshots[0].usd_value == 0
 
 
 async def test_close_closes_owned_httpx_clients(pricing):

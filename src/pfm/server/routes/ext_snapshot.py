@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
-from pfm.db.models import Snapshot, Source
+from pfm.db.models import Snapshot, Source, make_sync_marker_snapshot
 from pfm.db.source_store import SourceStore
 from pfm.server.state import get_broadcaster, get_pricing, get_repo
 
@@ -201,6 +201,15 @@ async def _build_snapshots(
                 price=price,
                 apy=apy,
                 raw_json=json.dumps(asset),
+            )
+        )
+
+    if not snapshots:
+        snapshots.append(
+            make_sync_marker_snapshot(
+                snapshot_date=snapshot_date,
+                source=source_type,
+                source_name=source_name,
             )
         )
 

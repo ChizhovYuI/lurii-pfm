@@ -13,7 +13,14 @@ from typing import TYPE_CHECKING
 import httpx
 
 from pfm.collectors._retry import is_dns_resolution_error
-from pfm.db.models import CollectorResult, RawBalance, Snapshot, Transaction
+from pfm.db.models import (
+    CollectorResult,
+    RawBalance,
+    Snapshot,
+    Transaction,
+    is_sync_marker_snapshot,
+    make_sync_marker_snapshot,
+)
 
 if TYPE_CHECKING:
     from datetime import date
@@ -88,6 +95,14 @@ class BaseCollector(ABC):
                     raw_json=rb.raw_json,
                 )
             )
+        if not snapshots:
+            snapshots.append(
+                make_sync_marker_snapshot(
+                    snapshot_date=today,
+                    source=self.source_name,
+                    source_name=instance_name,
+                )
+            )
         return snapshots
 
     # ── Legacy fetch_balances (concrete) ──────────────────────────────
@@ -140,7 +155,7 @@ class BaseCollector(ABC):
                     for snap in snapshots
                 ]
                 await repo.save_snapshots(snapshots)
-                result.snapshots_count = len(snapshots)
+                result.snapshots_count = sum(1 for snapshot in snapshots if not is_sync_marker_snapshot(snapshot))
                 result.snapshots_usd_total = sum((snapshot.usd_value for snapshot in snapshots), start=Decimal(0))
         except Exception as exc:
             msg, is_network_access_error = _format_fetch_error(self.source_name, "balances", exc)

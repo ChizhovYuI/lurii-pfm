@@ -9,6 +9,7 @@ import pytest
 
 from pfm.db.models import Snapshot, init_db
 from pfm.db.repository import Repository
+from pfm.db.source_store import SourceStore
 from pfm.server.app import create_app
 
 
@@ -85,15 +86,35 @@ async def test_analytics_pnl_30d(db_path, aiohttp_client):
     assert data["pnl"]["top_gainers"][0]["asset"] == "BTC"
 
 
+async def test_analytics_pnl_returns_404_when_exact_start_snapshot_is_missing(db_path, aiohttp_client):
+    async with Repository(db_path) as repo:
+        await repo.save_snapshots(
+            [
+                Snapshot(date=date(2024, 1, 1), source="okx", asset="BTC", amount=Decimal(1), usd_value=Decimal(40000)),
+                Snapshot(
+                    date=date(2024, 1, 31), source="okx", asset="BTC", amount=Decimal(1), usd_value=Decimal(45000)
+                ),
+            ]
+        )
+
+    app = create_app(db_path)
+    client = await aiohttp_client(app)
+
+    resp = await client.get("/api/v1/analytics/pnl?period=1m")
+    assert resp.status == 404
+    data = await resp.json()
+    assert "PnL is unavailable" in data["error"]
+
+
 @pytest.mark.parametrize(
     ("period", "expected_start_date", "expected_absolute_change"),
     [
         ("1w", "2024-12-25", "500"),
-        ("mtd", "2024-12-01", "1000"),
-        ("1m", "2024-12-01", "1000"),
+        ("mtd", "2024-12-01", "1100"),
+        ("1m", "2024-12-02", "1000"),
         ("3m", "2024-10-03", "2000"),
         ("ytd", "2024-01-01", "5000"),
-        ("1y", "2024-01-01", "5000"),
+        ("1y", "2024-01-02", "4900"),
         ("all", "2024-01-01", "5000"),
     ],
 )
@@ -104,11 +125,15 @@ async def test_analytics_pnl_dashboard_ranges(
         await repo.save_snapshots(
             [
                 Snapshot(date=date(2024, 1, 1), source="okx", asset="BTC", amount=Decimal(1), usd_value=Decimal(40000)),
+                Snapshot(date=date(2024, 1, 2), source="okx", asset="BTC", amount=Decimal(1), usd_value=Decimal(40100)),
                 Snapshot(
                     date=date(2024, 10, 3), source="okx", asset="BTC", amount=Decimal(1), usd_value=Decimal(43000)
                 ),
                 Snapshot(
-                    date=date(2024, 12, 1), source="okx", asset="BTC", amount=Decimal(1), usd_value=Decimal(44000)
+                    date=date(2024, 12, 1), source="okx", asset="BTC", amount=Decimal(1), usd_value=Decimal(43900)
+                ),
+                Snapshot(
+                    date=date(2024, 12, 2), source="okx", asset="BTC", amount=Decimal(1), usd_value=Decimal(44000)
                 ),
                 Snapshot(
                     date=date(2024, 12, 25), source="okx", asset="BTC", amount=Decimal(1), usd_value=Decimal(44500)
@@ -146,6 +171,58 @@ async def test_analytics_pnl_missing_period(client):
 async def test_analytics_pnl_invalid_period(client):
     resp = await client.get("/api/v1/analytics/pnl?period=banana")
     assert resp.status == 400
+
+
+async def test_analytics_allocation_warns_about_unsynced_sources_and_outdated_kbank(db_path, aiohttp_client):
+    store = SourceStore(db_path)
+    await store.add("okx-main", "okx", {"api_key": "key", "api_secret": "secret", "passphrase": "pass"})
+    await store.add("cash-main", "cash", {"fiat_currencies": "USD"})
+    await store.add(
+        "kbank-main",
+        "kbank",
+        {"gmail_address": "user@example.com", "gmail_app_password": "app-pass", "pdf_password": "01011990"},
+    )
+
+    async with Repository(db_path) as repo:
+        await repo.save_snapshots(
+            [
+                Snapshot(
+                    date=date(2024, 1, 15),
+                    source="okx",
+                    source_name="okx-main",
+                    asset="BTC",
+                    amount=Decimal(1),
+                    usd_value=Decimal(45000),
+                ),
+                Snapshot(
+                    date=date(2024, 1, 14),
+                    source="cash",
+                    source_name="cash-main",
+                    asset="USD",
+                    amount=Decimal(500),
+                    usd_value=Decimal(500),
+                ),
+                Snapshot(
+                    date=date(2024, 1, 10),
+                    source="kbank",
+                    source_name="kbank-main",
+                    asset="THB",
+                    amount=Decimal(1000),
+                    usd_value=Decimal(28),
+                ),
+            ]
+        )
+
+    app = create_app(db_path)
+    client = await aiohttp_client(app)
+
+    resp = await client.get("/api/v1/analytics/allocation")
+    assert resp.status == 200
+    data = await resp.json()
+
+    assert "Source not synced today: cash-main (latest 2024-01-14)" in data["warnings"]
+    assert "Source not synced today: kbank-main (latest 2024-01-10)" in data["warnings"]
+    assert any("KBank statement is outdated" in warning for warning in data["warnings"])
 
 
 async def test_analytics_exposure(client):

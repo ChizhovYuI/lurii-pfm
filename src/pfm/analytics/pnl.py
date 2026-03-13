@@ -8,7 +8,7 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from pfm.db.models import TransactionType
+from pfm.db.models import TransactionType, is_sync_marker_snapshot
 
 if TYPE_CHECKING:
     from pfm.db.models import Snapshot
@@ -64,31 +64,44 @@ class PnlResult:
 
 async def compute_pnl(repo: Repository, as_of: date, period: PnlPeriod) -> PnlResult:
     """Compute period PnL from available snapshots."""
+    return await _compute_pnl(repo, as_of, period, require_exact_window=False)
+
+
+async def compute_pnl_exact(repo: Repository, as_of: date, period: PnlPeriod) -> PnlResult:
+    """Compute period PnL only when exact start and end dates both exist."""
+    return await _compute_pnl(repo, as_of, period, require_exact_window=True)
+
+
+async def _compute_pnl(repo: Repository, as_of: date, period: PnlPeriod, *, require_exact_window: bool) -> PnlResult:
+    """Compute period PnL from available snapshots."""
     dates = await _get_available_dates(repo, as_of)
     if not dates:
-        return PnlResult(
-            start_date=None,
-            end_date=None,
-            start_value=Decimal(0),
-            end_value=Decimal(0),
-            absolute_change=Decimal(0),
-            percentage_change=Decimal(0),
-            by_asset=[],
-            notes=["No snapshots available on or before requested date."],
-        )
+        return _empty_pnl_result("No snapshots available on or before requested date.")
 
     notes: list[str] = []
-    end_date = dates[-1]
-    if end_date != as_of:
-        notes.append(f"No snapshot on {as_of.isoformat()}; using {end_date.isoformat()} as end date.")
+    if require_exact_window:
+        if as_of not in dates:
+            return _empty_pnl_result(f"No snapshot on {as_of.isoformat()}; PnL is unavailable for the selected range.")
+        end_date = as_of
+    else:
+        end_date = dates[-1]
+        if end_date != as_of:
+            notes.append(f"No snapshot on {as_of.isoformat()}; using {end_date.isoformat()} as end date.")
 
     target_start = _target_start_date(end_date, period, dates[0])
-    start_date = _latest_on_or_before(dates, target_start)
-    if start_date != target_start:
-        notes.append(f"Requested start {target_start.isoformat()} not found; using {start_date.isoformat()}.")
+    if require_exact_window:
+        if target_start not in dates:
+            return _empty_pnl_result(
+                f"No snapshot on {target_start.isoformat()}; PnL is unavailable for the selected range."
+            )
+        start_date = target_start
+    else:
+        start_date = _latest_on_or_before(dates, target_start)
+        if start_date != target_start:
+            notes.append(f"Requested start {target_start.isoformat()} not found; using {start_date.isoformat()}.")
 
-    start_snapshots = await repo.get_snapshots_by_date(start_date)
-    end_snapshots = await repo.get_snapshots_by_date(end_date)
+    start_snapshots = await repo.get_snapshots_resolved(start_date)
+    end_snapshots = await repo.get_snapshots_resolved(end_date)
     start_values = _aggregate_usd_by_asset(start_snapshots)
     end_values = _aggregate_usd_by_asset(end_snapshots)
     end_amounts = _aggregate_amount_by_asset(end_snapshots)
@@ -138,6 +151,19 @@ async def compute_pnl(repo: Repository, as_of: date, period: PnlPeriod) -> PnlRe
     )
 
 
+def _empty_pnl_result(note: str) -> PnlResult:
+    return PnlResult(
+        start_date=None,
+        end_date=None,
+        start_value=Decimal(0),
+        end_value=Decimal(0),
+        absolute_change=Decimal(0),
+        percentage_change=Decimal(0),
+        by_asset=[],
+        notes=[note],
+    )
+
+
 async def _get_available_dates(repo: Repository, as_of: date) -> list[date]:
     snapshots = await repo.get_snapshots_for_range(date.min, as_of)
     return sorted({s.date for s in snapshots})
@@ -170,6 +196,8 @@ def _latest_on_or_before(dates: list[date], target: date) -> date:
 def _aggregate_usd_by_asset(snapshots: list[Snapshot]) -> dict[str, Decimal]:
     by_asset: dict[str, Decimal] = {}
     for snap in snapshots:
+        if is_sync_marker_snapshot(snap):
+            continue
         by_asset[snap.asset] = by_asset.get(snap.asset, Decimal(0)) + snap.usd_value
     return by_asset
 
@@ -177,6 +205,8 @@ def _aggregate_usd_by_asset(snapshots: list[Snapshot]) -> dict[str, Decimal]:
 def _aggregate_amount_by_asset(snapshots: list[Snapshot]) -> dict[str, Decimal]:
     by_asset: dict[str, Decimal] = {}
     for snap in snapshots:
+        if is_sync_marker_snapshot(snap):
+            continue
         by_asset[snap.asset] = by_asset.get(snap.asset, Decimal(0)) + snap.amount
     return by_asset
 

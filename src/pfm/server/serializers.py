@@ -7,6 +7,7 @@ from datetime import date
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
+from pfm.db.models import is_sync_marker_snapshot
 from pfm.source_types import SOURCE_TYPES
 
 if TYPE_CHECKING:
@@ -120,25 +121,28 @@ def asset_type_for_snapshot(source: str, asset: str) -> str:
     """Classify an asset by its source and ticker."""
     source_lower = source.lower()
     asset_upper = asset.upper()
+    result = "other"
     if source_lower in _DEPOSIT_SOURCES:
-        return "deposit"
-    if source_lower in _DEFI_SOURCES:
-        return "defi"
-    if source_lower in _FIAT_SOURCES:
-        return "fiat"
-    if source_lower in _STOCK_SOURCES:
-        return "fiat" if asset_upper in _FIAT_ASSETS else "stocks"
-    if asset_upper in _FIAT_ASSETS:
-        return "fiat"
-    if source_lower in _CRYPTO_SOURCES:
-        return "crypto"
-    return "other"
+        result = "deposit"
+    elif source_lower in _DEFI_SOURCES:
+        result = "defi"
+    elif source_lower in _FIAT_SOURCES:
+        result = "fiat"
+    elif source_lower in _STOCK_SOURCES:
+        result = "fiat" if asset_upper in _FIAT_ASSETS else "stocks"
+    elif asset_upper in _FIAT_ASSETS:
+        result = "fiat"
+    elif source_lower in _CRYPTO_SOURCES:
+        result = "crypto"
+    return result
 
 
 def build_asset_type_map(snapshots: list[Snapshot]) -> dict[str, str]:
     """Build a mapping from asset ticker to dominant asset type."""
     by_asset: dict[str, dict[str, Decimal]] = {}
     for snap in snapshots:
+        if is_sync_marker_snapshot(snap):
+            continue
         asset = snap.asset.upper()
         asset_types = by_asset.setdefault(asset, {})
         a_type = asset_type_for_snapshot(snap.source, snap.asset)

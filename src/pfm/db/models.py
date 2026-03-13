@@ -140,6 +140,35 @@ class CollectorResult:
     duration_seconds: float = 0.0
 
 
+SYNC_MARKER_ASSET = "__SYNC__"
+SYNC_MARKER_RAW_JSON = '{"sync_marker": true}'
+
+
+def is_sync_marker_asset(asset: str) -> bool:
+    """Return whether an asset ticker is an internal sync marker row."""
+    return asset == SYNC_MARKER_ASSET
+
+
+def is_sync_marker_snapshot(snapshot: Snapshot) -> bool:
+    """Return whether a snapshot is an internal sync marker row."""
+    return is_sync_marker_asset(snapshot.asset)
+
+
+def make_sync_marker_snapshot(*, snapshot_date: date, source: str, source_name: str) -> Snapshot:
+    """Create a zero-value marker snapshot to record a successful sync day."""
+    return Snapshot(
+        date=snapshot_date,
+        source=source,
+        source_name=source_name or source,
+        asset=SYNC_MARKER_ASSET,
+        amount=Decimal(0),
+        usd_value=Decimal(0),
+        price=Decimal(0),
+        apy=Decimal(0),
+        raw_json=SYNC_MARKER_RAW_JSON,
+    )
+
+
 async def init_db(path: Path, *, key_hex: str | None = None) -> None:
     """Upgrade the database schema to the latest Alembic revision."""
     from pfm.db.migrations.runner import run_migrations

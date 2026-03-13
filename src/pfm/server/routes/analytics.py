@@ -66,8 +66,8 @@ async def analytics_allocation(request: web.Request) -> web.Response:
     risk_metrics = await compute_risk_metrics(repo, analysis_date)
 
     store = SourceStore(request.app["db_path"])
-    enabled_types = {s.type for s in await store.list_enabled()}
-    warnings = compute_data_warnings(latest, enabled_types, analysis_date)
+    enabled_sources = await store.list_enabled()
+    warnings = compute_data_warnings(latest, enabled_sources, analysis_date)
 
     return web.json_response(
         {
@@ -122,7 +122,7 @@ async def analytics_allocation(request: web.Request) -> web.Response:
 @routes.get("/api/v1/analytics/pnl")
 async def analytics_pnl(request: web.Request) -> web.Response:
     """Return portfolio PnL for a supported period ending at the latest portfolio date."""
-    from pfm.analytics.pnl import AssetPnl, PnlPeriod, compute_pnl
+    from pfm.analytics.pnl import AssetPnl, PnlPeriod, compute_pnl_exact
 
     repo = get_repo(request.app)
     latest = await repo.get_latest_snapshots()
@@ -139,7 +139,10 @@ async def analytics_pnl(request: web.Request) -> web.Response:
         return web.json_response({"error": "Unsupported period"}, status=400)
 
     analysis_date = max(s.date for s in latest)
-    result = await compute_pnl(repo, analysis_date, period)
+    result = await compute_pnl_exact(repo, analysis_date, period)
+    if result.start_date is None or result.end_date is None:
+        error = result.notes[0] if result.notes else "PnL is unavailable for the selected range."
+        return web.json_response({"error": error}, status=404)
 
     def serialize_asset_row(asset_row: AssetPnl) -> dict[str, str | None]:
         return {
@@ -158,8 +161,8 @@ async def analytics_pnl(request: web.Request) -> web.Response:
             "date": analysis_date.isoformat(),
             "period": period.value,
             "pnl": {
-                "start_date": result.start_date.isoformat() if result.start_date else None,
-                "end_date": result.end_date.isoformat() if result.end_date else None,
+                "start_date": result.start_date.isoformat(),
+                "end_date": result.end_date.isoformat(),
                 "start_value": _str_decimal(result.start_value),
                 "end_value": _str_decimal(result.end_value),
                 "absolute_change": _str_decimal(result.absolute_change),

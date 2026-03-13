@@ -34,13 +34,13 @@ async def build_analytics_summary(
     snapshots = await repo.get_snapshots_resolved(snapshot_date)
 
     # Compute data warnings (stale KBank, missing sources)
-    enabled_types: set[str] = set()
+    enabled_sources = []
     if db_path is not None:
         from pfm.db.source_store import SourceStore
 
         store = SourceStore(db_path)
-        enabled_types = {s.type for s in await store.list_enabled()}
-    warnings = compute_data_warnings(snapshots, enabled_types, snapshot_date)
+        enabled_sources = await store.list_enabled()
+    warnings = compute_data_warnings(snapshots, enabled_sources, snapshot_date)
 
     net_worth = await compute_net_worth(repo, snapshot_date)
     alloc_asset = await compute_allocation_by_asset(repo, snapshot_date)

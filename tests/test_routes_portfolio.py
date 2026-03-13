@@ -7,7 +7,7 @@ from decimal import Decimal
 
 import pytest
 
-from pfm.db.models import Snapshot, init_db
+from pfm.db.models import Snapshot, init_db, make_sync_marker_snapshot
 from pfm.db.repository import Repository
 from pfm.db.source_store import SourceStore
 from pfm.server.app import create_app
@@ -62,6 +62,70 @@ async def test_portfolio_summary(client):
 async def test_portfolio_summary_no_data(empty_client):
     resp = await empty_client.get("/api/v1/portfolio/summary")
     assert resp.status == 404
+
+
+async def test_portfolio_summary_warns_about_unsynced_sources(db_path, aiohttp_client):
+    store = SourceStore(db_path)
+    await store.add("okx-main", "okx", {"api_key": "key", "api_secret": "secret", "passphrase": "pass"})
+    await store.add("cash-main", "cash", {"fiat_currencies": "USD"})
+
+    async with Repository(db_path) as repo:
+        await repo.save_snapshots(
+            [
+                Snapshot(
+                    date=date(2024, 1, 7),
+                    source="okx",
+                    source_name="okx-main",
+                    asset="BTC",
+                    amount=Decimal(1),
+                    usd_value=Decimal(40000),
+                ),
+                Snapshot(
+                    date=date(2024, 1, 6),
+                    source="cash",
+                    source_name="cash-main",
+                    asset="USD",
+                    amount=Decimal(100),
+                    usd_value=Decimal(100),
+                    price=Decimal(1),
+                ),
+            ]
+        )
+
+    app = create_app(db_path)
+    client = await aiohttp_client(app)
+
+    resp = await client.get("/api/v1/portfolio/summary")
+    assert resp.status == 200
+    data = await resp.json()
+    assert "Source not synced today: cash-main (latest 2024-01-06)" in data["warnings"]
+
+
+async def test_portfolio_summary_hides_sync_marker_holdings_but_preserves_freshness(db_path, aiohttp_client):
+    store = SourceStore(db_path)
+    await store.add("wise-main", "wise", {"api_token": "test-token-123456"})
+
+    async with Repository(db_path) as repo:
+        await repo.save_snapshots(
+            [
+                make_sync_marker_snapshot(
+                    snapshot_date=date(2024, 1, 7),
+                    source="wise",
+                    source_name="wise-main",
+                )
+            ]
+        )
+
+    app = create_app(db_path)
+    client = await aiohttp_client(app)
+
+    resp = await client.get("/api/v1/portfolio/summary")
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["date"] == "2024-01-07"
+    assert data["net_worth"]["usd"] == "0"
+    assert data["holdings"] == []
+    assert data["warnings"] == []
 
 
 async def test_portfolio_net_worth_history_returns_daily_points(db_path, aiohttp_client):

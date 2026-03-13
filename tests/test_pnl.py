@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
-from pfm.analytics.pnl import PnlPeriod, compute_pnl
+from pfm.analytics.pnl import PnlPeriod, compute_pnl, compute_pnl_exact
 from pfm.db.models import Snapshot, Transaction, TransactionType
 
 
@@ -47,6 +47,35 @@ async def test_compute_pnl_missing_start_date_fallback(repo):
     assert result.end_date == date(2024, 1, 8)
     assert result.absolute_change == Decimal(20)
     assert any("No snapshot on" in note for note in result.notes)
+
+
+async def test_compute_pnl_uses_resolved_snapshots_for_stale_sources(repo):
+    await repo.save_snapshots(
+        [
+            Snapshot(date=date(2024, 1, 1), source="wise", asset="USD", amount=Decimal(100), usd_value=Decimal(100)),
+            Snapshot(date=date(2024, 1, 1), source="okx", asset="BTC", amount=Decimal("0.01"), usd_value=Decimal(400)),
+            Snapshot(date=date(2024, 1, 2), source="wise", asset="USD", amount=Decimal(110), usd_value=Decimal(110)),
+        ]
+    )
+
+    result = await compute_pnl(repo, date(2024, 1, 2), PnlPeriod.DAILY)
+    assert result.start_value == Decimal(500)
+    assert result.end_value == Decimal(510)
+    assert result.absolute_change == Decimal(10)
+
+
+async def test_compute_pnl_exact_returns_unavailable_when_start_date_missing(repo):
+    await repo.save_snapshots(
+        [
+            Snapshot(date=date(2024, 1, 1), source="s", asset="BTC", amount=Decimal(1), usd_value=Decimal(100)),
+            Snapshot(date=date(2024, 1, 31), source="s", asset="BTC", amount=Decimal(1), usd_value=Decimal(130)),
+        ]
+    )
+
+    result = await compute_pnl_exact(repo, date(2024, 1, 31), PnlPeriod.ONE_MONTH)
+    assert result.start_date is None
+    assert result.end_date is None
+    assert any("PnL is unavailable" in note for note in result.notes)
 
 
 async def test_compute_pnl_all_time_with_cost_basis(repo):

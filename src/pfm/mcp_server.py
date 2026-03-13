@@ -134,8 +134,8 @@ async def get_portfolio_summary(
 
     snapshots = await repo.get_snapshots_resolved(d)
     store = SourceStore(_ctx_db_path(ctx))
-    enabled_types = {s.type for s in await store.list_enabled()}
-    warnings = compute_data_warnings(snapshots, enabled_types, d)
+    enabled_sources = await store.list_enabled()
+    warnings = compute_data_warnings(snapshots, enabled_sources, d)
 
     top_holdings = [
         {

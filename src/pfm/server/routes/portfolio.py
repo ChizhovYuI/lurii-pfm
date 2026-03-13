@@ -6,6 +6,7 @@ from datetime import date, timedelta
 
 from aiohttp import web
 
+from pfm.db.models import is_sync_marker_snapshot
 from pfm.server.serializers import _str_decimal, asset_type_for_snapshot, snapshot_to_dict
 from pfm.server.state import get_repo
 
@@ -27,8 +28,8 @@ async def portfolio_summary(request: web.Request) -> web.Response:
     net_worth = await compute_net_worth(repo, analysis_date)
 
     store = SourceStore(request.app["db_path"])
-    enabled_types = {s.type for s in await store.list_enabled()}
-    warnings = compute_data_warnings(latest, enabled_types, analysis_date)
+    enabled_sources = await store.list_enabled()
+    warnings = compute_data_warnings(latest, enabled_sources, analysis_date)
 
     return web.json_response(
         {
@@ -46,6 +47,7 @@ async def portfolio_summary(request: web.Request) -> web.Response:
                     "apy": _str_decimal(snap.apy),
                 }
                 for snap in latest
+                if not is_sync_marker_snapshot(snap)
             ],
             "warnings": warnings,
         }
@@ -130,6 +132,6 @@ async def portfolio_holdings(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "date": max(s.date for s in latest).isoformat(),
-            "holdings": [snapshot_to_dict(s) for s in latest],
+            "holdings": [snapshot_to_dict(s) for s in latest if not is_sync_marker_snapshot(s)],
         }
     )
