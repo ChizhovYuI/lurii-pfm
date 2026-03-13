@@ -233,8 +233,8 @@ def test_data_warnings_missing_source():
         _enabled_source("wise", "wise"),
     ]
     warnings = compute_data_warnings(snapshots, enabled, date(2024, 1, 15))
-    assert "No snapshot data for source: kbank" in warnings
     assert "No snapshot data for source: wise" in warnings
+    assert not any("kbank" in warning for warning in warnings)
     assert not any("okx" in w for w in warnings)
 
 
@@ -245,7 +245,7 @@ def test_data_warnings_kbank_outdated():
     ]
     enabled = [_enabled_source("okx", "okx"), _enabled_source("kbank-main", "kbank")]
     warnings = compute_data_warnings(snapshots, enabled, date(2024, 1, 15))
-    assert "Source not synced today: kbank-main (latest 2023-12-01)" in warnings
+    assert not any("Source not synced today: kbank-main" in warning for warning in warnings)
     assert any("KBank statement is outdated" in w for w in warnings)
 
 
@@ -256,7 +256,7 @@ def test_data_warnings_kbank_fresh():
     ]
     enabled = [_enabled_source("okx", "okx"), _enabled_source("kbank-main", "kbank")]
     warnings = compute_data_warnings(snapshots, enabled, date(2024, 1, 15))
-    assert "Source not synced today: kbank-main (latest 2024-01-14)" in warnings
+    assert not any("kbank-main" in warning for warning in warnings)
     assert not any("KBank statement is outdated" in w for w in warnings)
 
 

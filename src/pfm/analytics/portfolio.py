@@ -231,19 +231,25 @@ def compute_data_warnings(
     warnings: list[str] = []
     for source in enabled_sources:
         latest_date = source_dates.get(source.name)
+        if source.type == "cash":
+            continue
+
+        if source.type == "kbank":
+            if latest_date is None:
+                continue
+            age_days = (analysis_date - latest_date).days
+            if age_days > _KBANK_STALE_DAYS:
+                warnings.append(
+                    f"KBank statement is outdated: {source.name} ({latest_date.isoformat()}, {age_days} days old)"
+                )
+            continue
+
         if latest_date is None:
             warnings.append(f"No snapshot data for source: {source.name}")
             continue
 
         if latest_date < analysis_date:
             warnings.append(f"Source not synced today: {source.name} (latest {latest_date.isoformat()})")
-
-        if source.type == "kbank":
-            age_days = (analysis_date - latest_date).days
-            if age_days > _KBANK_STALE_DAYS:
-                warnings.append(
-                    f"KBank statement is outdated: {source.name} ({latest_date.isoformat()}, {age_days} days old)"
-                )
 
     return warnings
 

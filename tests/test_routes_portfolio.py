@@ -64,9 +64,10 @@ async def test_portfolio_summary_no_data(empty_client):
     assert resp.status == 404
 
 
-async def test_portfolio_summary_warns_about_unsynced_sources(db_path, aiohttp_client):
+async def test_portfolio_summary_warns_about_unsynced_non_cash_sources_only(db_path, aiohttp_client):
     store = SourceStore(db_path)
     await store.add("okx-main", "okx", {"api_key": "key", "api_secret": "secret", "passphrase": "pass"})
+    await store.add("wise-main", "wise", {"api_token": "test-token-123456"})
     await store.add("cash-main", "cash", {"fiat_currencies": "USD"})
 
     async with Repository(db_path) as repo:
@@ -79,6 +80,15 @@ async def test_portfolio_summary_warns_about_unsynced_sources(db_path, aiohttp_c
                     asset="BTC",
                     amount=Decimal(1),
                     usd_value=Decimal(40000),
+                ),
+                Snapshot(
+                    date=date(2024, 1, 6),
+                    source="wise",
+                    source_name="wise-main",
+                    asset="USD",
+                    amount=Decimal(250),
+                    usd_value=Decimal(250),
+                    price=Decimal(1),
                 ),
                 Snapshot(
                     date=date(2024, 1, 6),
@@ -98,7 +108,41 @@ async def test_portfolio_summary_warns_about_unsynced_sources(db_path, aiohttp_c
     resp = await client.get("/api/v1/portfolio/summary")
     assert resp.status == 200
     data = await resp.json()
-    assert "Source not synced today: cash-main (latest 2024-01-06)" in data["warnings"]
+    assert "Source not synced today: wise-main (latest 2024-01-06)" in data["warnings"]
+    assert not any("cash-main" in warning for warning in data["warnings"])
+
+
+async def test_portfolio_summary_ignores_cash_sync_marker_freshness(db_path, aiohttp_client):
+    store = SourceStore(db_path)
+    await store.add("cash-main", "cash", {"fiat_currencies": "USD"})
+
+    async with Repository(db_path) as repo:
+        await repo.save_snapshots(
+            [
+                Snapshot(
+                    date=date(2024, 1, 6),
+                    source="cash",
+                    source_name="cash-main",
+                    asset="USD",
+                    amount=Decimal(100),
+                    usd_value=Decimal(100),
+                    price=Decimal(1),
+                ),
+                make_sync_marker_snapshot(
+                    snapshot_date=date(2024, 1, 7),
+                    source="cash",
+                    source_name="cash-main",
+                ),
+            ]
+        )
+
+    app = create_app(db_path)
+    client = await aiohttp_client(app)
+
+    resp = await client.get("/api/v1/portfolio/summary")
+    assert resp.status == 200
+    data = await resp.json()
+    assert not any("cash-main" in warning for warning in data["warnings"])
 
 
 async def test_portfolio_summary_hides_sync_marker_holdings_but_preserves_freshness(db_path, aiohttp_client):

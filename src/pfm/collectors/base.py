@@ -48,6 +48,7 @@ class BaseCollector(ABC):
 
     source_name: str = ""
     incremental_history_overlap_days: int = 0
+    records_empty_sync_marker: bool = True
 
     def __init__(self, pricing: PricingService) -> None:
         self._pricing = pricing
@@ -95,14 +96,6 @@ class BaseCollector(ABC):
                     raw_json=rb.raw_json,
                 )
             )
-        if not snapshots:
-            snapshots.append(
-                make_sync_marker_snapshot(
-                    snapshot_date=today,
-                    source=self.source_name,
-                    source_name=instance_name,
-                )
-            )
         return snapshots
 
     # ── Legacy fetch_balances (concrete) ──────────────────────────────
@@ -148,15 +141,23 @@ class BaseCollector(ABC):
         # Fetch balances
         try:
             snapshots = await self.fetch_balances()
-            if snapshots:
-                instance_name = self.instance_name or self.source_name
+            instance_name = self.instance_name or self.source_name
+            snapshots = [
+                snap if snap.source_name else replace(snap, source_name=instance_name or snap.source)
+                for snap in snapshots
+            ]
+            if not snapshots and self.records_empty_sync_marker:
                 snapshots = [
-                    snap if snap.source_name else replace(snap, source_name=instance_name or snap.source)
-                    for snap in snapshots
+                    make_sync_marker_snapshot(
+                        snapshot_date=self._pricing.today(),
+                        source=self.source_name,
+                        source_name=instance_name,
+                    )
                 ]
+            if snapshots:
                 await repo.save_snapshots(snapshots)
-                result.snapshots_count = sum(1 for snapshot in snapshots if not is_sync_marker_snapshot(snapshot))
-                result.snapshots_usd_total = sum((snapshot.usd_value for snapshot in snapshots), start=Decimal(0))
+            result.snapshots_count = sum(1 for snapshot in snapshots if not is_sync_marker_snapshot(snapshot))
+            result.snapshots_usd_total = sum((snapshot.usd_value for snapshot in snapshots), start=Decimal(0))
         except Exception as exc:
             msg, is_network_access_error = _format_fetch_error(self.source_name, "balances", exc)
             if is_network_access_error:

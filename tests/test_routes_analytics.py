@@ -176,6 +176,7 @@ async def test_analytics_pnl_invalid_period(client):
 async def test_analytics_allocation_warns_about_unsynced_sources_and_outdated_kbank(db_path, aiohttp_client):
     store = SourceStore(db_path)
     await store.add("okx-main", "okx", {"api_key": "key", "api_secret": "secret", "passphrase": "pass"})
+    await store.add("wise-main", "wise", {"api_token": "test-token-123456"})
     await store.add("cash-main", "cash", {"fiat_currencies": "USD"})
     await store.add(
         "kbank-main",
@@ -193,6 +194,14 @@ async def test_analytics_allocation_warns_about_unsynced_sources_and_outdated_kb
                     asset="BTC",
                     amount=Decimal(1),
                     usd_value=Decimal(45000),
+                ),
+                Snapshot(
+                    date=date(2024, 1, 14),
+                    source="wise",
+                    source_name="wise-main",
+                    asset="USD",
+                    amount=Decimal(250),
+                    usd_value=Decimal(250),
                 ),
                 Snapshot(
                     date=date(2024, 1, 14),
@@ -220,8 +229,9 @@ async def test_analytics_allocation_warns_about_unsynced_sources_and_outdated_kb
     assert resp.status == 200
     data = await resp.json()
 
-    assert "Source not synced today: cash-main (latest 2024-01-14)" in data["warnings"]
-    assert "Source not synced today: kbank-main (latest 2024-01-10)" in data["warnings"]
+    assert "Source not synced today: wise-main (latest 2024-01-14)" in data["warnings"]
+    assert not any("cash-main" in warning for warning in data["warnings"])
+    assert not any("Source not synced today: kbank-main" in warning for warning in data["warnings"])
     assert any("KBank statement is outdated" in warning for warning in data["warnings"])
 
 

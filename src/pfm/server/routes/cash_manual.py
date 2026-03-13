@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp import web
 
-from pfm.db.models import Snapshot, Source
+from pfm.db.models import Snapshot, Source, is_sync_marker_snapshot
 from pfm.db.source_store import InvalidCredentialsError, SourceStore
 from pfm.server.serializers import _str_decimal
 from pfm.server.state import get_broadcaster, get_pricing, get_repo
@@ -259,7 +259,11 @@ async def _load_resolved_cash_balances(
     target_date: date,
 ) -> tuple[dict[str, dict[str, str]], date | None]:
     snapshots = await repo.get_snapshots_resolved(target_date)
-    rows = [snap for snap in snapshots if snap.source == _CASH_SOURCE_TYPE and snap.source_name == source_name]
+    rows = [
+        snap
+        for snap in snapshots
+        if snap.source == _CASH_SOURCE_TYPE and snap.source_name == source_name and not is_sync_marker_snapshot(snap)
+    ]
     if not rows:
         return {}, None
     latest_date = max(snap.date for snap in rows)

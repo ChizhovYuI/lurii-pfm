@@ -19,6 +19,7 @@ class CashCollector(BaseCollector):
     """No-op collector used for manual cash balances managed via API."""
 
     source_name = "cash"
+    records_empty_sync_marker = False
 
     def __init__(self, pricing: PricingService, *, fiat_currencies: str = "") -> None:
         super().__init__(pricing)

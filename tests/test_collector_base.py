@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from pfm.collectors.base import BaseCollector
+from pfm.collectors.cash import CashCollector
 from pfm.db.models import SYNC_MARKER_ASSET, Snapshot, Transaction, TransactionType
 from pfm.db.repository import Repository
 from pfm.pricing.coingecko import PricingService
@@ -172,6 +173,15 @@ async def test_collect_saves_sync_marker_for_zero_balance_source(repo, pricing):
     assert len(db_snapshots) == 1
     assert db_snapshots[0].asset == SYNC_MARKER_ASSET
     assert db_snapshots[0].usd_value == 0
+
+
+async def test_cash_collector_does_not_save_sync_marker_for_empty_manual_source(repo, pricing):
+    collector = CashCollector(pricing, fiat_currencies="USD")
+
+    result = await collector.collect(repo)
+
+    assert result.snapshots_count == 0
+    assert await repo.get_snapshots_by_date(pricing.today()) == []
 
 
 async def test_close_closes_owned_httpx_clients(pricing):

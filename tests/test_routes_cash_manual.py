@@ -8,7 +8,7 @@ from decimal import Decimal
 
 import pytest
 
-from pfm.db.models import Snapshot, init_db
+from pfm.db.models import Snapshot, init_db, make_sync_marker_snapshot
 from pfm.db.repository import Repository
 from pfm.db.source_store import SourceStore
 from pfm.server.app import create_app
@@ -213,6 +213,39 @@ async def test_put_cash_manual_deselect_clears_old_currency_balance(client, db_p
     assert cash_rows["EUR"].date == _today_utc()
     assert cash_rows["EUR"].amount == Decimal(0)
     assert cash_rows["EUR"].usd_value == Decimal(0)
+
+
+async def test_cash_manual_ignores_sync_marker_rows_for_display_and_update(client, db_path):
+    store = SourceStore(db_path)
+    await store.add("cash", "cash", {"fiat_currencies": "USD"})
+
+    async with Repository(db_path) as repo:
+        await repo.save_snapshots(
+            [
+                make_sync_marker_snapshot(
+                    snapshot_date=_today_utc(),
+                    source="cash",
+                    source_name="cash",
+                )
+            ]
+        )
+
+    get_resp = await client.get("/api/v1/cash/manual")
+    assert get_resp.status == 200
+    get_data = await get_resp.json()
+    assert get_data["latest_snapshot_date"] is None
+    assert get_data["balances"] == {}
+
+    put_resp = await client.put(
+        "/api/v1/cash/manual",
+        json={
+            "selected_currencies": ["USD"],
+            "balances": {"USD": "100"},
+        },
+    )
+    assert put_resp.status == 200
+    put_data = await put_resp.json()
+    assert put_data["balances"]["USD"]["amount"] == "100"
 
 
 async def test_put_cash_manual_rejects_invalid_currency(client, db_path):
