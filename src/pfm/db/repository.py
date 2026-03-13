@@ -118,6 +118,14 @@ class Repository:
             return []
         return await self.get_snapshots_resolved(date.fromisoformat(row[0]))
 
+    async def get_earliest_snapshot_date(self) -> date | None:
+        """Return the earliest snapshot date present in the database."""
+        cursor = await self._db.execute("SELECT MIN(date) FROM snapshots")
+        row = await cursor.fetchone()
+        if row is None or row[0] is None:
+            return None
+        return date.fromisoformat(str(row[0]))
+
     async def get_snapshots_resolved(self, target_date: date) -> list[Snapshot]:
         """Get the most recent snapshots per source where date <= target_date.
 

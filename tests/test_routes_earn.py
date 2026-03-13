@@ -203,3 +203,147 @@ async def test_earn_summary_includes_coinex_financial_when_apy_zero(db_path, aio
     assert len(data["positions"]) == 1
     assert data["positions"][0]["source"] == "coinex"
     assert data["positions"][0]["asset"] == "USDT"
+
+
+async def test_earn_history_returns_daily_points_and_latest_anchor(db_path, aiohttp_client):
+    async with Repository(db_path) as repo:
+        await repo.save_snapshots(
+            [
+                Snapshot(
+                    date=date(2024, 1, 5),
+                    source="okx",
+                    asset="USDT",
+                    amount=Decimal(10000),
+                    usd_value=Decimal(10000),
+                    price=Decimal(1),
+                    apy=Decimal("0.10"),
+                ),
+                Snapshot(
+                    date=date(2024, 1, 7),
+                    source="okx",
+                    asset="USDT",
+                    amount=Decimal(12000),
+                    usd_value=Decimal(12000),
+                    price=Decimal(1),
+                    apy=Decimal("0.12"),
+                ),
+            ]
+        )
+
+    app = create_app(db_path)
+    client = await aiohttp_client(app)
+
+    resp = await client.get("/api/v1/earn/history?days=3")
+    assert resp.status == 200
+
+    data = await resp.json()
+    assert data["start_date"] == "2024-01-05"
+    assert data["end_date"] == "2024-01-07"
+    assert data["points"] == [
+        {"date": "2024-01-05", "total_usd_value": "10000", "weighted_avg_apy": "0.1"},
+        {"date": "2024-01-06", "total_usd_value": "10000", "weighted_avg_apy": "0.1"},
+        {"date": "2024-01-07", "total_usd_value": "12000", "weighted_avg_apy": "0.12"},
+    ]
+
+
+async def test_earn_history_carries_forward_resolved_positions_and_computes_weighted_apy(db_path, aiohttp_client):
+    async with Repository(db_path) as repo:
+        await repo.save_snapshots(
+            [
+                Snapshot(
+                    date=date(2024, 1, 5),
+                    source="okx",
+                    asset="USDT",
+                    amount=Decimal(100),
+                    usd_value=Decimal(100),
+                    price=Decimal(1),
+                    apy=Decimal("0.10"),
+                ),
+                Snapshot(
+                    date=date(2024, 1, 7),
+                    source="aave",
+                    asset="USDC",
+                    amount=Decimal(50),
+                    usd_value=Decimal(50),
+                    price=Decimal(1),
+                    apy=Decimal("0.20"),
+                ),
+            ]
+        )
+
+    app = create_app(db_path)
+    client = await aiohttp_client(app)
+
+    resp = await client.get("/api/v1/earn/history?days=1")
+    assert resp.status == 200
+
+    data = await resp.json()
+    assert data["start_date"] == "2024-01-07"
+    assert data["end_date"] == "2024-01-07"
+    assert data["points"] == [
+        {
+            "date": "2024-01-07",
+            "total_usd_value": "150",
+            "weighted_avg_apy": "0.1333333333333333333333333333",
+        }
+    ]
+
+
+async def test_earn_history_returns_partial_range_when_less_than_requested_history_exists(client):
+    resp = await client.get("/api/v1/earn/history?days=30")
+    assert resp.status == 200
+
+    data = await resp.json()
+    assert data["start_date"] == "2024-01-07"
+    assert data["end_date"] == "2024-01-07"
+    assert data["points"] == [{"date": "2024-01-07", "total_usd_value": "10000", "weighted_avg_apy": "0.1049"}]
+
+
+async def test_earn_history_returns_zero_for_days_without_earn_positions(db_path, aiohttp_client):
+    async with Repository(db_path) as repo:
+        await repo.save_snapshots(
+            [
+                Snapshot(
+                    date=date(2024, 1, 5),
+                    source="wise",
+                    asset="USD",
+                    amount=Decimal(5000),
+                    usd_value=Decimal(5000),
+                    price=Decimal(1),
+                    apy=Decimal(0),
+                ),
+                Snapshot(
+                    date=date(2024, 1, 7),
+                    source="okx",
+                    asset="USDT",
+                    amount=Decimal(1000),
+                    usd_value=Decimal(1000),
+                    price=Decimal(1),
+                    apy=Decimal("0.08"),
+                ),
+            ]
+        )
+
+    app = create_app(db_path)
+    client = await aiohttp_client(app)
+
+    resp = await client.get("/api/v1/earn/history?days=3")
+    assert resp.status == 200
+
+    data = await resp.json()
+    assert data["points"] == [
+        {"date": "2024-01-05", "total_usd_value": "0", "weighted_avg_apy": "0"},
+        {"date": "2024-01-06", "total_usd_value": "0", "weighted_avg_apy": "0"},
+        {"date": "2024-01-07", "total_usd_value": "1000", "weighted_avg_apy": "0.08"},
+    ]
+
+
+async def test_earn_history_no_data(empty_client):
+    resp = await empty_client.get("/api/v1/earn/history?days=30")
+    assert resp.status == 404
+
+
+@pytest.mark.parametrize("days_value", ["0", "-3", "abc"])
+async def test_earn_history_rejects_invalid_days(client, days_value):
+    resp = await client.get(f"/api/v1/earn/history?days={days_value}")
+    assert resp.status == 400

@@ -20,6 +20,14 @@ _HUNDRED = Decimal(100)
 class PnlPeriod(StrEnum):
     """Supported PnL periods."""
 
+    ONE_WEEK = "1w"
+    MONTH_TO_DATE = "mtd"
+    ONE_MONTH = "1m"
+    THREE_MONTHS = "3m"
+    YEAR_TO_DATE = "ytd"
+    ONE_YEAR = "1y"
+    ALL = "all"
+    THIRTY_DAYS = "30d"
     DAILY = "daily"
     WEEKLY = "weekly"
     MONTHLY = "monthly"
@@ -136,13 +144,20 @@ async def _get_available_dates(repo: Repository, as_of: date) -> list[date]:
 
 
 def _target_start_date(end_date: date, period: PnlPeriod, earliest: date) -> date:
-    if period == PnlPeriod.DAILY:
-        return end_date - timedelta(days=1)
-    if period == PnlPeriod.WEEKLY:
-        return end_date - timedelta(days=7)
-    if period == PnlPeriod.MONTHLY:
-        return date(end_date.year, end_date.month, 1)
-    return earliest
+    start_dates = {
+        PnlPeriod.ONE_WEEK: end_date - timedelta(days=6),
+        PnlPeriod.MONTH_TO_DATE: date(end_date.year, end_date.month, 1),
+        PnlPeriod.ONE_MONTH: end_date - timedelta(days=29),
+        PnlPeriod.THREE_MONTHS: end_date - timedelta(days=89),
+        PnlPeriod.YEAR_TO_DATE: date(end_date.year, 1, 1),
+        PnlPeriod.ONE_YEAR: end_date - timedelta(days=364),
+        PnlPeriod.ALL: earliest,
+        PnlPeriod.THIRTY_DAYS: end_date - timedelta(days=30),
+        PnlPeriod.DAILY: end_date - timedelta(days=1),
+        PnlPeriod.WEEKLY: end_date - timedelta(days=7),
+        PnlPeriod.MONTHLY: date(end_date.year, end_date.month, 1),
+    }
+    return start_dates.get(period, earliest)
 
 
 def _latest_on_or_before(dates: list[date], target: date) -> date:
