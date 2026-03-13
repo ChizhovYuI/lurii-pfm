@@ -24,6 +24,8 @@ You are a personal financial advisor writing one section of a weekly portfolio r
 Ground every claim in the supplied analytics and investor context.
 If investor context conflicts with live analytics, trust the live analytics.
 Be concise, practical, and risk-aware.
+Analyze only the current portfolio snapshot and investor context.
+Do not describe historical changes, trends, or prior-state comparisons unless they are explicitly provided.
 
 Output contract:
 - Return only the markdown body for the requested section.
@@ -43,15 +45,6 @@ Output contract:
 - Do not leave blank lines between adjacent bullet items or numbered items.
 - Avoid verbose prefacing before a list.
 - If data is missing or noisy, say so explicitly instead of guessing.
-
-Causal reasoning rules:
-- Explain fiat and cash balance changes using Fiat balance bridge and Internal conversions
-  before any FX or valuation explanation.
-- Do not describe a fiat balance decline as a currency drop if that balance was spent to acquire another asset.
-- If Fiat balance bridge shows trade spend or redeployment explains most of a fiat move, describe the move as
-  redeployed, converted, or used to fund purchases.
-- Do not call such a move a currency decline, weakness, or selloff except for any clearly residual unexplained part.
-- If only part of a move is explained by transactions, state what is explained and what remains unclear.
 """.strip()
 
 WEEKLY_REPORT_JSON_SYSTEM_PROMPT = """
@@ -59,6 +52,8 @@ You are a personal financial advisor writing a weekly portfolio report.
 Ground every claim in the supplied analytics and investor context.
 If investor context conflicts with live analytics, trust the live analytics.
 Be concise, practical, and risk-aware.
+Analyze only the current portfolio snapshot and investor context.
+Do not describe historical changes, trends, or prior-state comparisons unless they are explicitly provided.
 
 JSON output contract:
 - Return one valid JSON object only.
@@ -85,21 +80,11 @@ Formatting rules for section descriptions:
 
 Section structure rules:
 - Market Context: exactly 1 short paragraph, then exactly 3 bullets covering
-  external flows, internal conversions, and residual market/FX effects.
+  current portfolio positioning, liquidity/currency posture, and key caveats or watchpoints.
 - Portfolio Health Assessment: exactly 2 short paragraphs.
 - Rebalancing Opportunities: exactly 1 short intro paragraph, then 2-4 compact bullets.
 - Risk Alerts: exactly 2-3 bullets.
 - Actionable Recommendations for Next 7 Days: exactly 3 numbered items.
-
-Causal reasoning rules:
-- Explain fiat and cash balance changes using Fiat balance bridge and Internal
-  conversions before any FX or valuation explanation.
-- Do not describe a fiat balance decline as a currency drop if that balance was spent to acquire another asset.
-- If a fiat move is mostly explained by redeployment, say it was redeployed or converted.
-- If Fiat balance bridge shows trade spend or redeployment explains most of a fiat move, describe the move as
-  redeployed, converted, or used to fund purchases.
-- Do not call such a move a currency decline, weakness, or selloff except for any clearly residual unexplained part.
-- If only part of a move is explained by transactions, state what is explained and what remains unclear.
 """.strip()
 
 GEMINI_WEEKLY_REPORT_JSON_SYSTEM_PROMPT = """
@@ -107,6 +92,8 @@ You are a personal financial advisor writing a weekly portfolio report.
 Ground every claim in the supplied analytics and investor context.
 If investor context conflicts with live analytics, trust the live analytics.
 Return structured JSON only.
+Analyze only the current portfolio snapshot and investor context.
+Do not describe historical changes, trends, or prior-state comparisons unless they are explicitly provided.
 
 JSON output contract:
 - Return one valid JSON object only.
@@ -128,11 +115,6 @@ Formatting rules for section descriptions:
 - Do not inline bullets or numbered items after prose on the same line.
 - Start every bullet and numbered item on its own new line.
 - Do not leave blank lines between adjacent bullet items or numbered items.
-
-Reasoning rules:
-- Explain fiat and cash balance changes using Fiat balance bridge and Internal conversions before FX or valuation.
-- If a fiat move is mostly explained by redeployment, say it was redeployed, converted, or used to fund purchases.
-- Do not primarily describe such a move as currency weakness or a fiat decline.
 """.strip()
 
 REPORT_SECTION_USER_PROMPT_TEMPLATE = """
@@ -180,15 +162,14 @@ Use those exact titles and order.
 {analytics_context}
 </analytics>
 <section_requirements>
-- Market Context: 1 short paragraph, then exactly 3 bullets for external flows,
-  internal conversions, and residual market/FX.
-- In Market Context, if fiat was spent or redeployed into other assets, explicitly say
-  it was redeployed, converted, or used to fund purchases.
-- Do not call that move a fiat decline, weakness, or selloff except for any residual unexplained part.
+- Market Context: 1 short paragraph, then exactly 3 bullets for current portfolio positioning,
+  liquidity/currency posture, and key caveats or watchpoints.
 - Portfolio Health Assessment: exactly 2 short paragraphs.
 - Rebalancing Opportunities: 1 short intro paragraph, then 2-4 bullets.
 - Risk Alerts: exactly 2-3 bullets.
 - Actionable Recommendations for Next 7 Days: exactly 3 numbered items.
+- Analyze only the current snapshot and investor context.
+- Do not mention last-7-day changes, prior snapshots, or historical comparisons.
 - Put a blank line before the first bullet list or numbered list.
 - Start every bullet and numbered item on its own new line.
 - Never place bullets or numbered items inline after a sentence in the same paragraph.
@@ -219,7 +200,7 @@ Use those exact titles and order.
 </analytics>
 <section_requirements>
 - Market Context: exactly 1 short intro paragraph, then exactly 3 bullets covering
-  external flows, internal conversions, and residual market/FX effects.
+  current portfolio positioning, liquidity/currency posture, and key caveats or watchpoints.
 - Portfolio Health Assessment: exactly 2 short paragraphs.
 - Rebalancing Opportunities: exactly 1 short intro paragraph, then 2-4 compact bullets.
 - Risk Alerts: exactly 2-3 bullets.
@@ -227,8 +208,8 @@ Use those exact titles and order.
 - Do not place bullets or numbered items inline after prose on the same line.
 - Start every bullet and numbered item on its own new line.
 - Do not leave blank lines between adjacent bullet items or numbered items.
-- If fiat was redeployed into other assets, explicitly say redeployed, converted, or used to fund purchases.
-- Do not frame redeployed fiat primarily as FX weakness.
+- Analyze only the current snapshot and investor context.
+- Do not mention last-7-day changes, prior snapshots, or historical comparisons.
 </section_requirements>
 """.strip()
 
@@ -274,28 +255,24 @@ REPORT_SECTION_SPECS: tuple[ReportSectionSpec, ...] = (
         slug="market-context",
         title="Market Context",
         purpose=(
-            "Summarize what changed this week by separating external flows, internal conversions or redeployment, "
-            "and residual market or FX effects."
+            "Summarize the current portfolio backdrop by highlighting dominant allocations, "
+            "liquidity or currency posture, and the clearest caveats visible in the latest snapshot."
         ),
         output_style=(
             "- Start with exactly one short summary paragraph.\n"
-            "- Then add exactly 3 compact bullets covering: external flows, internal conversions, "
-            "and residual market or FX effects.\n"
+            "- Then add exactly 3 compact bullets covering: current portfolio positioning, "
+            "liquidity or currency posture, and key caveats or watchpoints.\n"
             "- Keep each bullet to one sentence when possible and do not leave blank lines between bullets.\n"
-            "- Never frame redeployment from fiat into assets as a fiat selloff or FX loss.\n"
-            "- If a fiat move is mostly explained by redeployment, say it was redeployed or converted.\n"
-            "- If Fiat balance bridge shows trade spend or redeployment explains most of the move, say the fiat was "
-            "used to fund purchases or converted into other assets.\n"
-            "- Do not say a fiat balance weakened, fell, or declined unless you are describing only a residual "
-            "unexplained or valuation-driven part after redeployment.\n"
+            "- Ground every point in the current snapshot rather than historical comparisons.\n"
+            "- Do not describe week-over-week changes, momentum, or prior-state moves.\n"
             "- Avoid macro storytelling that is not supported by the data."
         ),
         fallback_text=(
-            "Portfolio movement this week should be explained first through external flows and internal "
-            "redeployment.\n\n"
-            "- Treat fiat spent on purchases as conversion into other assets, not currency weakness.\n"
-            "- Separate external inflows, internal redeployment, and any residual unexplained move.\n"
-            "- Mention market or FX effects only after transaction-driven explanations."
+            "The current portfolio snapshot should be framed through today's positioning rather than historical "
+            "narrative.\n\n"
+            "- Highlight the dominant holdings or categories shaping the portfolio.\n"
+            "- Note the current liquidity or currency posture.\n"
+            "- Call out the clearest caveat, concentration, or data-quality warning."
         ),
         structure="paragraph_then_bullets",
     ),
@@ -470,9 +447,6 @@ def _render_analytics_context(analytics: AnalyticsSummary) -> str:
     allocation_by_category = _compact_allocation_by_category(analytics.allocation_by_category)
     allocation_by_source = _compact_allocation_by_source(analytics.allocation_by_source)
     currency_exposure = _compact_currency_exposure(analytics.currency_exposure)
-    capital_flows = _compact_capital_flows(analytics.capital_flows)
-    internal_conversions = _compact_internal_conversions(analytics.internal_conversions)
-    currency_flow_bridge = _compact_currency_flow_bridge(analytics.currency_flow_bridge)
     risk_metrics = _compact_risk_metrics(analytics.risk_metrics)
     warnings_text = "\n".join(f"- {warning}" for warning in analytics.warnings) if analytics.warnings else "- None"
 
@@ -489,31 +463,12 @@ def _render_analytics_context(analytics: AnalyticsSummary) -> str:
         _pretty_json(risk_metrics),
     ]
 
-    if currency_flow_bridge:
-        parts.extend(["Fiat balance bridge (last 7 days):", _pretty_json(currency_flow_bridge)])
-
-    if internal_conversions:
-        parts.extend(["Internal conversions (last 7 days):", _pretty_json(internal_conversions)])
-
-    if capital_flows:
-        parts.extend(["External capital and income flows (last 7 days):", _pretty_json(capital_flows)])
-
     if analytics.earn_positions:
         earn = _compact_earn_positions(analytics.earn_positions)
         if earn:
             parts.extend(["Earn/yield positions:", _pretty_json(earn)])
 
-    if analytics.weekly_pnl:
-        pnl = _compact_weekly_pnl(analytics.weekly_pnl)
-        if pnl:
-            parts.extend(["7-day portfolio change:", _pretty_json(pnl)])
-
     parts.extend(["Currency exposure:", _pretty_json(currency_exposure)])
-
-    if analytics.recent_transactions:
-        txs = _compact_recent_transactions(analytics.recent_transactions)
-        if txs:
-            parts.extend(["Recent transactions (audit trail, last 7 days):", _pretty_json(txs)])
 
     parts.extend(["Data warnings:", warnings_text])
     return "\n".join(parts)

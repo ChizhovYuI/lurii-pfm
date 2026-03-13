@@ -293,28 +293,10 @@ class MexcCollector(BaseCollector):
         if amount <= 0:
             return None
 
-        apy_raw = _to_decimal(
-            row.get(
-                "apy",
-                row.get(
-                    "apr",
-                    row.get(
-                        "interestRate",
-                        row.get(
-                            "annualRate",
-                            row.get(
-                                "showApr",
-                                row.get("rate", row.get("estimateApr", "0")),
-                            ),
-                        ),
-                    ),
-                ),
-            )
-        )
-        if apy_raw <= 0:
+        apy = _mexc_earn_apy(row)
+        if apy <= 0:
             return None
 
-        apy = apy_raw / Decimal(100) if apy_raw > 1 else apy_raw
         return symbol, amount, apy
 
     async def fetch_transactions(self, since: date | None = None) -> list[Transaction]:
@@ -441,6 +423,79 @@ def _to_decimal(value: object) -> Decimal:
         return Decimal(str(value))
     except ArithmeticError:
         return Decimal(0)
+
+
+def _mexc_earn_apy(row: dict[str, Any]) -> Decimal:
+    fallback_apy = _normalize_mexc_rate(
+        row.get(
+            "apy",
+            row.get(
+                "apr",
+                row.get(
+                    "interestRate",
+                    row.get(
+                        "annualRate",
+                        row.get(
+                            "showApr",
+                            row.get("rate", row.get("estimateApr", "0")),
+                        ),
+                    ),
+                ),
+            ),
+        )
+    )
+    if str(row.get("financialType", "")).upper() != "FIXED":
+        return fallback_apy
+
+    realized_apy = _mexc_fixed_realized_apy(row)
+    if realized_apy > 0:
+        return realized_apy
+    return fallback_apy
+
+
+def _mexc_fixed_realized_apy(row: dict[str, Any]) -> Decimal:
+    usd_apy = _annualized_profit_rate(
+        principal=_principal_amount(
+            row.get("positionUsdtQuantity"),
+            row.get("totalGrantedProfitUsdtQuantity"),
+        ),
+        daily_profit=_to_decimal(row.get("yesterdayProfitUsdtQuantity")),
+    )
+    if usd_apy > 0:
+        return usd_apy
+
+    return _annualized_profit_rate(
+        principal=_principal_amount(
+            row.get("positionQuantity"),
+            row.get("totalGrantedProfitQuantity"),
+        ),
+        daily_profit=_to_decimal(row.get("yesterdayProfitQuantity")),
+    )
+
+
+def _principal_amount(position_value: object, granted_profit_value: object) -> Decimal:
+    position = _to_decimal(position_value)
+    if position <= 0:
+        return Decimal(0)
+
+    granted_profit = max(Decimal(0), _to_decimal(granted_profit_value))
+    principal = position - granted_profit
+    if principal > 0:
+        return principal
+    return position
+
+
+def _annualized_profit_rate(*, principal: Decimal, daily_profit: Decimal) -> Decimal:
+    if principal <= 0 or daily_profit <= 0:
+        return Decimal(0)
+    return (daily_profit / principal) * Decimal(365)
+
+
+def _normalize_mexc_rate(value: object) -> Decimal:
+    raw_rate = _to_decimal(value)
+    if raw_rate <= 0:
+        return Decimal(0)
+    return raw_rate / Decimal(100) if raw_rate > 1 else raw_rate
 
 
 def _build_openapi_param_string(params: dict[str, str] | None) -> str:

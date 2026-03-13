@@ -3,20 +3,16 @@
 from __future__ import annotations
 
 import json
-from datetime import timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from pfm.server.serializers import _str_decimal
-
-_MIN_TX_AMOUNT = 10
 
 if TYPE_CHECKING:
     from datetime import date
     from pathlib import Path
 
     from pfm.ai import AnalyticsSummary
-    from pfm.db.models import Transaction
     from pfm.db.repository import Repository
 
 
@@ -34,15 +30,8 @@ async def build_analytics_summary(
         compute_net_worth,
         compute_risk_metrics,
     )
-    from pfm.analytics.flow_bridge import (
-        build_capital_flows_summary,
-        build_currency_flow_bridge,
-        build_internal_conversions_summary,
-    )
-    from pfm.analytics.pnl import PnlPeriod, compute_pnl
 
     snapshots = await repo.get_snapshots_resolved(snapshot_date)
-    previous_snapshots = await repo.get_snapshots_resolved(snapshot_date - timedelta(days=1))
 
     # Compute data warnings (stale KBank, missing sources)
     enabled_types: set[str] = set()
@@ -76,72 +65,6 @@ async def build_analytics_summary(
                 for s in earn_snaps
             ]
         )
-
-    # Weekly PnL: skip section if no prior snapshot exists
-    weekly_pnl = ""
-    pnl = await compute_pnl(repo, snapshot_date, PnlPeriod.WEEKLY)
-    if pnl.start_date is not None and pnl.start_date != pnl.end_date:
-        weekly_pnl = json.dumps(
-            {
-                "start_date": pnl.start_date.isoformat(),
-                "end_date": pnl.end_date.isoformat() if pnl.end_date else "",
-                "start_value": _str_decimal(pnl.start_value),
-                "end_value": _str_decimal(pnl.end_value),
-                "absolute_change": _str_decimal(pnl.absolute_change),
-                "percentage_change": _str_decimal(pnl.percentage_change),
-                "top_gainers": [
-                    {
-                        "asset": r.asset,
-                        "absolute_change": _str_decimal(r.absolute_change),
-                        "percentage_change": _str_decimal(r.percentage_change),
-                    }
-                    for r in pnl.top_gainers[:3]
-                ],
-                "top_losers": [
-                    {
-                        "asset": r.asset,
-                        "absolute_change": _str_decimal(r.absolute_change),
-                        "percentage_change": _str_decimal(r.percentage_change),
-                    }
-                    for r in pnl.top_losers[:3]
-                ],
-            }
-        )
-
-    # Recent transactions and capital flow bridge (last 7 days) for AI context on fund movements
-    recent_transactions = ""
-    capital_flows = ""
-    internal_conversions = ""
-    currency_flow_bridge = ""
-    tx_start = snapshot_date - timedelta(days=7)
-    txs = await repo.get_transactions(start=tx_start, end=snapshot_date)
-    material_txs = [t for t in txs if _is_material_transaction(t)]
-    if material_txs:
-        recent_transactions = json.dumps(
-            [
-                {
-                    "date": t.date.isoformat(),
-                    "source": t.source_name or t.source,
-                    "type": t.tx_type.value,
-                    "asset": t.asset,
-                    "amount": _str_decimal(t.amount),
-                    "usd_value": _str_decimal(t.usd_value),
-                    "counterparty_asset": t.counterparty_asset,
-                    "counterparty_amount": _str_decimal(t.counterparty_amount),
-                    "trade_side": t.trade_side,
-                }
-                for t in material_txs
-            ]
-        )
-    capital_rows = build_capital_flows_summary(material_txs)
-    if capital_rows:
-        capital_flows = json.dumps(capital_rows)
-    conversion_rows = build_internal_conversions_summary(material_txs)
-    if conversion_rows:
-        internal_conversions = json.dumps(conversion_rows)
-    bridge_rows = build_currency_flow_bridge(snapshots, previous_snapshots, material_txs)
-    if bridge_rows:
-        currency_flow_bridge = json.dumps(bridge_rows)
 
     return AnalyticsSummary(
         as_of_date=snapshot_date,
@@ -208,17 +131,4 @@ async def build_analytics_summary(
         ),
         warnings=tuple(warnings),
         earn_positions=earn_positions,
-        weekly_pnl=weekly_pnl,
-        recent_transactions=recent_transactions,
-        capital_flows=capital_flows,
-        internal_conversions=internal_conversions,
-        currency_flow_bridge=currency_flow_bridge,
     )
-
-
-def _is_material_transaction(tx: Transaction) -> bool:
-    if tx.usd_value >= _MIN_TX_AMOUNT:
-        return True
-    if tx.amount >= _MIN_TX_AMOUNT:
-        return True
-    return tx.counterparty_amount >= _MIN_TX_AMOUNT

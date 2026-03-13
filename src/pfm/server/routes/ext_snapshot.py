@@ -179,7 +179,15 @@ async def _build_snapshots(
         else:
             price = usd_value / amount if amount != 0 else Decimal(0)
 
-        quoted_apr = _to_decimal(asset.get("quotedAprPercent", asset.get("quoted_apr_percent", "0")))
+        quoted_apr = _to_decimal(
+            asset.get(
+                "effectiveAprPercent",
+                asset.get(
+                    "effective_apr_percent",
+                    asset.get("quotedAprPercent", asset.get("quoted_apr_percent", "0")),
+                ),
+            )
+        )
         apy = quoted_apr / Decimal(100) if quoted_apr > 1 else quoted_apr
 
         snapshots.append(

@@ -513,6 +513,43 @@ async def test_mexc_fetch_earn_with_apy(pricing):
     assert usdc.apy == Decimal("0.125")
 
 
+async def test_mexc_fetch_fixed_earn_uses_realized_rate_over_show_apr(pricing):
+    pricing._set_cache("USDT", Decimal(1))
+    collector = MexcCollector(pricing, api_key="key", api_secret="secret")
+    collector._get_openapi = AsyncMock(return_value={"success": True, "data": []})  # type: ignore[method-assign]
+
+    async def mock_get(path, **kwargs):
+        if path == "/api/v3/account":
+            return _mock_response({"balances": []})
+        if path == "/api/v3/asset/earn/position":
+            return _mock_response(
+                [
+                    {
+                        "pledgeCurrency": "USDT",
+                        "positionQuantity": "300.86335046",
+                        "positionUsdtQuantity": "300.86335046",
+                        "totalGrantedProfitQuantity": "0.86335046",
+                        "totalGrantedProfitUsdtQuantity": "0.86335046",
+                        "yesterdayProfitQuantity": "0.12337596",
+                        "yesterdayProfitUsdtQuantity": "0.12337596",
+                        "financialType": "FIXED",
+                        "showApr": "25",
+                    }
+                ]
+            )
+        return _mock_response([])
+
+    collector._client.get = mock_get  # type: ignore[assignment]
+
+    snapshots = await collector.fetch_balances()
+    earn_snaps = [s for s in snapshots if s.apy > 0]
+    assert len(earn_snaps) == 1
+    usdt = earn_snaps[0]
+    assert usdt.asset == "USDT"
+    assert usdt.amount == Decimal("300.86335046")
+    assert usdt.apy == Decimal("0.150107418")
+
+
 async def test_mexc_fetch_earn_nets_out_spot_balance(pricing):
     pricing._set_cache("USDC", Decimal(1))
     collector = MexcCollector(pricing, api_key="key", api_secret="secret")

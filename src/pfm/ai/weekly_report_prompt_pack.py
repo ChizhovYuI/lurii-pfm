@@ -100,8 +100,7 @@ async def build_weekly_report_prompt_pack(
                 "Generate the full weekly report in one JSON object.",
                 "Use the exact section titles and order required by the production backend.",
                 "Return only a valid JSON object with a top-level sections array.",
-                "Explain fiat balance changes using Fiat balance bridge and Internal "
-                "conversions before FX or valuation explanations.",
+                "Analyze only the current portfolio snapshot and investor context.",
             ),
             "prior_sections_policy": {},
             "sections": (),
@@ -147,8 +146,7 @@ async def build_weekly_report_prompt_pack(
             "For section 1, use the provided base_user_prompt as-is.",
             "For later sections, append prior generated sections under <prior_sections> "
             "using the same clipping rules as backend.",
-            "Explain fiat balance changes using Fiat balance bridge and Internal conversions "
-            "before FX or valuation explanations.",
+            "Analyze only the current portfolio snapshot and investor context.",
         ),
         prior_sections_policy={
             "per_section_description_char_limit": _PRIOR_SECTION_DESCRIPTION_CHAR_LIMIT,

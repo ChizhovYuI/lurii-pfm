@@ -49,14 +49,13 @@ def test_prompt_templates_have_required_sections():
     assert "personal financial advisor" in WEEKLY_REPORT_SYSTEM_PROMPT
     assert "Return only the markdown body" in WEEKLY_REPORT_SYSTEM_PROMPT
     assert "Do not return JSON" in WEEKLY_REPORT_SYSTEM_PROMPT
+    assert "Analyze only the current portfolio snapshot and investor context." in WEEKLY_REPORT_SYSTEM_PROMPT
+    assert "Do not describe historical changes, trends, or prior-state comparisons" in WEEKLY_REPORT_SYSTEM_PROMPT
     assert "Separate paragraphs with a blank line" in WEEKLY_REPORT_SYSTEM_PROMPT
     assert "Put a blank line before the first bullet list or numbered list" in WEEKLY_REPORT_SYSTEM_PROMPT
     assert "Start every bullet and numbered item on its own new line" in WEEKLY_REPORT_SYSTEM_PROMPT
     assert "Do not return one long block of text" in WEEKLY_REPORT_SYSTEM_PROMPT
     assert "Do not leave blank lines between adjacent bullet items or numbered items" in WEEKLY_REPORT_SYSTEM_PROMPT
-    assert "Fiat balance bridge and Internal conversions" in WEEKLY_REPORT_SYSTEM_PROMPT
-    assert "used to fund purchases" in WEEKLY_REPORT_SYSTEM_PROMPT
-    assert "currency decline, weakness, or selloff" in WEEKLY_REPORT_SYSTEM_PROMPT
     assert [spec.title for spec in REPORT_SECTION_SPECS] == [
         "Market Context",
         "Portfolio Health Assessment",
@@ -66,18 +65,15 @@ def test_prompt_templates_have_required_sections():
     ]
     assert "Return one valid JSON object only" in WEEKLY_REPORT_JSON_SYSTEM_PROMPT
     assert 'The JSON must contain a top-level "sections" array' in WEEKLY_REPORT_JSON_SYSTEM_PROMPT
+    assert "Analyze only the current portfolio snapshot and investor context." in WEEKLY_REPORT_JSON_SYSTEM_PROMPT
     assert (
         "Do not leave blank lines between adjacent bullet items or numbered items" in WEEKLY_REPORT_JSON_SYSTEM_PROMPT
     )
     assert "Start every bullet and numbered item on its own new line" in WEEKLY_REPORT_JSON_SYSTEM_PROMPT
-    json_prompt_lower = WEEKLY_REPORT_JSON_SYSTEM_PROMPT.lower()
-    assert "fiat balance bridge" in json_prompt_lower
-    assert "internal conversions" in json_prompt_lower
-    assert "used to fund purchases" in json_prompt_lower
     gemini_json_prompt_lower = GEMINI_WEEKLY_REPORT_JSON_SYSTEM_PROMPT.lower()
     assert "return structured json only" in gemini_json_prompt_lower
     assert "do not wrap the response in markdown or code fences" in gemini_json_prompt_lower
-    assert "internal conversions before fx or valuation" in gemini_json_prompt_lower
+    assert "analyze only the current portfolio snapshot and investor context." in gemini_json_prompt_lower
 
 
 def test_render_report_section_prompt_formats_analytics():
@@ -89,19 +85,13 @@ def test_render_report_section_prompt_formats_analytics():
     assert '"category": "crypto"' in prompt
     assert '"currency": "USD"' in prompt
     assert '"concentration_percentage": "56.70%"' in prompt
-    assert "Fiat balance bridge" in prompt
-    assert '"explained_by_trade_spend": "5000.00"' in prompt
-    assert "Internal conversions" in prompt
-    assert '"from_asset": "GBP"' in prompt
-    assert '"to_asset": "VWRA"' in prompt
-    assert "External capital and income flows" in prompt
-    assert "Recent transactions (audit trail, last 7 days)" in prompt
     assert "<analytics>" in prompt
     assert "<investor_memory>" not in prompt
-    assert "external flows, internal conversions" in prompt
-    assert "residual market or FX effects" in prompt
-    assert "used to fund purchases or converted into other assets" in prompt
-    assert "weakened, fell, or declined" in prompt
+    assert "current portfolio positioning" in prompt
+    assert "liquidity or currency posture" in prompt
+    assert "Do not describe week-over-week changes" in prompt
+    assert "Fiat balance bridge" not in prompt
+    assert "Recent transactions (audit trail, last 7 days)" not in prompt
     assert "Do not leave blank lines between bullet items" in prompt
     assert "Never place bullets inline after a sentence" in prompt
 
@@ -146,10 +136,10 @@ def test_render_weekly_report_json_prompt_includes_exact_titles_and_json_contrac
     assert '"title": "Rebalancing Opportunities"' in prompt
     assert '"title": "Risk Alerts"' in prompt
     assert '"title": "Actionable Recommendations for Next 7 Days"' in prompt
+    assert "Analyze only the current snapshot and investor context." in prompt
+    assert "Do not mention last-7-day changes, prior snapshots, or historical comparisons." in prompt
     assert "No blank lines between bullet items or numbered items." in prompt
     assert "Start every bullet and numbered item on its own new line." in prompt
-    assert "used to fund purchases" in prompt
-    assert "fiat decline, weakness, or selloff" in prompt
     assert "<analytics>" in prompt
 
 
@@ -174,4 +164,4 @@ def test_render_gemini_weekly_report_json_prompt_includes_exact_titles_and_rules
     assert '"title": "Actionable Recommendations for Next 7 Days"' in prompt
     assert "Do not include code fences or wrapper text." in prompt
     assert "Do not place bullets or numbered items inline after prose on the same line." in prompt
-    assert "If fiat was redeployed into other assets" in prompt
+    assert "Analyze only the current snapshot and investor context." in prompt

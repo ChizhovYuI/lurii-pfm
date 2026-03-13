@@ -170,6 +170,33 @@ async def test_ext_snapshot_ingest_replaces_same_day_rows_for_mexc_earn(client, 
     assert all(saved_snap.asset != "USDT" for saved_snap in snapshots)
 
 
+async def test_ext_snapshot_ingest_prefers_effective_apr_percent_for_mexc_earn(client, db_path):
+    store = SourceStore(db_path)
+    await store.add("mexc-earn-main", "mexc_earn", {"uid": "65064080"})
+
+    payload = _payload(
+        assets=[
+            {
+                "symbol": "USDT",
+                "amount": 300.86335046,
+                "usdValue": 300.86335046,
+                "quotedAprPercent": 25,
+                "effectiveAprPercent": "15.0107418",
+                "financialType": "FIXED",
+            }
+        ]
+    )
+
+    resp = await client.post("/api/v1/ext/snapshot?source_type=mexc_earn&uid=65064080", json=payload)
+    assert resp.status == 200
+
+    async with Repository(db_path) as repo:
+        snapshots = await repo.get_snapshots_by_date(date(2026, 3, 3))
+
+    assert len(snapshots) == 1
+    assert snapshots[0].apy == Decimal("0.150107418")
+
+
 async def test_ext_snapshot_ingest_replaces_same_day_rows_for_emcd(client, db_path):
     store = SourceStore(db_path)
     await store.add("emcd-main", "emcd", {"email": "miner@example.com"})
