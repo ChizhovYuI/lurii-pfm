@@ -8,6 +8,8 @@ from argparse import Namespace
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 
 def _load_release_module():
     script_path = Path(__file__).resolve().parents[1] / "scripts/release_lurii.py"
@@ -61,13 +63,66 @@ def test_prepare_target_carries_verify_brew_flag(tmp_path):
         app_version=None,
         app_build=None,
         skip_verify=False,
-        changelog_comment=None,
+        changelog_comment="Release notes",
         verify_brew=True,
     )
 
     target = module.prepare_target(paths, args)
 
     assert target.verify_brew is True
+    assert target.changelog_comment == "Release notes"
+
+
+def test_prepare_target_requires_changelog_comment(tmp_path):
+    module = _load_release_module()
+    repo = tmp_path / "repo"
+    app = tmp_path / "app"
+    tap = tmp_path / "tap"
+    repo.mkdir()
+    app.mkdir()
+    tap.mkdir()
+    (repo / "src/pfm").mkdir(parents=True)
+    (app / "lurii-finance.xcodeproj").mkdir(parents=True)
+    (tap / "Formula").mkdir(parents=True)
+    (tap / "Casks").mkdir(parents=True)
+    (repo / "src/pfm/__init__.py").write_text('__version__ = "0.20.15"\n', encoding="utf-8")
+    (app / "lurii-finance.xcodeproj/project.pbxproj").write_text(
+        "MARKETING_VERSION = 2.9.9;\nCURRENT_PROJECT_VERSION = 10;\n",
+        encoding="utf-8",
+    )
+    (app / "ExportOptions.plist").write_text("", encoding="utf-8")
+    (tap / "Formula/lurii-pfm.rb").write_text("", encoding="utf-8")
+    (tap / "Casks/lurii-finance.rb").write_text("", encoding="utf-8")
+    (repo / "scripts").mkdir(parents=True)
+    (repo / "scripts/generate_homebrew_formula_resources.py").write_text("", encoding="utf-8")
+
+    paths = module.RepoPaths(
+        pfm_repo=repo,
+        app_repo=app,
+        tap_repo=tap,
+        pfm_version_file=repo / "src/pfm/__init__.py",
+        pfm_test_file=repo / "tests/test_updates.py",
+        app_project_file=app / "lurii-finance.xcodeproj/project.pbxproj",
+        app_export_options=app / "ExportOptions.plist",
+        tap_formula_file=tap / "Formula/lurii-pfm.rb",
+        tap_cask_file=tap / "Casks/lurii-finance.rb",
+        formula_resource_script=repo / "scripts/generate_homebrew_formula_resources.py",
+    )
+    args = Namespace(
+        only="pfm",
+        pfm_version=None,
+        app_version=None,
+        app_build=None,
+        skip_verify=False,
+        changelog_comment="   ",
+        verify_brew=False,
+    )
+
+    with (
+        patch.object(module, "read_pfm_version", return_value="0.20.15"),
+        pytest.raises(SystemExit, match=r"Release requires --changelog-comment\."),
+    ):
+        module.prepare_target(paths, args)
 
 
 def test_update_tap_updates_formula_version_and_sha(tmp_path):

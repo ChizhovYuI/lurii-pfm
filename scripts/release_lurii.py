@@ -48,7 +48,7 @@ class ReleaseTarget:
     app_version: str | None
     app_build: str | None
     skip_verify: bool
-    changelog_comment: str | None
+    changelog_comment: str
     verify_brew: bool
 
 
@@ -170,7 +170,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--changelog-comment",
-        help="Optional text to prepend to the generated GitHub release notes.",
+        help="Required text to prepend to the generated GitHub release notes.",
     )
     parser.add_argument(
         "--verify-brew",
@@ -219,6 +219,7 @@ def discover_paths() -> RepoPaths:
 def prepare_target(paths: RepoPaths, args: argparse.Namespace) -> ReleaseTarget:
     release_pfm = args.only in {"all", "pfm"}
     release_app = args.only in {"all", "app"}
+    changelog_comment = str(args.changelog_comment or "").strip()
 
     pfm_version = (
         next_patch_version(read_pfm_version(paths)) if release_pfm and args.pfm_version is None else args.pfm_version
@@ -232,6 +233,8 @@ def prepare_target(paths: RepoPaths, args: argparse.Namespace) -> ReleaseTarget:
         raise SystemExit("pfm release selected but no pfm version could be resolved.")
     if release_app and (app_version is None or app_build is None):
         raise SystemExit("app release selected but app version/build could not be resolved.")
+    if not changelog_comment:
+        raise SystemExit("Release requires --changelog-comment.")
 
     return ReleaseTarget(
         release_pfm=release_pfm,
@@ -240,7 +243,7 @@ def prepare_target(paths: RepoPaths, args: argparse.Namespace) -> ReleaseTarget:
         app_version=app_version,
         app_build=app_build,
         skip_verify=bool(args.skip_verify),
-        changelog_comment=args.changelog_comment,
+        changelog_comment=changelog_comment,
         verify_brew=bool(args.verify_brew),
     )
 
@@ -551,7 +554,7 @@ def create_github_release(
     remote_repo: str,
     tag: str,
     asset: Path,
-    changelog_comment: str | None = None,
+    changelog_comment: str,
 ) -> None:
     cmd = [
         "gh",
@@ -565,8 +568,7 @@ def create_github_release(
         tag,
         "--generate-notes",
     ]
-    if changelog_comment:
-        cmd.extend(["--notes", changelog_comment])
+    cmd.extend(["--notes", changelog_comment])
     run(cmd, cwd=repo)
 
 
