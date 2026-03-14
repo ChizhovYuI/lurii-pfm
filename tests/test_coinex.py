@@ -208,6 +208,24 @@ async def test_get_public_invest_summary_parses_payload(pricing):
     collector._public_client.get.assert_awaited_once_with(_PUBLIC_INVEST_SUMMARY_URL)
 
 
+async def test_get_appends_current_public_ip_for_ip_prohibited_error(pricing):
+    collector = CoinexCollector(pricing, api_key="k", api_secret="s")
+    collector._client.get = AsyncMock(
+        return_value=_mock_response({"code": 23, "data": None, "message": "IP Prohibited"})
+    )
+
+    ip_response = MagicMock(spec=httpx.Response)
+    ip_response.raise_for_status = MagicMock()
+    ip_response.text = "203.0.113.42"
+    collector._public_client.get = AsyncMock(return_value=ip_response)
+
+    with pytest.raises(ValueError, match=r"current public IP: 203\.0\.113\.42") as exc_info:
+        await collector._get(_SPOT_BALANCE_PATH)
+    assert str(exc_info.value) == (
+        "CoinEx API error (23) on /v2/assets/spot/balance: IP Prohibited " "(current public IP: 203.0.113.42)"
+    )
+
+
 async def test_fetch_history_rows_handles_null_data(pricing):
     collector = CoinexCollector(pricing, api_key="k", api_secret="s")
 

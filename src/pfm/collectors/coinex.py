@@ -33,6 +33,7 @@ _FUTURES_BALANCE_PATH = "/v2/assets/futures/balance"
 _FINANCIAL_BALANCE_PATH = "/v2/assets/financial/balance"
 _SPOT_HISTORY_PATH = "/v2/assets/spot/transcation-history"
 _PUBLIC_INVEST_SUMMARY_URL = "https://www.coinex.com/res/invest/summary/new"
+_PUBLIC_IP_URL = "https://api.ipify.org"
 _HISTORY_TYPES: tuple[str, ...] = (
     "deposit",
     "withdraw",
@@ -61,6 +62,7 @@ class CoinexCollector(BaseCollector):
         self._api_secret = api_secret
         self._client = httpx.AsyncClient(base_url=_BASE_URL, timeout=30.0)
         self._public_client = httpx.AsyncClient(timeout=30.0)
+        self._public_ip: str | None = None
 
     @staticmethod
     def _request_path(path: str, params: dict[str, str] | None = None) -> str:
@@ -92,6 +94,10 @@ class CoinexCollector(BaseCollector):
         if code != 0:
             message = str(payload.get("message") or "unknown error")
             msg = f"CoinEx API error ({code}) on {path}: {message}"
+            if _is_ip_prohibited_error(code, message):
+                public_ip = await self._get_public_ip()
+                if public_ip:
+                    msg = f"{msg} (current public IP: {public_ip})"
             raise ValueError(msg)
         return payload
 
@@ -109,6 +115,24 @@ class CoinexCollector(BaseCollector):
             msg = f"CoinEx invest summary API error ({code}): {message}"
             raise ValueError(msg)
         return _as_dict_rows(payload.get("data"))
+
+    async def _get_public_ip(self) -> str | None:
+        if self._public_ip is not None:
+            return self._public_ip
+
+        try:
+            resp = await self._public_client.get(_PUBLIC_IP_URL, params={"format": "text"})
+            resp.raise_for_status()
+        except (httpx.HTTPStatusError, httpx.TransportError, httpx.TimeoutException) as exc:
+            logger.warning("CoinEx: failed to resolve current public IP: %s", exc)
+            return None
+
+        ip_text = resp.text.strip()
+        if not ip_text:
+            return None
+
+        self._public_ip = ip_text
+        return self._public_ip
 
     async def fetch_raw_balances(self) -> list[RawBalance]:
         """Fetch spot + futures + financial balances."""
@@ -283,6 +307,10 @@ def _build_raw_balances(
             )
         )
     return raw
+
+
+def _is_ip_prohibited_error(code: object, message: str) -> bool:
+    return str(code) == "23" and "ip prohibited" in message.lower()
 
 
 def _balances_by_asset(rows: list[dict[str, Any]]) -> dict[str, Decimal]:
