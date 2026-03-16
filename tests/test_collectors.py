@@ -1610,30 +1610,70 @@ def test_kbank_parse_header_balance_missing(pricing):
 
 def test_kbank_parse_transaction_table(pricing):
     collector = KbankCollector(pricing)
+    # Details column has multi-line wrapped entries (matches real PDF structure).
     table = [
-        ["Time/\nDate", "Descriptions", "Withdrawal / Deposit", "Outstanding Balance\n(THB)"],
+        ["Time/\nDate", "Descriptions", "Withdrawal / Deposit", "Outstanding Balance\n(THB)", "Channel", "Details"],
         [
             "01-02-26 Be\n01-02-26 02:22 De\n01-02-26 12:09 Pa\n02-02-26 00:21 Tr",
             "ginning Balance\nbit Card Spending\nyment\nansfer Deposit",
             "1,850.00\n160.00\n45,000.00",
             "5,151.94\n3,301.94\n3,141.94\n48,141.94",
+            "K PLUS\nEDC/K SHOP/MYQR\nK PLUS",
+            # 3 transactions but 5 detail lines (entries 2 and 3 wrap).
+            "To X0554 MS. THI VAN ANH NG++\n"
+            "Paid for Ref X3423 บริษัท ซีพี\n"
+            "(มหาชน) (A/C Name: CP AXTRA\n"
+            "Savings Account\n"
+            "Name: extra wrap",
         ],
     ]
     txs = collector._parse_transaction_table(table)
     assert len(txs) == 3
-    assert txs[0].tx_type == TransactionType.WITHDRAWAL  # balance decreased
+    assert txs[0].tx_type == TransactionType.SPEND  # "Debit Card Spending" → spend
     assert txs[0].amount == Decimal("1850.00")
     assert txs[0].date == date(2026, 2, 1)
-    assert txs[1].tx_type == TransactionType.WITHDRAWAL
+    assert txs[1].tx_type == TransactionType.SPEND  # "Payment" → spend
     assert txs[1].amount == Decimal("160.00")
-    assert txs[2].tx_type == TransactionType.DEPOSIT  # balance increased
+    assert txs[2].tx_type == TransactionType.DEPOSIT  # "Transfer Deposit" → deposit
     assert txs[2].amount == Decimal("45000.00")
     assert txs[2].date == date(2026, 2, 2)
     assert all(tx.tx_id.startswith("kbank:") for tx in txs)
     assert len({tx.tx_id for tx in txs}) == len(txs)
 
+    # Verify raw_json includes channel and properly grouped details.
+    raw0 = json.loads(txs[0].raw_json)
+    assert raw0["channel"] == "K PLUS"
+    assert raw0["details"] == "To X0554 MS. THI VAN ANH NG++"
+    raw1 = json.loads(txs[1].raw_json)
+    assert raw1["details"] == "Paid for Ref X3423 บริษัท ซีพี (มหาชน) (A/C Name: CP AXTRA"
+    raw2 = json.loads(txs[2].raw_json)
+    assert raw2["details"] == "Savings Account Name: extra wrap"
+
     txs_repeat = collector._parse_transaction_table(table)
     assert [tx.tx_id for tx in txs_repeat] == [tx.tx_id for tx in txs]
+
+
+def test_kbank_group_wrapped_column():
+    group = KbankCollector._group_wrapped_column
+
+    # Simple case: one line per entry.
+    assert group("A\nB\nC", 3) == ["A", "B", "C"]
+
+    # Multi-line with continuation: (มหาชน) joins previous entry.
+    text = "To X0554 MS. THI VAN ANH\nPaid for Ref X3423\n(มหาชน)\nSavings Account"
+    result = group(text, 3)
+    assert result == ["To X0554 MS. THI VAN ANH", "Paid for Ref X3423 (มหาชน)", "Savings Account"]
+
+    # Name: continuation joins previous.
+    text = "Paid for Ref X8530 shop\nName: FORTH SMART"
+    result = group(text, 1)
+    assert result == ["Paid for Ref X8530 shop Name: FORTH SMART"]
+
+    # Empty text returns empty strings.
+    assert group("", 3) == ["", "", ""]
+
+    # Fewer lines than count pads with empty strings.
+    assert group("A\nB", 4) == ["A", "B", "", ""]
 
 
 def test_kbank_parse_transaction_table_too_short(pricing):

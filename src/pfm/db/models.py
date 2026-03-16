@@ -17,6 +17,7 @@ class TransactionType(enum.StrEnum):
 
     DEPOSIT = "deposit"
     WITHDRAWAL = "withdrawal"
+    SPEND = "spend"
     TRADE = "trade"
     YIELD = "yield"
     DIVIDEND = "dividend"
@@ -138,6 +139,79 @@ class CollectorResult:
     transactions_count: int = 0
     errors: list[str] = field(default_factory=list)
     duration_seconds: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class TransactionCategory:
+    """A category definition for transactions."""
+
+    tx_type: str
+    category: str
+    display_name: str
+    sort_order: int = 0
+    id: int | None = None
+    created_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TransactionMetadata:
+    """Per-transaction metadata overlay."""
+
+    transaction_id: int
+    category: str | None = None
+    category_source: str = "auto"
+    category_confidence: float | None = None
+    type_override: str | None = None
+    is_internal_transfer: bool = False
+    transfer_pair_id: int | None = None
+    transfer_detected_by: str | None = None
+    reviewed: bool = False
+    notes: str = ""
+    updated_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CategoryRule:
+    """A compound rule for auto-categorizing transactions.
+
+    Condition 1 (required): type_match — which tx_type(s) this rule applies to.
+    Condition 2 (optional): field_name + field_operator + field_value — raw_json field match.
+    Source filter (optional): source — restrict to a specific source.
+    """
+
+    type_match: str
+    result_category: str
+    type_operator: str = "eq"
+    field_name: str = ""
+    field_operator: str = ""
+    field_value: str = ""
+    source: str = "*"
+    priority: int = 300
+    builtin: bool = False
+    deleted: bool = False
+    id: int | None = None
+    created_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class UserCategoryChoice:
+    """Records a manual category selection for learning."""
+
+    transaction_id: int
+    source: str
+    effective_type: str
+    chosen_category: str
+    field_snapshot: str = ""
+    previous_category: str = ""
+    id: int | None = None
+    created_at: datetime | None = None
+
+
+def effective_type(tx: Transaction, meta: TransactionMetadata | None) -> str:
+    """Return the effective transaction type, respecting manual overrides."""
+    if meta and meta.type_override:
+        return meta.type_override
+    return tx.tx_type.value
 
 
 SYNC_MARKER_ASSET = "__SYNC__"

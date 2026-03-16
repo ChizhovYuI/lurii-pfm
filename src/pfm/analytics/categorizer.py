@@ -1,0 +1,222 @@
+"""Rule-based transaction categorization pipeline."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+from pfm.db.models import effective_type
+from pfm.enums import SourceGroup, source_group
+
+if TYPE_CHECKING:
+    from pfm.db.models import CategoryRule, Transaction, TransactionMetadata
+
+
+# ── Value parsing ──────────────────────────────────────────────────────
+
+
+def _parse_values(rule_val: str) -> list[str]:
+    """Parse a rule value into a list. JSON arrays are expanded; plain strings become [val]."""
+    if rule_val.startswith("["):
+        try:
+            parsed = json.loads(rule_val)
+            if isinstance(parsed, list):
+                return [str(v) for v in parsed]
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return [rule_val]
+
+
+def _match_values(field_val: str, rule_val: str, operator: str) -> bool:
+    """Compare a field value against a rule value using the given operator."""
+    values = _parse_values(rule_val)
+    if operator == "eq":
+        return field_val in values
+    if operator == "contains":
+        return any(v.lower() in field_val.lower() for v in values)
+    return False
+
+
+# ── Result ─────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class CategoryResult:
+    """Result of categorizing a single transaction."""
+
+    category: str
+    source: str  # 'rule' | 'heuristic'
+    confidence: float
+    rule_id: int | None = None
+    reason: str = ""
+
+
+# ── Field resolution ───────────────────────────────────────────────────
+
+
+def _extract_description(tx: Transaction) -> str:
+    """Extract description from raw_json if present."""
+    if not tx.raw_json:
+        return ""
+    try:
+        parsed = json.loads(tx.raw_json)
+        if isinstance(parsed, dict):
+            return str(parsed.get("description", ""))
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return ""
+
+
+def _resolve_field(tx: Transaction, field_name: str) -> str | None:
+    """Extract a field value for rule matching."""
+    if field_name == "asset":
+        return tx.asset.upper()
+    if field_name == "description":
+        return _extract_description(tx) or None
+    # Any other field: look up in raw_json.
+    if not tx.raw_json:
+        return None
+    try:
+        parsed = json.loads(tx.raw_json)
+        if isinstance(parsed, dict):
+            val = parsed.get(field_name)
+            return str(val) if val is not None else None
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return None
+
+
+# ── Compound rule matching ─────────────────────────────────────────────
+
+
+def _match_category_rule(
+    etype: str,
+    tx: Transaction,
+    rule: CategoryRule,
+) -> bool:
+    """Check whether a compound category rule matches."""
+    if rule.deleted:
+        return False
+
+    # Condition 1: type match (required).
+    if not _match_values(etype, rule.type_match, rule.type_operator):
+        return False
+
+    # Source filter.
+    if rule.source != "*":
+        source = (tx.source_name or tx.source).lower()
+        if rule.source != source:
+            return False
+
+    # Condition 2: field match (optional).
+    if rule.field_name:
+        field_val = _resolve_field(tx, rule.field_name)
+        if field_val is None:
+            return False
+        if not _match_values(field_val, rule.field_value, rule.field_operator):
+            return False
+
+    return True
+
+
+# ── Bank description heuristics (Stage 2) ─────────────────────────────
+
+_BANK_WITHDRAWAL_PATTERNS: list[tuple[list[str], str, float]] = [
+    (["transfer withdrawal", "โอนเงิน"], "external_withdrawal", 0.6),
+]
+
+_BANK_SPEND_PATTERNS: list[tuple[list[str], str, float]] = [
+    (["qr", "ชำโอนเงินผ่าน qr", "qryment", "qr code"], "other_spend", 0.7),
+    (["card spending", "debit card", "pabit card"], "shopping", 0.7),
+    (["bill payment", "ชำระค่า", "ค่าไฟ", "ค่าน้ำ"], "utilities", 0.7),
+    (["direct debit"], "subscriptions", 0.7),
+]
+
+_BANK_DEPOSIT_PATTERNS: list[tuple[list[str], str, float]] = [
+    (["transfer deposit", "เงินโอนเข้า", "pansfer deposit"], "external_deposit", 0.5),
+    (["salary", "payroll", "เงินเดือน"], "salary", 0.8),
+]
+
+_BANK_GROUPS = frozenset({SourceGroup.BANK})
+
+
+def _try_bank_description_heuristic(
+    tx: Transaction,
+    etype: str,
+) -> CategoryResult | None:
+    """Try to categorize a bank transaction by its description."""
+    group = source_group(tx.source)
+    if group not in _BANK_GROUPS:
+        return None
+
+    desc = _extract_description(tx).lower()
+    if not desc:
+        return None
+
+    patterns = (
+        _BANK_WITHDRAWAL_PATTERNS
+        if etype == "withdrawal"
+        else _BANK_SPEND_PATTERNS
+        if etype == "spend"
+        else _BANK_DEPOSIT_PATTERNS
+        if etype == "deposit"
+        else []
+    )
+
+    for keywords, category, confidence in patterns:
+        matched_kw = next((kw for kw in keywords if kw in desc), None)
+        if matched_kw:
+            return CategoryResult(
+                category=category,
+                source="heuristic",
+                confidence=confidence,
+                reason=f"description contains '{matched_kw}'",
+            )
+
+    return None
+
+
+# ── Main pipeline ──────────────────────────────────────────────────────
+
+
+def categorize_transaction(
+    tx: Transaction,
+    rules: list[CategoryRule],
+    meta: TransactionMetadata | None = None,
+) -> CategoryResult | None:
+    """Categorize a single transaction through the 2-stage pipeline.
+
+    Stage 1: Compound DB rules (priority-ordered, first match wins).
+    Stage 2: Bank description heuristics (soft fallback, not persisted).
+
+    Returns None only when no category can be determined.
+    """
+    etype = effective_type(tx, meta)
+
+    # Stage 1: Compound DB rules.
+    for rule in rules:
+        if _match_category_rule(etype, tx, rule):
+            confidence = 0.90 if rule.builtin else 0.95
+            return CategoryResult(
+                category=rule.result_category,
+                source="rule",
+                confidence=confidence,
+                rule_id=rule.id,
+            )
+
+    # Stage 2: Bank description heuristics.
+    return _try_bank_description_heuristic(tx, etype)
+
+
+def categorize_batch(
+    txs: list[Transaction],
+    rules: list[CategoryRule],
+    meta_map: dict[int, TransactionMetadata] | None = None,
+) -> list[tuple[Transaction, CategoryResult | None]]:
+    """Categorize a batch of transactions."""
+    meta_map = meta_map or {}
+    return [
+        (tx, categorize_transaction(tx, rules, meta_map.get(tx.id)))  # type: ignore[arg-type]
+        for tx in txs
+    ]

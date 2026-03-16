@@ -16,6 +16,7 @@ from pfm.collectors._retry import RateLimiter, retry
 from pfm.collectors.base import BaseCollector
 from pfm.db.apy_rules_store import compute_effective_apy
 from pfm.db.models import RawBalance, Transaction, TransactionType
+from pfm.enums import SourceName
 
 if TYPE_CHECKING:
     from pfm.db.apy_rules_store import ApyRule
@@ -137,7 +138,7 @@ query UserTransactionHistory($request: UserTransactionHistoryRequest!) {
 class BitgetWalletCollector(BaseCollector):
     """Collector for Bitget Wallet positions indexed by Aave API."""
 
-    source_name = "bitget_wallet"
+    source_name = SourceName.BITGET_WALLET
 
     def __init__(
         self,

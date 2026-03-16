@@ -13,6 +13,7 @@ import httpx
 from pfm.collectors import register_collector
 from pfm.collectors.binance import BinanceCollector
 from pfm.db.models import RawBalance, Transaction, TransactionType
+from pfm.enums import SourceName
 
 if TYPE_CHECKING:
     from pfm.pricing.coingecko import PricingService
@@ -29,7 +30,7 @@ class BinanceThCollector(BinanceCollector):
     Spot-only exchange with THB trading pairs.
     """
 
-    source_name = "binance_th"
+    source_name = SourceName.BINANCE_TH
     _base_url = "https://api.binance.th"
     _WITHDRAW_ENDPOINTS = ("/api/v1/capital/withdraw/history", "/sapi/v1/capital/withdraw/history")
 

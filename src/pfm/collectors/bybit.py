@@ -17,6 +17,7 @@ from pfm.collectors._math import apr_to_apy
 from pfm.collectors._retry import RateLimiter, retry
 from pfm.collectors.base import BaseCollector
 from pfm.db.models import RawBalance, Transaction, TransactionType
+from pfm.enums import SourceName
 
 if TYPE_CHECKING:
     from pfm.pricing.coingecko import PricingService
@@ -32,7 +33,7 @@ _RATE_LIMITER = RateLimiter(requests_per_minute=600.0)
 class BybitCollector(BaseCollector):
     """Collector for Bybit exchange via V5 API."""
 
-    source_name = "bybit"
+    source_name = SourceName.BYBIT
 
     def __init__(
         self,

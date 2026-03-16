@@ -99,6 +99,47 @@ async def test_rabby_collect_balances_and_transactions(repo, pricing):
     assert {tx.tx_type.value for tx in txs} == {"deposit", "withdrawal", "trade"}
 
 
+async def test_rabby_skips_scam_transactions(pricing):
+    collector = RabbyCollector(
+        pricing,  # type: ignore[arg-type]
+        wallet_address="0xabc",
+        access_key="key",
+    )
+
+    async def mock_get(path: str, **kwargs: object) -> MagicMock:
+        if path == "/v1/user/history_list":
+            return _mock_response(
+                {
+                    "history_list": [
+                        {
+                            "cate_id": "receive",
+                            "time_at": 1718400000,
+                            "is_scam": False,
+                            "tx": {"id": "tx-legit"},
+                            "receives": [{"symbol": "USDC", "amount": "100"}],
+                            "sends": [],
+                        },
+                        {
+                            "cate_id": None,
+                            "time_at": 1718400000,
+                            "is_scam": True,
+                            "tx": {"id": "tx-scam"},
+                            "receives": [{"symbol": "WWW.2BASE.CFD", "amount": "999"}],
+                            "sends": [],
+                        },
+                    ],
+                    "token_dict": {},
+                }
+            )
+        return _mock_response([])
+
+    collector._client.get = mock_get  # type: ignore[assignment]
+
+    txs = await collector.fetch_transactions()
+    assert len(txs) == 1
+    assert txs[0].tx_id == "tx-legit"
+
+
 async def test_rabby_handles_non_list_payloads(pricing):
     collector = RabbyCollector(
         pricing,  # type: ignore[arg-type]

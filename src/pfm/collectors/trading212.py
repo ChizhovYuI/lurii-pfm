@@ -16,6 +16,7 @@ from pfm.collectors import register_collector
 from pfm.collectors._retry import RateLimiter, retry
 from pfm.collectors.base import BaseCollector
 from pfm.db.models import RawBalance, Transaction, TransactionType
+from pfm.enums import SourceName
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -42,7 +43,7 @@ _HTTP_TOO_MANY_REQUESTS = 429
 class Trading212Collector(BaseCollector):
     """Collector for Trading 212 Invest API."""
 
-    source_name = "trading212"
+    source_name = SourceName.TRADING212
     incremental_history_overlap_days = 7
 
     def __init__(self, pricing: PricingService, *, api_key: str, api_secret: str) -> None:

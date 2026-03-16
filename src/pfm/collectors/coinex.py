@@ -16,6 +16,7 @@ from pfm.collectors._auth import sign_coinex
 from pfm.collectors._retry import RateLimiter, retry
 from pfm.collectors.base import BaseCollector
 from pfm.db.models import RawBalance, Transaction, TransactionType
+from pfm.enums import SourceName
 
 if TYPE_CHECKING:
     from pfm.pricing.coingecko import PricingService
@@ -48,7 +49,7 @@ _HISTORY_TYPES: tuple[str, ...] = (
 class CoinexCollector(BaseCollector):
     """Collector for CoinEx exchange API V2."""
 
-    source_name = "coinex"
+    source_name = SourceName.COINEX
 
     def __init__(
         self,

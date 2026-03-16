@@ -17,6 +17,7 @@ from pfm.collectors import register_collector
 from pfm.collectors._retry import retry
 from pfm.collectors.base import BaseCollector
 from pfm.db.models import RawBalance, Transaction, TransactionType
+from pfm.enums import SourceName
 
 if TYPE_CHECKING:
     from pfm.pricing.coingecko import PricingService
@@ -41,7 +42,7 @@ _CASH_AMOUNT_FIELDS: tuple[str, ...] = (
 class IbkrCollector(BaseCollector):
     """Collector for Interactive Brokers via Flex Query Web Service."""
 
-    source_name = "ibkr"
+    source_name = SourceName.IBKR
 
     def __init__(
         self,

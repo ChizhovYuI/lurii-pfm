@@ -14,6 +14,7 @@ from pfm.collectors import register_collector
 from pfm.collectors._retry import RateLimiter, retry
 from pfm.collectors.base import BaseCollector
 from pfm.db.models import RawBalance, Transaction, TransactionType
+from pfm.enums import SourceName
 
 if TYPE_CHECKING:
     from pfm.pricing.coingecko import PricingService
@@ -32,7 +33,7 @@ _HTTP_TOO_MANY_REQUESTS = 429
 class RabbyCollector(BaseCollector):
     """Collector for Rabby wallets using public Rabby APIs."""
 
-    source_name = "rabby"
+    source_name = SourceName.RABBY
 
     def __init__(
         self,
@@ -126,6 +127,8 @@ class RabbyCollector(BaseCollector):
         token_symbols: dict[str, str] | None = None,
     ) -> Transaction | None:
         if not isinstance(row, dict):
+            return None
+        if row.get("is_scam"):
             return None
 
         sends = _parse_token_flows(row.get("sends"), token_symbols)

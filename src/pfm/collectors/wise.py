@@ -13,6 +13,7 @@ from pfm.collectors import register_collector
 from pfm.collectors._retry import retry
 from pfm.collectors.base import BaseCollector
 from pfm.db.models import RawBalance, Transaction
+from pfm.enums import SourceName
 
 if TYPE_CHECKING:
     from datetime import date
@@ -28,7 +29,7 @@ _BASE_URL = "https://api.transferwise.com"
 class WiseCollector(BaseCollector):
     """Collector for Wise multi-currency accounts."""
 
-    source_name = "wise"
+    source_name = SourceName.WISE
 
     def __init__(self, pricing: PricingService, *, api_token: str) -> None:
         super().__init__(pricing)

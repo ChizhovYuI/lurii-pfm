@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from pfm.collectors import register_collector
 from pfm.collectors.base import BaseCollector
+from pfm.enums import SourceName
 
 if TYPE_CHECKING:
     from datetime import date
@@ -18,7 +19,7 @@ if TYPE_CHECKING:
 class CashCollector(BaseCollector):
     """No-op collector used for manual cash balances managed via API."""
 
-    source_name = "cash"
+    source_name = SourceName.CASH
     records_empty_sync_marker = False
 
     def __init__(self, pricing: PricingService, *, fiat_currencies: str = "") -> None:

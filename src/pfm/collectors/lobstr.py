@@ -14,6 +14,7 @@ from pfm.collectors import register_collector
 from pfm.collectors._retry import retry
 from pfm.collectors.base import BaseCollector
 from pfm.db.models import RawBalance, Transaction, TransactionType
+from pfm.enums import SourceName
 
 if TYPE_CHECKING:
     from pfm.pricing.coingecko import PricingService
@@ -27,7 +28,7 @@ _HORIZON_URL = "https://horizon.stellar.org"
 class LobstrCollector(BaseCollector):
     """Collector for Stellar wallets (Lobstr) via Horizon API."""
 
-    source_name = "lobstr"
+    source_name = SourceName.LOBSTR
 
     def __init__(self, pricing: PricingService, *, stellar_address: str) -> None:
         super().__init__(pricing)

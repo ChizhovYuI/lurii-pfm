@@ -17,6 +17,7 @@ from pfm.collectors._auth import sign_binance
 from pfm.collectors._retry import RateLimiter, retry
 from pfm.collectors.base import BaseCollector
 from pfm.db.models import RawBalance, Transaction, TransactionType
+from pfm.enums import SourceName
 
 if TYPE_CHECKING:
     from pfm.pricing.coingecko import PricingService
@@ -34,7 +35,7 @@ _EARN_POSITION_PATH = "/api/v3/asset/earn/position"
 class MexcCollector(BaseCollector):
     """Collector for MEXC Spot exchange (signed V3 endpoints)."""
 
-    source_name = "mexc"
+    source_name = SourceName.MEXC
 
     def __init__(
         self,

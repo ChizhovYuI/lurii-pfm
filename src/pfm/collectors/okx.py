@@ -16,6 +16,7 @@ from pfm.collectors._math import apr_to_apy
 from pfm.collectors._retry import RateLimiter, retry
 from pfm.collectors.base import BaseCollector
 from pfm.db.models import RawBalance, Transaction, TransactionType
+from pfm.enums import SourceName
 
 if TYPE_CHECKING:
     from datetime import date
@@ -33,7 +34,7 @@ _RATE_LIMITER = RateLimiter(requests_per_minute=300.0)  # 10 req/2s
 class OkxCollector(BaseCollector):
     """Collector for OKX exchange."""
 
-    source_name = "okx"
+    source_name = SourceName.OKX
 
     def __init__(
         self,

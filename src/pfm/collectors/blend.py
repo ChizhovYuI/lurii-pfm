@@ -15,6 +15,7 @@ from pfm.collectors import register_collector
 from pfm.collectors._math import apr_to_apy
 from pfm.collectors.base import BaseCollector
 from pfm.db.models import RawBalance
+from pfm.enums import SourceName
 
 if TYPE_CHECKING:
     from datetime import date
@@ -45,7 +46,7 @@ class BlendCollector(BaseCollector):
     using each reserve's ``b_rate``.
     """
 
-    source_name = "blend"
+    source_name = SourceName.BLEND
 
     def __init__(
         self,

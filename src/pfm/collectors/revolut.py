@@ -14,6 +14,7 @@ from pfm.collectors import register_collector
 from pfm.collectors._retry import retry
 from pfm.collectors.base import BaseCollector
 from pfm.db.models import RawBalance, Transaction, TransactionType
+from pfm.enums import SourceName
 
 if TYPE_CHECKING:
     from pfm.pricing.coingecko import PricingService
@@ -30,7 +31,7 @@ _REQUISITIONS_PATH = "/api/v2/requisitions"
 class RevolutCollector(BaseCollector):
     """Collector for Revolut accounts via GoCardless (Nordigen) open banking."""
 
-    source_name = "revolut"
+    source_name = SourceName.REVOLUT
 
     def __init__(
         self,

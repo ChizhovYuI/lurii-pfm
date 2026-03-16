@@ -23,11 +23,36 @@ import pdfplumber
 from pfm.collectors import register_collector
 from pfm.collectors.base import BaseCollector
 from pfm.db.models import RawBalance, Transaction, TransactionType
+from pfm.enums import SourceName
 
 if TYPE_CHECKING:
     from pfm.pricing.coingecko import PricingService
 
 logger = logging.getLogger(__name__)
+
+# ── Description → TransactionType mapping ─────────────────────────────
+
+_DESC_TX_TYPE: dict[str, TransactionType] = {
+    "Annual Debit Card Fee": TransactionType.FEE,
+    "Debit Card Spending": TransactionType.SPEND,
+    "Direct Debit": TransactionType.SPEND,
+    "Payment": TransactionType.SPEND,
+    "QR Transfer Deposit": TransactionType.DEPOSIT,
+    "QRTransfer Deposit": TransactionType.DEPOSIT,
+    "Refund": TransactionType.DEPOSIT,
+    "Transfer Deposit": TransactionType.DEPOSIT,
+    "Transfer Withdrawal": TransactionType.WITHDRAWAL,
+}
+
+_DETAIL_CONTINUATION_PREFIXES = ("(", "Name:", "A/C", "name:", "CO.,", "Co.,")
+
+
+def _is_detail_continuation(text: str) -> bool:
+    """Return True if a line is a continuation of the previous detail entry."""
+    if not text:
+        return True
+    return text.startswith(_DETAIL_CONTINUATION_PREFIXES)
+
 
 _APP_SUPPORT_DIR = Path.home() / "Library" / "Application Support" / "Lurii Finance"
 _KBANK_PDF_DIR = _APP_SUPPORT_DIR / "kbank"
@@ -40,7 +65,7 @@ class KbankCollector(BaseCollector):
     This collector auto-fetches statements from Gmail when credentials are configured.
     """
 
-    source_name = "kbank"
+    source_name = SourceName.KBANK
 
     def __init__(  # noqa: PLR0913
         self,
@@ -262,11 +287,13 @@ class KbankCollector(BaseCollector):
     def _parse_transaction_table(self, table: list[list[Any]]) -> list[Transaction]:
         """Parse a KBank transaction table with newline-delimited entries.
 
-        KBank PDFs pack all transactions into a single row per page:
+        pdfplumber returns 6 columns per page (all entries newline-delimited):
         - Column 0: "DD-MM-YY HH:MM Xx\\n..." (date + time + description start)
-        - Column 1: "description continuation\\n..."
+        - Column 1: "description continuation\\n..." (Descriptions)
         - Column 2: "amount\\n..." (Withdrawal / Deposit)
         - Column 3: "balance\\n..." (Outstanding Balance)
+        - Column 4: "channel\\n..." (Channel)
+        - Column 5: "details\\n..." (Details)
 
         The first entry on each page is "Beginning Balance" (no amount).
         """
@@ -281,9 +308,18 @@ class KbankCollector(BaseCollector):
         descs_raw = str(data_row[1] or "").split("\n")
         amounts_raw = str(data_row[2] or "").split("\n")
         balances_raw = str(data_row[3] or "").split("\n")
+        # Channels (col 4) and Details (col 5) have no Beginning Balance row —
+        # aligned with amounts.
+        channels_raw = str(data_row[4] or "").split("\n") if len(data_row) > 4 else []  # noqa: PLR2004
+        # Details (col 5) may have multi-line entries (text wraps in cells).
+        # Group the lines into N entries matching the transaction count.
+        tx_count = len(amounts_raw)
+        details_text = str(data_row[5] or "") if len(data_row) > 5 else ""  # noqa: PLR2004
+        details_raw = self._group_wrapped_column(details_text, tx_count)
 
-        # dates[0] = "DD-MM-YY Be" (Beginning Balance), balances[0] = starting balance
-        # dates[1:] = transactions, amounts[0:] = their amounts, balances[1:] = after-tx balances
+        # dates/descs/balances have 27 lines (includes Beginning Balance at index 0).
+        # amounts/channels have 26 lines (no Beginning Balance).
+        # date_idx = i + 1 offsets into dates/descs/balances to skip Beginning Balance.
         transactions: list[Transaction] = []
         for i, amount_str in enumerate(amounts_raw):
             date_idx = i + 1  # offset by Beginning Balance entry
@@ -303,11 +339,17 @@ class KbankCollector(BaseCollector):
             curr_bal = self._parse_amount(balances_raw[date_idx])
             is_deposit = prev_bal is not None and curr_bal is not None and curr_bal > prev_bal
 
-            # Reconstruct description from truncated date tail + description column
+            # Reconstruct description from truncated date tail + description column.
+            # descs_raw uses date_idx (same offset as dates — includes Beginning Balance).
             date_tail = dates_raw[date_idx].split()[-1] if dates_raw[date_idx].strip() else ""
-            desc_cont = descs_raw[i] if i < len(descs_raw) else ""
+            desc_cont = descs_raw[date_idx] if date_idx < len(descs_raw) else ""
             description = date_tail + desc_cont
-            tx_type = TransactionType.DEPOSIT if is_deposit else TransactionType.WITHDRAWAL
+            fallback = TransactionType.DEPOSIT if is_deposit else TransactionType.WITHDRAWAL
+            tx_type = _DESC_TX_TYPE.get(description, fallback)
+
+            tx_time = self._parse_tx_time(dates_raw[date_idx])
+            channel = channels_raw[i].strip() if i < len(channels_raw) else ""
+            details = details_raw[i].strip() if i < len(details_raw) else ""
 
             transactions.append(
                 Transaction(
@@ -325,7 +367,13 @@ class KbankCollector(BaseCollector):
                         balance=curr_bal,
                     ),
                     raw_json=json.dumps(
-                        {"description": description, "balance": str(curr_bal or "")},
+                        {
+                            "description": description,
+                            "balance": str(curr_bal or ""),
+                            "time": tx_time or "",
+                            "channel": channel,
+                            "details": details,
+                        },
                     ),
                 )
             )
@@ -366,6 +414,48 @@ class KbankCollector(BaseCollector):
             return datetime.strptime(date_part, "%d-%m-%y").date()  # noqa: DTZ007
         except ValueError:
             return None
+
+    @staticmethod
+    def _parse_tx_time(date_str: str) -> str | None:
+        """Extract HH:MM from column 0 format: 'DD-MM-YY HH:MM Xx'."""
+        parts = date_str.strip().split()
+        if len(parts) >= 2:  # noqa: PLR2004
+            candidate = parts[1]
+            if len(candidate) == 5 and candidate[2] == ":":  # noqa: PLR2004
+                return candidate
+        return None
+
+    @staticmethod
+    def _group_wrapped_column(raw_text: str, count: int) -> list[str]:
+        """Group multi-line column text into ``count`` entries.
+
+        The Details column can have text that wraps across multiple PDF lines.
+        New entries start with ``Paid for``, ``To X``, or similar patterns.
+        Continuation lines (starting with ``(``, ``Name:``, etc.) are joined
+        to the previous entry with a space.
+        """
+        if not raw_text or not raw_text.strip():
+            return [""] * count
+
+        lines = raw_text.split("\n")
+        if len(lines) <= count:
+            padded = lines + [""] * (count - len(lines))
+            return [line.strip() for line in padded]
+
+        # More lines than entries — group continuation lines.
+        groups: list[list[str]] = []
+        for line in lines:
+            stripped = line.strip()
+            is_new = not groups or (len(groups) < count and not _is_detail_continuation(stripped))
+            if is_new:
+                groups.append([stripped])
+            else:
+                groups[-1].append(stripped)
+
+        result = [" ".join(filter(None, parts)) for parts in groups]
+        while len(result) < count:
+            result.append("")
+        return result[:count]
 
     @staticmethod
     def _parse_amount(amount_str: str) -> Decimal | None:

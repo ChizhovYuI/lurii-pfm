@@ -52,6 +52,11 @@ class Repository:
             self._conn = None
 
     @property
+    def connection(self) -> aiosqlite.Connection:
+        """Return the underlying database connection for use by store classes."""
+        return self._db
+
+    @property
     def _db(self) -> aiosqlite.Connection:
         if self._conn is None:
             msg = "Repository not opened. Use 'async with Repository(path) as repo:'"
@@ -344,7 +349,7 @@ class Repository:
         query += " ORDER BY date DESC, id DESC"
         cursor = await self._db.execute(query, params)
         rows = await cursor.fetchall()
-        return [self._row_to_transaction(row) for row in rows]
+        return [self.row_to_transaction(row) for row in rows]
 
     async def get_latest_transaction_date(self, source_name: str) -> date | None:
         """Return the latest transaction date for a specific configured source."""
@@ -358,7 +363,7 @@ class Repository:
         return date.fromisoformat(str(row[0]))
 
     @staticmethod
-    def _row_to_transaction(row: aiosqlite.Row) -> Transaction:
+    def row_to_transaction(row: aiosqlite.Row) -> Transaction:
         columns = row.keys()
         return Transaction(
             id=row["id"],

@@ -7,6 +7,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from pfm.db.models import is_sync_marker_snapshot
+from pfm.enums import SourceGroup, source_group
 
 if TYPE_CHECKING:
     from datetime import date
@@ -31,12 +32,6 @@ _FIAT_ASSETS: frozenset[str] = frozenset(
         "HKD",
     }
 )
-_CRYPTO_SOURCES: frozenset[str] = frozenset(
-    {"okx", "binance", "binance_th", "bybit", "coinex", "mexc", "mexc_earn", "lobstr", "rabby"}
-)
-_FIAT_SOURCES: frozenset[str] = frozenset({"wise", "kbank"})
-_STOCK_SOURCES: frozenset[str] = frozenset({"ibkr", "trading212"})
-_DEFI_SOURCES: frozenset[str] = frozenset({"blend", "yo", "bitget_wallet"})
 _DEPOSIT_SOURCES: frozenset[str] = frozenset({"emcd"})
 
 
@@ -264,41 +259,46 @@ def _percentage(value: Decimal, total: Decimal) -> Decimal:
     return (value / total) * _HUNDRED
 
 
+_GROUP_TO_ASSET_TYPE: dict[SourceGroup, str] = {
+    SourceGroup.DEFI: "defi",
+    SourceGroup.BANK: "fiat",
+}
+
+_GROUP_TO_CATEGORY: dict[SourceGroup, str] = {
+    SourceGroup.DEFI: "DeFi",
+    SourceGroup.BANK: "fiat",
+}
+
+
 def _asset_type(source: str, asset: str) -> str:
     """Classify an asset by its source and ticker."""
     src = source.lower()
     tkr = asset.upper()
-    result = "other"
     if src in _DEPOSIT_SOURCES:
-        result = "deposit"
-    elif src in _DEFI_SOURCES:
-        result = "defi"
-    elif src in _FIAT_SOURCES:
-        result = "fiat"
-    elif src in _STOCK_SOURCES:
-        result = "fiat" if tkr in _FIAT_ASSETS else "stocks"
-    elif tkr in _FIAT_ASSETS:
-        result = "fiat"
-    elif src in _CRYPTO_SOURCES:
-        result = "crypto"
-    return result
+        return "deposit"
+    group = source_group(src)
+    result = _GROUP_TO_ASSET_TYPE.get(group)
+    if result is not None:
+        return result
+    if group == SourceGroup.BROKER:
+        return "fiat" if tkr in _FIAT_ASSETS else "stocks"
+    if tkr in _FIAT_ASSETS:
+        return "fiat"
+    return "crypto" if group == SourceGroup.CRYPTO else "other"
 
 
 def _category_for_snapshot(snap: Snapshot) -> str:
     source = snap.source.lower()
     asset = snap.asset.upper()
-    category = "crypto"
 
     if source in _DEPOSIT_SOURCES:
-        category = "deposit"
-    elif source in _DEFI_SOURCES:
-        category = "DeFi"
-    elif source in _FIAT_SOURCES:
-        category = "fiat"
-    elif source in _STOCK_SOURCES:
-        category = "fiat" if asset in _FIAT_ASSETS else "stocks"
-    elif asset in _FIAT_ASSETS:
-        category = "fiat"
-    elif source in _CRYPTO_SOURCES:
-        category = "crypto"
-    return category
+        return "deposit"
+    group = source_group(source)
+    result = _GROUP_TO_CATEGORY.get(group)
+    if result is not None:
+        return result
+    if group == SourceGroup.BROKER:
+        return "fiat" if asset in _FIAT_ASSETS else "stocks"
+    if asset in _FIAT_ASSETS:
+        return "fiat"
+    return "crypto"

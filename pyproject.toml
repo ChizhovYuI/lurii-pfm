@@ -111,6 +111,9 @@ ignore = [
 "src/pfm/db/repository.py" = [
     "PLC0415", # late import to break circular dep with encryption.py
 ]
+"src/pfm/db/metadata_store.py" = [
+    "PLC0415", # late imports to break circular dep with repository.py
+]
 "src/pfm/server/**/*.py" = [
     "PLC0415", # late imports are used to avoid circular deps and keep startup fast
 ]
@@ -133,6 +136,7 @@ ignore = [
     "EM",      # exception message style relaxed in tests
     "TRY003",  # long exception messages fine in tests
     "PLC0415", # imports inside functions fine in tests
+    "PLR0913", # many-arg test helpers fine in tests
 ]
 
 [tool.ruff.lint.mccabe]

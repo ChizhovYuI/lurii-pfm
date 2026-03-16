@@ -16,6 +16,7 @@ from pfm.collectors._auth import sign_binance
 from pfm.collectors._retry import RateLimiter, retry
 from pfm.collectors.base import BaseCollector
 from pfm.db.models import RawBalance, Transaction, TransactionType
+from pfm.enums import SourceName
 
 if TYPE_CHECKING:
     from pfm.pricing.coingecko import PricingService
@@ -30,7 +31,7 @@ _CLOCK_DRIFT_LOG_THRESHOLD_MS = 500
 class BinanceCollector(BaseCollector):
     """Collector for Binance (global) exchange."""
 
-    source_name = "binance"
+    source_name = SourceName.BINANCE
     _base_url = "https://api.binance.com"
     _server_time_path = "/api/v3/time"
 

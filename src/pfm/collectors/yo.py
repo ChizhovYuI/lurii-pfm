@@ -14,6 +14,7 @@ from pfm.collectors import register_collector
 from pfm.collectors._retry import RateLimiter, retry
 from pfm.collectors.base import BaseCollector
 from pfm.db.models import RawBalance, Transaction, TransactionType
+from pfm.enums import SourceName
 
 if TYPE_CHECKING:
     from pfm.pricing.coingecko import PricingService
@@ -28,7 +29,7 @@ _RATE_LIMITER = RateLimiter(requests_per_minute=240.0)
 class YoCollector(BaseCollector):
     """Collector for a single yo.xyz vault position."""
 
-    source_name = "yo"
+    source_name = SourceName.YO
 
     def __init__(
         self,
