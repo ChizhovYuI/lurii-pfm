@@ -48,10 +48,10 @@ def resolve_type_batch(
 
 def match_type_rule(tx: Transaction, rule: TypeRule) -> bool:
     """Check whether a type rule matches a transaction."""
-    # Source filter.
+    # Source filter: match against source type or configured source name.
     if rule.source != "*":
-        source = (tx.source_name or tx.source).lower()
-        if rule.source != source:
+        rule_src = rule.source.lower()
+        if rule_src != tx.source.lower() and rule_src != (tx.source_name or tx.source).lower():
             return False
 
     # Field match (optional — rules with no field_name are source-only fallbacks).

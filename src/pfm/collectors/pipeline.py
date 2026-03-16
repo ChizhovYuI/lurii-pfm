@@ -8,7 +8,9 @@ import time
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
+from pfm.analytics.categorization_runner import run_categorization
 from pfm.collectors._retry import is_dns_resolution_error
+from pfm.db.metadata_store import MetadataStore
 from pfm.db.models import CollectorResult, is_sync_marker_snapshot, make_sync_marker_snapshot
 
 if TYPE_CHECKING:
@@ -68,7 +70,26 @@ async def run_parallel_pipeline(
         result = await _process_single(src.name, collector, raw, prices, repo)
         results.append(result)
 
+    # Phase 5: resolve types, detect transfers, categorize
+    has_new_txs = any(r.transactions_count > 0 for r in results)
+    if has_new_txs:
+        if on_progress:
+            await on_progress(0.95, 1, "Categorizing transactions...")
+        await _run_post_import(repo)
+
     return results
+
+
+async def _run_post_import(repo: Repository) -> None:
+    """Run the categorization pipeline after collection."""
+    store = MetadataStore(repo.connection)
+    summary = await run_categorization(repo, store)
+    logger.info(
+        "Post-import categorization: %d types resolved, %d transfers, %d categorized",
+        summary["type_resolved"],
+        summary["transfers"],
+        summary["categorized"],
+    )
 
 
 async def _fetch_all(

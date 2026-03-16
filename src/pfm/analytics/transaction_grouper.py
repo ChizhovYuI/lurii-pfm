@@ -332,7 +332,7 @@ def _group_partial_fills(
     for tx, _ in items:
         if tx.id is None or tx.id in consumed:
             continue
-        if tx.tx_type in (TransactionType.SPEND, TransactionType.TRANSFER):
+        if tx.tx_type not in (TransactionType.TRADE, TransactionType.YIELD):
             continue
         key: tuple[str, date, str, str] = (tx.source_name or tx.source, tx.date, tx.asset, tx.tx_type.value)
         buckets.setdefault(key, []).append(tx)

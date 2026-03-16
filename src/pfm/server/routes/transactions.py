@@ -54,17 +54,59 @@ def _extract_description(tx: Transaction) -> str:
     return ""
 
 
+_TIME_KEYS_DIRECT = ("time", "ts", "transactionTime")
+_TIME_KEYS_DATETIME = (
+    "timestamp",
+    "blockTimestamp",
+    "time_at",
+    "createdAt",
+    "dateTime",
+    "paidAt",
+    "bookingDateTime",
+    "created_at",
+    "applyTime",
+    "completeTime",
+)
+
+
+def _parse_time_value(val: object) -> str | None:
+    """Parse a single timestamp value into HH:MM."""
+    if isinstance(val, int | float):
+        from datetime import UTC, datetime
+
+        epoch = val / 1000 if val > 1e12 else val  # noqa: PLR2004
+        return datetime.fromtimestamp(epoch, tz=UTC).strftime("%H:%M")
+    if not isinstance(val, str) or len(val) < 5:  # noqa: PLR2004
+        return None
+    # ISO datetime: "2026-03-02T12:58:35.000Z"
+    if "T" in val:
+        hhmm = val.split("T", maxsplit=1)[1][:5]
+        return hhmm if len(hhmm) == 5 and hhmm[2] == ":" else None  # noqa: PLR2004
+    # Space-separated: "2026-02-25 17:47:41"
+    if " " in val and len(val) >= 16:  # noqa: PLR2004
+        hhmm = val.split(" ", maxsplit=1)[1][:5]
+        return hhmm if len(hhmm) == 5 and hhmm[2] == ":" else None  # noqa: PLR2004
+    # Direct HH:MM
+    return val[:5] if val[2] == ":" else None
+
+
 def _extract_time(tx: Transaction) -> str | None:
     """Extract time (HH:MM) from raw_json if present."""
     if not tx.raw_json:
         return None
     try:
         parsed = json.loads(tx.raw_json)
-        if isinstance(parsed, dict):
-            t = parsed.get("time") or parsed.get("ts") or parsed.get("transactionTime")
-            if t and isinstance(t, str) and len(t) >= 5 and t[2] == ":":  # noqa: PLR2004
-                return str(t[:5])
-    except (json.JSONDecodeError, TypeError):
+        if not isinstance(parsed, dict):
+            return None
+        for key in _TIME_KEYS_DIRECT:
+            result = _parse_time_value(parsed.get(key))
+            if result:
+                return result
+        for key in _TIME_KEYS_DATETIME:
+            result = _parse_time_value(parsed.get(key))
+            if result:
+                return result
+    except (json.JSONDecodeError, TypeError, OSError, OverflowError, ValueError):
         pass
     return None
 

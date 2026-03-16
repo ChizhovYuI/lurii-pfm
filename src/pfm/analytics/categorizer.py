@@ -101,10 +101,10 @@ def _match_category_rule(
     if not _match_values(etype, rule.type_match, rule.type_operator):
         return False
 
-    # Source filter.
+    # Source filter: match against source type or configured source name.
     if rule.source != "*":
-        source = (tx.source_name or tx.source).lower()
-        if rule.source != source:
+        rule_src = rule.source.lower()
+        if rule_src != tx.source.lower() and rule_src != (tx.source_name or tx.source).lower():
             return False
 
     # Condition 2: field match (optional).
