@@ -99,8 +99,8 @@ async def test_revolut_collect_balances_and_transactions(repo, pricing):
 
     transactions = await repo.get_transactions(source="revolut")
     assert len(transactions) == 2
-    assert transactions[0].tx_type.value == "deposit"
-    assert transactions[1].tx_type.value == "withdrawal"
+    assert transactions[0].tx_type.value == "unknown"
+    assert transactions[1].tx_type.value == "unknown"
 
 
 async def test_revolut_skips_duplicate_currencies(pricing):

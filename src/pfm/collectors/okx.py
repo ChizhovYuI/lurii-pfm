@@ -236,18 +236,10 @@ class OkxCollector(BaseCollector):
         except (ValueError, OSError):
             tx_date = datetime.now(tz=UTC).date()
 
-        sub_type = str(bill.get("subType", ""))
-        if sub_type in ("1", "2"):  # buy/sell
-            tx_type = TransactionType.TRADE
-        elif sub_type in ("13", "14"):  # deposit/withdrawal
-            tx_type = TransactionType.DEPOSIT if amount > 0 else TransactionType.WITHDRAWAL
-        else:
-            tx_type = TransactionType.TRANSFER
-
         return Transaction(
             date=tx_date,
             source="okx",
-            tx_type=tx_type,
+            tx_type=TransactionType.UNKNOWN,
             asset=ticker,
             amount=abs(amount),
             usd_value=Decimal(0),

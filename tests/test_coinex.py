@@ -18,7 +18,6 @@ from pfm.collectors.coinex import (
     _SPOT_HISTORY_PATH,
     CoinexCollector,
     _effective_public_apy,
-    _map_history_type,
     _parse_history_transaction,
 )
 from pfm.db.models import TransactionType
@@ -265,21 +264,6 @@ async def test_fetch_history_rows_paginates_with_has_next(pricing):
     assert seen_pages == ["1", "2"]
 
 
-@pytest.mark.parametrize(
-    ("raw_type", "expected"),
-    [
-        ("deposit", TransactionType.DEPOSIT),
-        ("withdraw", TransactionType.WITHDRAWAL),
-        ("trade", TransactionType.TRADE),
-        ("investment_interest", TransactionType.INTEREST),
-        ("maker_cash_back", TransactionType.TRANSFER),
-        ("exchange_order_transfer", TransactionType.TRANSFER),
-    ],
-)
-def test_map_history_type(raw_type: str, expected: TransactionType):
-    assert _map_history_type(raw_type) == expected
-
-
 def test_parse_history_transaction_uses_synthetic_tx_id_without_id():
     row = {
         "type": "trade",
@@ -289,7 +273,7 @@ def test_parse_history_transaction_uses_synthetic_tx_id_without_id():
     }
     tx = _parse_history_transaction(row)
     assert tx is not None
-    assert tx.tx_type == TransactionType.TRADE
+    assert tx.tx_type == TransactionType.UNKNOWN
     assert tx.amount == Decimal("0.5")
     assert tx.date == date(2026, 3, 10)
     assert tx.tx_id == "coinex:trade:USDT:-0.5:1773152771540"
@@ -322,12 +306,5 @@ async def test_fetch_transactions_maps_types_and_filters_since(pricing):
 
     # one old trade row is filtered out by since
     assert len(txs) == 5
-    by_type = {tx.tx_type for tx in txs}
-    assert by_type == {
-        TransactionType.DEPOSIT,
-        TransactionType.WITHDRAWAL,
-        TransactionType.INTEREST,
-        TransactionType.TRANSFER,
-    }
-    transfer_count = sum(1 for tx in txs if tx.tx_type == TransactionType.TRANSFER)
-    assert transfer_count == 2
+    # All types are UNKNOWN now (type resolution happens post-import)
+    assert all(tx.tx_type == TransactionType.UNKNOWN for tx in txs)

@@ -100,7 +100,7 @@ async def test_lobstr_fetch_transactions(pricing):
 
     txs = await collector.fetch_transactions()
     assert len(txs) == 1
-    assert txs[0].tx_type == TransactionType.DEPOSIT
+    assert txs[0].tx_type == TransactionType.UNKNOWN
     assert txs[0].asset == "USDC"
     assert txs[0].amount == Decimal("100.0")
 
@@ -133,7 +133,7 @@ async def test_lobstr_outgoing_payment(pricing):
     }
     tx = collector._parse_payment(record)
     assert tx is not None
-    assert tx.tx_type == TransactionType.WITHDRAWAL
+    assert tx.tx_type == TransactionType.UNKNOWN
 
 
 async def test_lobstr_transactions_since_filter(pricing):
@@ -237,10 +237,10 @@ async def test_binance_fetch_transactions(pricing):
 
     txs = await collector.fetch_transactions()
     assert len(txs) == 2
-    dep = next(t for t in txs if t.tx_type == TransactionType.DEPOSIT)
+    dep = txs[0]
     assert dep.asset == "BTC"
     assert dep.amount == Decimal("1.0")
-    wd = next(t for t in txs if t.tx_type == TransactionType.WITHDRAWAL)
+    wd = txs[1]
     assert wd.asset == "ETH"
 
 
@@ -360,7 +360,7 @@ async def test_binance_th_transactions_fallback_to_sapi(pricing):
 
     txs = await collector.fetch_transactions()
     assert len(txs) == 1
-    assert txs[0].tx_type == TransactionType.WITHDRAWAL
+    assert txs[0].tx_type == TransactionType.UNKNOWN
     assert "/api/v1/capital/withdraw/history" in called_paths
     assert "/sapi/v1/capital/withdraw/history" in called_paths
 
@@ -441,9 +441,9 @@ async def test_mexc_fetch_transactions(pricing):
 
     txs = await collector.fetch_transactions()
     assert len(txs) == 2
-    dep = next(t for t in txs if t.tx_type == TransactionType.DEPOSIT)
+    dep = txs[0]
     assert dep.asset == "USDC"
-    wd = next(t for t in txs if t.tx_type == TransactionType.WITHDRAWAL)
+    wd = txs[1]
     assert wd.asset == "USDC"
 
 
@@ -668,7 +668,7 @@ async def test_okx_fetch_transactions(pricing):
 
     txs = await collector.fetch_transactions()
     assert len(txs) == 2
-    trade_tx = next(t for t in txs if t.tx_type == TransactionType.TRADE)
+    trade_tx = txs[0]
     assert trade_tx.asset == "BTC"
 
 
@@ -681,21 +681,21 @@ async def test_okx_parse_bill_deposit():
     bill = {"ccy": "BTC", "balChg": "1.0", "ts": "1705276800000", "subType": "13", "billId": "b"}
     tx = OkxCollector._parse_bill(bill)
     assert tx is not None
-    assert tx.tx_type == TransactionType.DEPOSIT
+    assert tx.tx_type == TransactionType.UNKNOWN
 
 
 async def test_okx_parse_bill_withdrawal():
     bill = {"ccy": "BTC", "balChg": "-1.0", "ts": "1705276800000", "subType": "14", "billId": "b"}
     tx = OkxCollector._parse_bill(bill)
     assert tx is not None
-    assert tx.tx_type == TransactionType.WITHDRAWAL
+    assert tx.tx_type == TransactionType.UNKNOWN
 
 
 async def test_okx_parse_bill_transfer():
     bill = {"ccy": "BTC", "balChg": "1.0", "ts": "1705276800000", "subType": "99", "billId": "b"}
     tx = OkxCollector._parse_bill(bill)
     assert tx is not None
-    assert tx.tx_type == TransactionType.TRANSFER
+    assert tx.tx_type == TransactionType.UNKNOWN
 
 
 async def test_okx_sign_request(pricing):
@@ -834,25 +834,25 @@ async def test_bybit_parse_transaction_types():
         {"currency": "BTC", "cashFlow": "1", "transactionTime": ts, "type": "TRADE", "id": "1"},
     )
     assert tx is not None
-    assert tx.tx_type == TransactionType.TRADE
+    assert tx.tx_type == TransactionType.UNKNOWN
 
     tx = BybitCollector._parse_transaction(
         {"currency": "BTC", "cashFlow": "1", "transactionTime": ts, "type": "DEPOSIT", "id": "2"},
     )
     assert tx is not None
-    assert tx.tx_type == TransactionType.DEPOSIT
+    assert tx.tx_type == TransactionType.UNKNOWN
 
     tx = BybitCollector._parse_transaction(
         {"currency": "BTC", "cashFlow": "0.01", "transactionTime": ts, "type": "INTEREST", "id": "3"},
     )
     assert tx is not None
-    assert tx.tx_type == TransactionType.INTEREST
+    assert tx.tx_type == TransactionType.UNKNOWN
 
     tx = BybitCollector._parse_transaction(
         {"currency": "BTC", "cashFlow": "1", "transactionTime": ts, "type": "OTHER", "id": "4"},
     )
     assert tx is not None
-    assert tx.tx_type == TransactionType.TRANSFER
+    assert tx.tx_type == TransactionType.UNKNOWN
 
 
 async def test_bybit_parse_transaction_empty_currency():

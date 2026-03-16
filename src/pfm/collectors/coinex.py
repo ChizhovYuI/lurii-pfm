@@ -331,8 +331,7 @@ def _balances_by_asset(rows: list[dict[str, Any]]) -> dict[str, Decimal]:
 
 def _parse_history_transaction(row: dict[str, Any]) -> Transaction | None:
     raw_type = str(row.get("type", "")).lower().strip()
-    tx_type = _map_history_type(raw_type)
-    if tx_type is None:
+    if not raw_type:
         return None
 
     asset = str(row.get("ccy", "")).upper().strip()
@@ -350,27 +349,13 @@ def _parse_history_transaction(row: dict[str, Any]) -> Transaction | None:
     return Transaction(
         date=tx_date,
         source="coinex",
-        tx_type=tx_type,
+        tx_type=TransactionType.UNKNOWN,
         asset=asset,
         amount=abs(change),
         usd_value=Decimal(0),
         tx_id=tx_id,
         raw_json=json.dumps(row),
     )
-
-
-def _map_history_type(raw_type: str) -> TransactionType | None:
-    if raw_type == "deposit":
-        return TransactionType.DEPOSIT
-    if raw_type == "withdraw":
-        return TransactionType.WITHDRAWAL
-    if raw_type == "trade":
-        return TransactionType.TRADE
-    if raw_type == "investment_interest":
-        return TransactionType.INTEREST
-    if raw_type in {"maker_cash_back", "exchange_order_transfer"}:
-        return TransactionType.TRANSFER
-    return None
 
 
 def _synthetic_tx_id(raw_type: str, asset: str, change: Decimal, created_at_ms: int) -> str:

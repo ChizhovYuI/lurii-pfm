@@ -253,7 +253,7 @@ class IbkrCollector(BaseCollector):
         return Transaction(
             date=tx_date,
             source="ibkr",
-            tx_type=TransactionType.TRADE,
+            tx_type=TransactionType.UNKNOWN,
             asset=symbol,
             amount=abs(quantity),
             usd_value=abs(proceeds),

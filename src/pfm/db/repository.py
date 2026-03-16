@@ -381,6 +381,16 @@ class Repository:
             trade_side=row["trade_side"] if "trade_side" in columns else "",
         )
 
+    async def update_transaction_types(self, updates: list[tuple[int, TransactionType]]) -> None:
+        """Batch update tx_type for resolved transactions."""
+        if not updates:
+            return
+        await self._db.executemany(
+            "UPDATE transactions SET tx_type = ? WHERE id = ?",
+            [(tx_type.value, tx_id) for tx_id, tx_type in updates],
+        )
+        await self._db.commit()
+
     # ── Prices ────────────────────────────────────────────────────────
 
     async def save_price(self, price: Price) -> None:

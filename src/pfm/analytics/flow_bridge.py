@@ -99,9 +99,7 @@ def build_currency_flow_bridge(
         if tx.tx_type == TransactionType.WITHDRAWAL and is_fiat_asset(tx.asset):
             tx_by_currency[tx.asset.upper()]["external_outflows"] += tx.amount
             continue
-        if tx.tx_type in {TransactionType.DIVIDEND, TransactionType.INTEREST, TransactionType.YIELD} and is_fiat_asset(
-            tx.asset
-        ):
+        if tx.tx_type == TransactionType.YIELD and is_fiat_asset(tx.asset):
             tx_by_currency[tx.asset.upper()]["income"] += tx.amount
             continue
         if tx.tx_type != TransactionType.TRADE or not tx.counterparty_asset or tx.counterparty_amount <= _ZERO:
@@ -188,7 +186,7 @@ def _capital_flow_kind(tx_type: TransactionType) -> str | None:
         return "external_inflow"
     if tx_type == TransactionType.WITHDRAWAL:
         return "external_outflow"
-    if tx_type in {TransactionType.DIVIDEND, TransactionType.INTEREST, TransactionType.YIELD}:
+    if tx_type == TransactionType.YIELD:
         return "income"
     if tx_type == TransactionType.FEE:
         return "fee"

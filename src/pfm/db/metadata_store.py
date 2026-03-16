@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from pfm.db.models import CategoryRule, TransactionCategory, TransactionMetadata
+from pfm.db.models import CategoryRule, TransactionCategory, TransactionMetadata, TypeRule
 
 if TYPE_CHECKING:
     from datetime import date
@@ -483,6 +483,107 @@ class MetadataStore:
             (transaction_id, source, effective_type, field_snapshot, chosen_category, previous_category),
         )
         await self._db.commit()
+
+    # ── Type rules ──────────────────────────────────────────────────
+
+    async def get_type_rules(
+        self,
+        *,
+        source: str | None = None,
+        include_deleted: bool = False,
+    ) -> list[TypeRule]:
+        """List type rules ordered by priority."""
+        query = "SELECT * FROM type_rules"
+        conditions: list[str] = []
+        params: list[str | int] = []
+        if not include_deleted:
+            conditions.append("deleted = 0")
+        if source is not None:
+            conditions.append("(source = ? OR source = '*')")
+            params.append(source)
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        query += " ORDER BY priority ASC, id ASC"
+        cursor = await self._db.execute(query, params)
+        rows = await cursor.fetchall()
+        return [self._row_to_type_rule(row) for row in rows]
+
+    async def create_type_rule(  # noqa: PLR0913
+        self,
+        result_type: str,
+        *,
+        source: str = "*",
+        field_name: str = "",
+        field_operator: str = "eq",
+        field_value: str = "",
+        priority: int | None = None,
+    ) -> TypeRule:
+        """Create a type rule. Priority is auto-computed if not specified."""
+        if priority is None:
+            priority = _auto_priority(field_name=field_name, source=source)
+        cursor = await self._db.execute(
+            "INSERT INTO type_rules"
+            " (source, field_name, field_operator, field_value,"
+            "  result_type, priority, builtin)"
+            " VALUES (?, ?, ?, ?, ?, ?, 0)",
+            (
+                source,
+                field_name or None,
+                field_operator,
+                field_value or None,
+                result_type,
+                priority,
+            ),
+        )
+        await self._db.commit()
+        row = await (await self._db.execute("SELECT * FROM type_rules WHERE id = ?", (cursor.lastrowid,))).fetchone()
+        assert row is not None  # noqa: S101
+        return self._row_to_type_rule(row)
+
+    async def delete_type_rule(self, rule_id: int) -> bool:
+        """Delete a type rule. Builtin rules are soft-deleted."""
+        row = await (await self._db.execute("SELECT builtin FROM type_rules WHERE id = ?", (rule_id,))).fetchone()
+        if row is None:
+            return False
+        if row["builtin"]:
+            await self._db.execute(
+                "UPDATE type_rules SET deleted = 1 WHERE id = ?",
+                (rule_id,),
+            )
+        else:
+            await self._db.execute("DELETE FROM type_rules WHERE id = ?", (rule_id,))
+        await self._db.commit()
+        return True
+
+    async def reset_type_rules(self, source: str | None = None) -> None:
+        """Reset rules: soft-delete custom rules, restore builtin rules."""
+        if source:
+            await self._db.execute(
+                "UPDATE type_rules SET deleted = 1 WHERE builtin = 0 AND source = ?",
+                (source,),
+            )
+            await self._db.execute(
+                "UPDATE type_rules SET deleted = 0 WHERE builtin = 1 AND (source = ? OR source = '*')",
+                (source,),
+            )
+        else:
+            await self._db.execute("UPDATE type_rules SET deleted = 1 WHERE builtin = 0")
+            await self._db.execute("UPDATE type_rules SET deleted = 0 WHERE builtin = 1")
+        await self._db.commit()
+
+    @staticmethod
+    def _row_to_type_rule(row: aiosqlite.Row) -> TypeRule:
+        return TypeRule(
+            id=row["id"],
+            source=row["source"],
+            field_name=row["field_name"] or "",
+            field_operator=row["field_operator"],
+            field_value=row["field_value"] or "",
+            result_type=row["result_type"],
+            priority=row["priority"],
+            builtin=bool(row["builtin"]),
+            deleted=bool(row["deleted"]),
+        )
 
     # ── Paginated transactions with metadata ──────────────────────────
 

@@ -347,15 +347,16 @@ class MexcCollector(BaseCollector):
         except (TypeError, ValueError, OSError):
             tx_date = datetime.now(tz=UTC).date()
 
+        dep_with_direction = {**dep, "_direction": "deposit"}
         return Transaction(
             date=tx_date,
             source="mexc",
-            tx_type=TransactionType.DEPOSIT,
+            tx_type=TransactionType.UNKNOWN,
             asset=ticker,
             amount=amount,
             usd_value=Decimal(0),
             tx_id=str(dep.get("txId", dep.get("id", ""))),
-            raw_json=json.dumps(dep),
+            raw_json=json.dumps(dep_with_direction),
         )
 
     @staticmethod
@@ -380,15 +381,16 @@ class MexcCollector(BaseCollector):
             except (TypeError, ValueError):
                 tx_date = datetime.now(tz=UTC).date()
 
+        wd_with_direction = {**wd, "_direction": "withdrawal"}
         return Transaction(
             date=tx_date,
             source="mexc",
-            tx_type=TransactionType.WITHDRAWAL,
+            tx_type=TransactionType.UNKNOWN,
             asset=ticker,
             amount=amount,
             usd_value=Decimal(0),
             tx_id=str(wd.get("id", wd.get("txId", ""))),
-            raw_json=json.dumps(wd),
+            raw_json=json.dumps(wd_with_direction),
         )
 
 

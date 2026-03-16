@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from pfm.db.models import effective_type
-from pfm.enums import SourceGroup, source_group
 
 if TYPE_CHECKING:
     from pfm.db.models import CategoryRule, Transaction, TransactionMetadata
@@ -46,10 +45,9 @@ class CategoryResult:
     """Result of categorizing a single transaction."""
 
     category: str
-    source: str  # 'rule' | 'heuristic'
+    source: str  # 'rule'
     confidence: float
     rule_id: int | None = None
-    reason: str = ""
 
 
 # ── Field resolution ───────────────────────────────────────────────────
@@ -120,63 +118,6 @@ def _match_category_rule(
     return True
 
 
-# ── Bank description heuristics (Stage 2) ─────────────────────────────
-
-_BANK_WITHDRAWAL_PATTERNS: list[tuple[list[str], str, float]] = [
-    (["transfer withdrawal", "โอนเงิน"], "external_withdrawal", 0.6),
-]
-
-_BANK_SPEND_PATTERNS: list[tuple[list[str], str, float]] = [
-    (["qr", "ชำโอนเงินผ่าน qr", "qryment", "qr code"], "other_spend", 0.7),
-    (["card spending", "debit card", "pabit card"], "shopping", 0.7),
-    (["bill payment", "ชำระค่า", "ค่าไฟ", "ค่าน้ำ"], "utilities", 0.7),
-    (["direct debit"], "subscriptions", 0.7),
-]
-
-_BANK_DEPOSIT_PATTERNS: list[tuple[list[str], str, float]] = [
-    (["transfer deposit", "เงินโอนเข้า", "pansfer deposit"], "external_deposit", 0.5),
-    (["salary", "payroll", "เงินเดือน"], "salary", 0.8),
-]
-
-_BANK_GROUPS = frozenset({SourceGroup.BANK})
-
-
-def _try_bank_description_heuristic(
-    tx: Transaction,
-    etype: str,
-) -> CategoryResult | None:
-    """Try to categorize a bank transaction by its description."""
-    group = source_group(tx.source)
-    if group not in _BANK_GROUPS:
-        return None
-
-    desc = _extract_description(tx).lower()
-    if not desc:
-        return None
-
-    patterns = (
-        _BANK_WITHDRAWAL_PATTERNS
-        if etype == "withdrawal"
-        else _BANK_SPEND_PATTERNS
-        if etype == "spend"
-        else _BANK_DEPOSIT_PATTERNS
-        if etype == "deposit"
-        else []
-    )
-
-    for keywords, category, confidence in patterns:
-        matched_kw = next((kw for kw in keywords if kw in desc), None)
-        if matched_kw:
-            return CategoryResult(
-                category=category,
-                source="heuristic",
-                confidence=confidence,
-                reason=f"description contains '{matched_kw}'",
-            )
-
-    return None
-
-
 # ── Main pipeline ──────────────────────────────────────────────────────
 
 
@@ -185,16 +126,13 @@ def categorize_transaction(
     rules: list[CategoryRule],
     meta: TransactionMetadata | None = None,
 ) -> CategoryResult | None:
-    """Categorize a single transaction through the 2-stage pipeline.
+    """Categorize a single transaction via DB rules.
 
-    Stage 1: Compound DB rules (priority-ordered, first match wins).
-    Stage 2: Bank description heuristics (soft fallback, not persisted).
-
-    Returns None only when no category can be determined.
+    Rules are evaluated in priority order (ascending). First match wins.
+    Returns None when no rule matches.
     """
     etype = effective_type(tx, meta)
 
-    # Stage 1: Compound DB rules.
     for rule in rules:
         if _match_category_rule(etype, tx, rule):
             confidence = 0.90 if rule.builtin else 0.95
@@ -205,8 +143,7 @@ def categorize_transaction(
                 rule_id=rule.id,
             )
 
-    # Stage 2: Bank description heuristics.
-    return _try_bank_description_heuristic(tx, etype)
+    return None
 
 
 def categorize_batch(

@@ -273,17 +273,18 @@ class Trading212Collector(BaseCollector):
 
         tx_date = _extract_item_date(item) or self._pricing.today()
         usd_value = abs(net_value) * await self._currency_to_usd(cash_currency)
+        item_with_endpoint = {**item, "_endpoint": "orders"}
         return Transaction(
             date=tx_date,
             source=self.source_name,
-            tx_type=TransactionType.TRADE,
+            tx_type=TransactionType.UNKNOWN,
             asset=asset,
             amount=quantity,
             usd_value=usd_value,
             counterparty_asset=cash_currency,
             counterparty_amount=abs(net_value),
             tx_id=tx_id,
-            raw_json=json.dumps(item),
+            raw_json=json.dumps(item_with_endpoint),
             trade_side=trade_side,
         )
 
@@ -295,20 +296,20 @@ class Trading212Collector(BaseCollector):
             return None
 
         tx_date = _extract_item_date(item) or self._pricing.today()
-        tx_type = _cash_transaction_type(str(item.get("type") or ""))
         tx_id = str(item.get("reference") or "")
         if not tx_id:
             tx_id = _synthetic_tx_id("trading212-cash", item)
 
+        item_with_endpoint = {**item, "_endpoint": "cash"}
         return Transaction(
             date=tx_date,
             source=self.source_name,
-            tx_type=tx_type,
+            tx_type=TransactionType.UNKNOWN,
             asset=currency,
             amount=amount,
             usd_value=amount * await self._currency_to_usd(currency),
             tx_id=tx_id,
-            raw_json=json.dumps(item),
+            raw_json=json.dumps(item_with_endpoint),
         )
 
     async def _parse_dividend_item(self, item: dict[str, Any]) -> Transaction | None:
@@ -324,15 +325,16 @@ class Trading212Collector(BaseCollector):
 
         amount = abs(amount)
         currency = currency.upper()
+        item_with_endpoint = {**item, "_endpoint": "dividends"}
         return Transaction(
             date=tx_date,
             source=self.source_name,
-            tx_type=TransactionType.DIVIDEND,
+            tx_type=TransactionType.UNKNOWN,
             asset=currency,
             amount=amount,
             usd_value=amount * await self._currency_to_usd(currency),
             tx_id=tx_id,
-            raw_json=json.dumps(item),
+            raw_json=json.dumps(item_with_endpoint),
         )
 
 
@@ -393,19 +395,6 @@ def _extract_amount_and_currency(item: dict[str, Any]) -> tuple[Decimal, str]:
     amount = _to_decimal(item.get("paidAmount") or item.get("amount") or item.get("value"))
     currency = str(item.get("currency") or item.get("currencyCode") or "")
     return amount, currency
-
-
-def _cash_transaction_type(raw_type: str) -> TransactionType:
-    normalized = raw_type.upper()
-    if "DEPOSIT" in normalized:
-        return TransactionType.DEPOSIT
-    if "WITHDRAW" in normalized:
-        return TransactionType.WITHDRAWAL
-    if "FEE" in normalized:
-        return TransactionType.FEE
-    if "INTEREST" in normalized:
-        return TransactionType.INTEREST
-    return TransactionType.TRANSFER
 
 
 def _synthetic_tx_id(prefix: str, payload: dict[str, Any]) -> str:

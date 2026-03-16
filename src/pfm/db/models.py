@@ -20,10 +20,9 @@ class TransactionType(enum.StrEnum):
     SPEND = "spend"
     TRADE = "trade"
     YIELD = "yield"
-    DIVIDEND = "dividend"
-    INTEREST = "interest"
     FEE = "fee"
     TRANSFER = "transfer"
+    UNKNOWN = "unknown"
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,6 +186,25 @@ class CategoryRule:
     field_value: str = ""
     source: str = "*"
     priority: int = 300
+    builtin: bool = False
+    deleted: bool = False
+    id: int | None = None
+    created_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TypeRule:
+    """A rule for resolving transaction type from raw_json fields.
+
+    Mirrors CategoryRule but produces a TransactionType instead of a category.
+    """
+
+    source: str = "*"
+    field_name: str = ""
+    field_operator: str = "eq"
+    field_value: str = ""
+    result_type: str = ""
+    priority: int = 100
     builtin: bool = False
     deleted: bool = False
     id: int | None = None

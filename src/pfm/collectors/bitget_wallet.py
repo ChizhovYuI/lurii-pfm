@@ -502,11 +502,7 @@ def _parse_tx_row(
         return (None, False)
 
     typename = row.get("__typename")
-    if typename == "UserSupplyTransaction":
-        tx_type = TransactionType.DEPOSIT
-    elif typename == "UserWithdrawTransaction":
-        tx_type = TransactionType.WITHDRAWAL
-    else:
+    if typename not in ("UserSupplyTransaction", "UserWithdrawTransaction"):
         return (None, False)
 
     timestamp = row.get("timestamp")
@@ -527,7 +523,7 @@ def _parse_tx_row(
     tx = Transaction(
         date=tx_date,
         source=source,
-        tx_type=tx_type,
+        tx_type=TransactionType.UNKNOWN,
         asset=asset,
         amount=amount,
         usd_value=usd_value,

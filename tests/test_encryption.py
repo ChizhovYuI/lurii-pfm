@@ -242,12 +242,11 @@ async def test_init_encrypted_db_migrates_legacy_transactions_schema(tmp_path):
                 "AND name = 'idx_transactions_source_name_tx_id_unique'"
             )
         ).fetchone()
-        cursor = await conn.execute(
-            "SELECT source, source_name, tx_id, COUNT(*) FROM transactions GROUP BY source, source_name, tx_id"
-        )
-        rows = await cursor.fetchall()
+        # Migration drops all transactions (stale data incompatible with new type rules).
+        cursor = await conn.execute("SELECT COUNT(*) FROM transactions")
+        count = (await cursor.fetchone())[0]
 
-    assert rows == [("wise", "", "dup", 2)]
+    assert count == 0
     assert index_row is not None
     assert "source_name != ''" in str(index_row[0])
 

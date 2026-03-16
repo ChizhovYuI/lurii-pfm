@@ -124,7 +124,7 @@ def test_capital_flows_summary_classifies_income_and_external_flows():
             date=date(2026, 3, 7),
             source="ibkr",
             source_name="ibkr-main",
-            tx_type=TransactionType.DIVIDEND,
+            tx_type=TransactionType.YIELD,
             asset="USD",
             amount=Decimal(12),
             usd_value=Decimal(12),

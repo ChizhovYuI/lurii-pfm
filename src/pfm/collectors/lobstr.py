@@ -103,7 +103,7 @@ class LobstrCollector(BaseCollector):
             tx_date = datetime.now(tz=UTC).date()
 
         is_incoming = record.get("to") == self._address
-        tx_type = TransactionType.DEPOSIT if is_incoming else TransactionType.WITHDRAWAL
+        direction = "incoming" if is_incoming else "outgoing"
 
         if op_type == "create_account":
             ticker = "XLM"
@@ -112,15 +112,18 @@ class LobstrCollector(BaseCollector):
             ticker = self._parse_ticker_from_payment(record)
             amount = Decimal(record.get("amount", "0"))
 
+        # Add synthetic field for type resolution
+        record_with_direction = {**record, "_direction": direction}
+
         return Transaction(
             date=tx_date,
             source=self.source_name,
-            tx_type=tx_type,
+            tx_type=TransactionType.UNKNOWN,
             asset=ticker,
             amount=amount,
             usd_value=Decimal(0),  # historical pricing deferred
             tx_id=record.get("transaction_hash", ""),
-            raw_json=json.dumps(record),
+            raw_json=json.dumps(record_with_direction),
         )
 
     @staticmethod

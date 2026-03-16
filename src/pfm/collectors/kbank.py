@@ -30,21 +30,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# ── Description → TransactionType mapping ─────────────────────────────
-
-_DESC_TX_TYPE: dict[str, TransactionType] = {
-    "Annual Debit Card Fee": TransactionType.FEE,
-    "Debit Card Spending": TransactionType.SPEND,
-    "Direct Debit": TransactionType.SPEND,
-    "Payment": TransactionType.SPEND,
-    "QR Transfer Deposit": TransactionType.DEPOSIT,
-    "QRTransfer Deposit": TransactionType.DEPOSIT,
-    "Refund": TransactionType.DEPOSIT,
-    "Transfer Deposit": TransactionType.DEPOSIT,
-    "Transfer Withdrawal": TransactionType.WITHDRAWAL,
-}
-
-
 _APP_SUPPORT_DIR = Path.home() / "Library" / "Application Support" / "Lurii Finance"
 _KBANK_PDF_DIR = _APP_SUPPORT_DIR / "kbank"
 
@@ -379,8 +364,7 @@ class KbankCollector(BaseCollector):
 
             is_deposit = prev_balance is not None and balance is not None and balance > prev_balance
             description = first.get(1, "")
-            fallback = TransactionType.DEPOSIT if is_deposit else TransactionType.WITHDRAWAL
-            tx_type = _DESC_TX_TYPE.get(description, fallback)
+            balance_direction = "increase" if is_deposit else "decrease"
 
             tx_time = self._parse_tx_time(first.get(0, ""))
             channel = first.get(4, "")
@@ -393,13 +377,12 @@ class KbankCollector(BaseCollector):
                 Transaction(
                     date=tx_date,
                     source=self.source_name,
-                    tx_type=tx_type,
+                    tx_type=TransactionType.UNKNOWN,
                     asset="THB",
                     amount=amount,
                     usd_value=Decimal(0),
                     tx_id=self._build_tx_id(
                         tx_date=tx_date,
-                        tx_type=tx_type,
                         amount=amount,
                         description=description,
                         balance=balance,
@@ -411,6 +394,7 @@ class KbankCollector(BaseCollector):
                             "time": tx_time or "",
                             "channel": channel,
                             "details": details,
+                            "_balance_direction": balance_direction,
                         },
                     ),
                 )
@@ -453,7 +437,6 @@ class KbankCollector(BaseCollector):
     def _build_tx_id(
         *,
         tx_date: date,
-        tx_type: TransactionType,
         amount: Decimal,
         description: str,
         balance: Decimal | None,
@@ -462,7 +445,7 @@ class KbankCollector(BaseCollector):
         canonical = "|".join(
             [
                 tx_date.isoformat(),
-                tx_type.value,
+                "tx",
                 "THB",
                 format(amount.normalize(), "f"),
                 description.strip(),

@@ -240,8 +240,6 @@ async def _compute_average_cost_basis(repo: Repository, as_of: date) -> dict[str
         if tx.tx_type in {
             TransactionType.DEPOSIT,
             TransactionType.TRADE,
-            TransactionType.DIVIDEND,
-            TransactionType.INTEREST,
             TransactionType.YIELD,
         }:
             if tx.usd_value <= 0:

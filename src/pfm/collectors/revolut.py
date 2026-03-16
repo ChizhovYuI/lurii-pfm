@@ -188,19 +188,19 @@ class RevolutCollector(BaseCollector):
         except (ValueError, AttributeError):
             tx_date = datetime.now(tz=UTC).date()
 
-        # Determine type from amount sign
-        tx_type = TransactionType.DEPOSIT if amount > 0 else TransactionType.WITHDRAWAL
-
         # Build transaction ID from available fields
         tx_id = tx_data.get("transactionId", "") or tx_data.get("internalTransactionId", "")
+
+        # Add synthetic field for type resolution
+        tx_data_with_sign = {**tx_data, "_amount_sign": "positive" if amount > 0 else "negative"}
 
         return Transaction(
             date=tx_date,
             source="revolut",
-            tx_type=tx_type,
+            tx_type=TransactionType.UNKNOWN,
             asset=currency,
             amount=abs(amount),
             usd_value=Decimal(0),  # historical pricing deferred
             tx_id=tx_id,
-            raw_json=json.dumps(tx_data),
+            raw_json=json.dumps(tx_data_with_sign),
         )

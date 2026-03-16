@@ -90,7 +90,7 @@ async def test_yo_collect_balances_and_transactions(repo, pricing):
 
     txs = await repo.get_transactions(source="yo")
     assert len(txs) == 2
-    assert {tx.tx_type.value for tx in txs} == {"deposit", "withdrawal"}
+    assert {tx.tx_type.value for tx in txs} == {"unknown"}
 
 
 async def test_yo_returns_empty_balances_for_missing_user_position(pricing):
@@ -173,7 +173,7 @@ async def test_yo_parses_transactions_from_history_dict_shapes_without_derived_b
 
     txs = await collector.fetch_transactions()
     assert len(txs) == 1
-    assert txs[0].tx_type.value == "deposit"
+    assert txs[0].tx_type.value == "unknown"
     assert txs[0].asset == "YOUSD"
     assert txs[0].amount == Decimal("1237.496044")
 
@@ -251,7 +251,7 @@ def test_yo_helper_paths_and_parsers():
         }
     )
     assert dep is not None
-    assert dep.tx_type.value == "deposit"
+    assert dep.tx_type.value == "unknown"
 
     claim = _parse_history_row(
         {
@@ -263,7 +263,7 @@ def test_yo_helper_paths_and_parsers():
         }
     )
     assert claim is not None
-    assert claim.tx_type.value == "yield"
+    assert claim.tx_type.value == "unknown"
 
     transfer = _parse_history_row(
         {
@@ -275,7 +275,7 @@ def test_yo_helper_paths_and_parsers():
         }
     )
     assert transfer is not None
-    assert transfer.tx_type.value == "transfer"
+    assert transfer.tx_type.value == "unknown"
 
     assert _parse_history_row({"type": "deposit", "assets": [], "shares": []}) is None
     assert _first_symbol_amount("bad") == ("", Decimal(0))

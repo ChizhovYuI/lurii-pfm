@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from aiohttp import web
 
-from pfm.db.models import TransactionType, effective_type
+from pfm.db.models import TransactionType, TypeRule, effective_type
 from pfm.server.serializers import _str_decimal
 from pfm.server.state import get_repo
 
@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 routes = web.RouteTableDef()
 
-_VALID_TYPES = frozenset(t.value for t in TransactionType)
+_VALID_TYPES = frozenset(t.value for t in TransactionType if t != TransactionType.UNKNOWN)
 _VALID_OPERATORS = frozenset({"eq", "contains"})
 
 
@@ -147,6 +147,20 @@ def _serialize_category_rule(rule: CategoryRule) -> dict[str, object]:
         "field_value": rule.field_value or None,
         "source": rule.source,
         "result_category": rule.result_category,
+        "priority": rule.priority,
+        "builtin": rule.builtin,
+        "deleted": rule.deleted,
+    }
+
+
+def _serialize_type_rule(rule: TypeRule) -> dict[str, object]:
+    return {
+        "id": rule.id,
+        "source": rule.source,
+        "field_name": rule.field_name or None,
+        "field_operator": rule.field_operator or None,
+        "field_value": rule.field_value or None,
+        "result_type": rule.result_type,
         "priority": rule.priority,
         "builtin": rule.builtin,
         "deleted": rule.deleted,
@@ -412,6 +426,17 @@ async def get_transaction(request: web.Request) -> web.Response:
     data["availableCategories"] = [
         {"category": c.category, "display_name": c.display_name, "tx_type": c.tx_type} for c in categories
     ]
+
+    # Matched type rule.
+    from pfm.analytics.type_resolver import match_type_rule
+
+    type_rules = await store.get_type_rules()
+    matched_type_rule = None
+    for tr in type_rules:
+        if match_type_rule(tx, tr):
+            matched_type_rule = tr
+            break
+    data["matchedTypeRule"] = _serialize_type_rule(matched_type_rule) if matched_type_rule else None
 
     # Available types for manual override.
     data["availableTypes"] = [t.value for t in TransactionType]
@@ -779,47 +804,135 @@ async def reset_category_rules(request: web.Request) -> web.Response:
 @routes.post("/api/v1/transactions/categorize")
 async def run_categorize(request: web.Request) -> web.Response:
     """Trigger auto-categorization run."""
-    import contextlib
-
     from pfm.analytics.categorization_runner import run_categorization
     from pfm.db.metadata_store import MetadataStore
 
     repo = get_repo(request.app)
     store = MetadataStore(repo.connection)
 
-    ai_provider = await _try_get_ai_provider(request.app)
-
     force = request.query.get("force", "false").lower() == "true"
-    summary = await run_categorization(repo, store, ai_provider=ai_provider, force=force)  # type: ignore[arg-type]
-
-    if ai_provider:
-        with contextlib.suppress(OSError):
-            await ai_provider.close()  # type: ignore[attr-defined]
+    summary = await run_categorization(repo, store, force=force)
 
     return web.json_response(summary)
 
 
-async def _try_get_ai_provider(app: web.Application) -> object:
-    """Attempt to load the active AI provider. Returns None on failure."""
-    import logging
+# ── Type rules CRUD ────────────────────────────────────────────────
 
-    try:
-        from pfm.db.ai_store import AIProviderStore
 
-        ai_store = AIProviderStore(app["db_path"])
-        active = await ai_store.get_active()
-        if not active:
-            return None
+@routes.get("/api/v1/type-rules")
+async def list_type_rules(request: web.Request) -> web.Response:
+    """List all type rules."""
+    store = _get_metadata_store(request.app)
+    source = request.query.get("source")
+    include_deleted = request.query.get("include_deleted", "false").lower() == "true"
+    rules = await store.get_type_rules(source=source, include_deleted=include_deleted)
+    return web.json_response([_serialize_type_rule(r) for r in rules])
 
-        from pfm.ai.providers.registry import PROVIDER_REGISTRY
 
-        provider_cls = PROVIDER_REGISTRY.get(active.type)  # type: ignore[call-overload]
-        if provider_cls:
-            return provider_cls(
-                api_key=active.api_key,
-                model=active.model,
-                base_url=active.base_url,
+@routes.post("/api/v1/type-rules")
+async def create_type_rule(request: web.Request) -> web.Response:
+    """Create a type rule."""
+    body = await request.json()
+    result_type = body.get("result_type")
+    if not result_type:
+        return web.json_response({"error": "result_type is required"}, status=400)
+    if result_type not in _VALID_TYPES:
+        return web.json_response(
+            {"error": f"result_type must be one of: {sorted(_VALID_TYPES)}"},
+            status=400,
+        )
+
+    field_op = body.get("field_operator", "eq")
+    if field_op and field_op not in _VALID_OPERATORS:
+        return web.json_response(
+            {"error": f"field_operator must be one of: {sorted(_VALID_OPERATORS)}"},
+            status=400,
+        )
+
+    field_value = body.get("field_value", "")
+    if isinstance(field_value, list):
+        field_value = json.dumps(field_value)
+
+    store = _get_metadata_store(request.app)
+    rule = await store.create_type_rule(
+        result_type=result_type,
+        source=body.get("source", "*"),
+        field_name=body.get("field_name", ""),
+        field_operator=field_op,
+        field_value=field_value,
+        priority=body.get("priority"),
+    )
+    return web.json_response(_serialize_type_rule(rule), status=201)
+
+
+@routes.delete("/api/v1/type-rules/{id}")
+async def delete_type_rule(request: web.Request) -> web.Response:
+    """Delete a type rule (soft-delete for builtins)."""
+    rule_id = _parse_int_param(request)
+    if isinstance(rule_id, web.Response):
+        return rule_id
+
+    store = _get_metadata_store(request.app)
+    deleted = await store.delete_type_rule(rule_id)
+    if not deleted:
+        return web.json_response({"error": "Rule not found"}, status=404)
+    return web.json_response({"deleted": True})
+
+
+@routes.post("/api/v1/type-rules/preview")
+async def preview_type_rule(request: web.Request) -> web.Response:
+    """Dry-run a type rule against transactions."""
+    body = await request.json()
+    result_type = body.get("result_type")
+    if not result_type:
+        return web.json_response({"error": "result_type is required"}, status=400)
+
+    from pfm.analytics.type_resolver import match_type_rule
+    from pfm.db.models import TypeRule as TypeRuleModel
+
+    field_value = body.get("field_value", "")
+    if isinstance(field_value, list):
+        field_value = json.dumps(field_value)
+
+    preview_rule = TypeRuleModel(
+        source=body.get("source", "*"),
+        field_name=body.get("field_name", ""),
+        field_operator=body.get("field_operator", "eq"),
+        field_value=field_value,
+        result_type=result_type,
+    )
+
+    repo = get_repo(request.app)
+    all_txs = await repo.get_transactions()
+
+    affected: list[dict[str, object]] = []
+    for tx in all_txs:
+        if tx.id is None:
+            continue
+        if match_type_rule(tx, preview_rule):
+            affected.append(
+                {
+                    "id": tx.id,
+                    "date": tx.date.isoformat(),
+                    "source": tx.source_name or tx.source,
+                    "current_type": tx.tx_type.value,
+                    "new_type": result_type,
+                }
             )
-    except Exception:  # noqa: BLE001
-        logging.getLogger(__name__).debug("AI provider unavailable for categorization", exc_info=True)
-    return None
+
+    return web.json_response(
+        {
+            "affected_count": len(affected),
+            "sample": affected[:50],
+        }
+    )
+
+
+@routes.post("/api/v1/type-rules/reset")
+async def reset_type_rules(request: web.Request) -> web.Response:
+    """Reset type rules: soft-delete custom, restore builtins."""
+    body = await request.json()
+    source = body.get("source")
+    store = _get_metadata_store(request.app)
+    await store.reset_type_rules(source=source)
+    return web.json_response({"reset": True, "source": source})

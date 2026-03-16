@@ -96,7 +96,7 @@ async def test_rabby_collect_balances_and_transactions(repo, pricing):
 
     txs = await repo.get_transactions(source="rabby")
     assert len(txs) == 3
-    assert {tx.tx_type.value for tx in txs} == {"deposit", "withdrawal", "trade"}
+    assert {tx.tx_type.value for tx in txs} == {"unknown"}
 
 
 async def test_rabby_skips_scam_transactions(pricing):

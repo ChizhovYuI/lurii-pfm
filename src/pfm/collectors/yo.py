@@ -209,19 +209,9 @@ def _parse_history_row(
     if "deposit" in history_type:
         symbol = share_symbol or asset_symbol
         amount = share_amount if share_amount > 0 else asset_amount
-        tx_type = TransactionType.DEPOSIT
-    elif "redeem" in history_type or "withdraw" in history_type:
-        symbol = asset_symbol or share_symbol
-        amount = asset_amount if asset_amount > 0 else share_amount
-        tx_type = TransactionType.WITHDRAWAL
-    elif "claim" in history_type:
-        symbol = asset_symbol or share_symbol
-        amount = asset_amount if asset_amount > 0 else share_amount
-        tx_type = TransactionType.YIELD
     else:
         symbol = asset_symbol or share_symbol
         amount = asset_amount if asset_amount > 0 else share_amount
-        tx_type = TransactionType.TRANSFER
 
     if not symbol or amount <= 0:
         return None
@@ -229,7 +219,7 @@ def _parse_history_row(
     return Transaction(
         date=tx_date,
         source="yo",
-        tx_type=tx_type,
+        tx_type=TransactionType.UNKNOWN,
         asset=symbol,
         amount=amount,
         usd_value=Decimal(0),

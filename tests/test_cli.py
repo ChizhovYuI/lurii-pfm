@@ -269,7 +269,7 @@ def test_mask_long():
 # ── collect command ───────────────────────────────────────────────────
 
 
-def _make_mock_collector(  # noqa: PLR0913
+def _make_mock_collector(
     source_name,
     snaps=1,
     usd_total=Decimal(0),

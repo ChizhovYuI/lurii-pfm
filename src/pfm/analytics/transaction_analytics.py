@@ -16,9 +16,7 @@ if TYPE_CHECKING:
 
 
 _SPENDING_TYPES = frozenset({TransactionType.WITHDRAWAL, TransactionType.FEE})
-_INCOME_TYPES = frozenset(
-    {TransactionType.DEPOSIT, TransactionType.YIELD, TransactionType.DIVIDEND, TransactionType.INTEREST}
-)
+_INCOME_TYPES = frozenset({TransactionType.DEPOSIT, TransactionType.YIELD})
 
 
 async def compute_analytics_summary(

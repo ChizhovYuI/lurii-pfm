@@ -250,22 +250,10 @@ class BybitCollector(BaseCollector):
         except (ValueError, OSError):
             tx_date = datetime.now(tz=UTC).date()
 
-        tx_type_str = str(item.get("type", "")).upper()
-        if tx_type_str == "TRADE":
-            tx_type = TransactionType.TRADE
-        elif tx_type_str == "DEPOSIT":
-            tx_type = TransactionType.DEPOSIT
-        elif tx_type_str == "WITHDRAWAL":
-            tx_type = TransactionType.WITHDRAWAL
-        elif "INTEREST" in tx_type_str:
-            tx_type = TransactionType.INTEREST
-        else:
-            tx_type = TransactionType.TRANSFER
-
         return Transaction(
             date=tx_date,
             source="bybit",
-            tx_type=tx_type,
+            tx_type=TransactionType.UNKNOWN,
             asset=ticker,
             amount=abs(change),
             usd_value=Decimal(0),

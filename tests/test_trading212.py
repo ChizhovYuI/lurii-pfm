@@ -152,7 +152,7 @@ async def test_parse_order_item_maps_buy_trade(pricing):
     tx = await collector._parse_order_item(item)
 
     assert tx is not None
-    assert tx.tx_type == TransactionType.TRADE
+    assert tx.tx_type == TransactionType.UNKNOWN
     assert tx.trade_side == "buy"
     assert tx.counterparty_asset == "EUR"
     assert tx.counterparty_amount == Decimal("12.06")
@@ -201,7 +201,7 @@ async def test_parse_cash_item_maps_deposit(pricing):
     tx = await collector._parse_cash_item(item)
 
     assert tx is not None
-    assert tx.tx_type == TransactionType.DEPOSIT
+    assert tx.tx_type == TransactionType.UNKNOWN
     assert tx.asset == "EUR"
     assert tx.amount == Decimal(5000)
     assert tx.usd_value == Decimal(5500)
@@ -221,7 +221,7 @@ async def test_parse_cash_item_maps_interest(pricing):
     tx = await collector._parse_cash_item(item)
 
     assert tx is not None
-    assert tx.tx_type == TransactionType.INTEREST
+    assert tx.tx_type == TransactionType.UNKNOWN
 
 
 async def test_parse_dividend_item_generates_stable_id_when_reference_missing(pricing):
@@ -235,7 +235,7 @@ async def test_parse_dividend_item_generates_stable_id_when_reference_missing(pr
     tx = await collector._parse_dividend_item(item)
 
     assert tx is not None
-    assert tx.tx_type == TransactionType.DIVIDEND
+    assert tx.tx_type == TransactionType.UNKNOWN
     assert tx.asset == "EUR"
     assert tx.amount == Decimal("3.25")
     assert tx.usd_value == Decimal("3.575")

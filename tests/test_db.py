@@ -28,7 +28,7 @@ async def test_init_db(tmp_path):
     async with aiosqlite.connect(str(db_path)) as db:
         version_row = await (await db.execute("SELECT version_num FROM alembic_version")).fetchone()
     assert version_row is not None
-    assert version_row[0] == "d4e5f6g7h8i9"
+    assert version_row[0] == "f6g7h8i9j0k1"
 
 
 def test_runner_uses_package_relative_migration_path(tmp_path):
@@ -126,12 +126,11 @@ async def test_init_db_migrates_legacy_transactions_schema(tmp_path):
                 "AND name = 'idx_transactions_source_name_tx_id_unique'"
             )
         ).fetchone()
-        cursor = await db.execute(
-            "SELECT source, source_name, tx_id, COUNT(*) FROM transactions GROUP BY source, source_name, tx_id"
-        )
-        rows = await cursor.fetchall()
+        # Migration drops all transactions (stale data incompatible with new type rules).
+        cursor = await db.execute("SELECT COUNT(*) FROM transactions")
+        count = (await cursor.fetchone())[0]
 
-    assert rows == [("wise", "", "dup", 2)]
+    assert count == 0
     assert index_row is not None
     assert "source_name != ''" in str(index_row[0])
 
@@ -225,16 +224,11 @@ async def test_init_db_keeps_existing_transaction_source_name_rows_without_backf
                 "AND name = 'idx_transactions_source_name_tx_id_unique'"
             )
         ).fetchone()
-        cursor = await db.execute(
-            "SELECT source, source_name, tx_id, COUNT(*) "
-            "FROM transactions GROUP BY source, source_name, tx_id ORDER BY source_name, tx_id"
-        )
-        rows = await cursor.fetchall()
+        # Migration drops all transactions (stale data incompatible with new type rules).
+        cursor = await db.execute("SELECT COUNT(*) FROM transactions")
+        count = (await cursor.fetchone())[0]
 
-    assert rows == [
-        ("lobstr", "lobstr", "dup", 1),
-        ("lobstr", "lobstr-main", "dup", 1),
-    ]
+    assert count == 0
     assert index_row is not None
     assert "source_name != ''" in str(index_row[0])
 
@@ -277,11 +271,9 @@ async def test_init_db_deduplicates_kbank_rows_with_empty_tx_id(tmp_path):
         rows = await cursor.fetchall()
 
     assert version_row is not None
-    assert version_row[0] == "d4e5f6g7h8i9"
-    assert rows == [
-        ("kbank", "kbank-main", 1),
-        ("wise", "wise-main", 2),
-    ]
+    assert version_row[0] == "f6g7h8i9j0k1"
+    # Migration drops all transactions (stale data incompatible with new type rules).
+    assert rows == []
 
 
 async def test_save_and_get_snapshot(repo):

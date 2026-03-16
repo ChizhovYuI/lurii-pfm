@@ -35,7 +35,7 @@ def _tx(
 def _rule(
     *,
     type_match: str = "trade",
-    result_category: str = "spot_trade",
+    result_category: str = "trade",
     type_operator: str = "eq",
     field_name: str = "",
     field_operator: str = "",
@@ -66,7 +66,7 @@ class TestEffectiveType:
 
     def test_no_override(self) -> None:
         tx = _tx()
-        meta = TransactionMetadata(transaction_id=1, category="spot_trade")
+        meta = TransactionMetadata(transaction_id=1, category="trade")
         assert effective_type(tx, meta) == "trade"
 
     def test_with_override(self) -> None:
@@ -78,15 +78,15 @@ class TestEffectiveType:
 class TestCompoundRuleMatching:
     def test_type_only_rule_matches(self) -> None:
         tx = _tx(tx_type=TransactionType.TRADE)
-        rules = [_rule(type_match="trade", result_category="spot_trade")]
+        rules = [_rule(type_match="trade", result_category="trade")]
         result = categorize_transaction(tx, rules)
         assert result is not None
-        assert result.category == "spot_trade"
+        assert result.category == "trade"
         assert result.source == "rule"
 
     def test_type_mismatch_skips(self) -> None:
         tx = _tx(tx_type=TransactionType.SPEND)
-        rules = [_rule(type_match="trade", result_category="spot_trade")]
+        rules = [_rule(type_match="trade", result_category="trade")]
         result = categorize_transaction(tx, rules)
         assert result is None  # No fallback for spend+crypto
 
@@ -180,25 +180,25 @@ class TestCompoundRuleMatching:
                 field_name="description",
                 field_operator="eq",
                 field_value='["Payment", "Direct Debit"]',
-                result_category="subscriptions",
+                result_category="bills",
                 priority=100,
             ),
         ]
         result = categorize_transaction(tx, rules)
         assert result is not None
-        assert result.category == "subscriptions"
+        assert result.category == "bills"
 
     def test_deleted_rule_skipped(self) -> None:
         tx = _tx(tx_type=TransactionType.TRADE)
         rule = CategoryRule(
             id=1,
             type_match="trade",
-            result_category="spot_trade",
+            result_category="trade",
             priority=300,
             deleted=True,
         )
         result = categorize_transaction(tx, [rule])
-        assert result is None  # Deleted rule skipped, no heuristic for crypto+trade
+        assert result is None
 
     def test_type_override_changes_matching(self) -> None:
         tx = _tx(tx_type=TransactionType.WITHDRAWAL)
@@ -210,26 +210,11 @@ class TestCompoundRuleMatching:
         assert result is not None
         assert result.category == "other_spend"
 
-    def test_type_override_no_rule_match_returns_heuristic_or_none(self) -> None:
-        """After type override, if no rule matches, heuristic may match (bank) or None (crypto)."""
-        # Crypto source with overridden type "yield" — no rule, no heuristic.
+    def test_type_override_no_rule_match_returns_none(self) -> None:
         tx = _tx(source_name="okx", tx_type=TransactionType.TRADE)
         meta = TransactionMetadata(transaction_id=1, type_override="yield")
         result = categorize_transaction(tx, [], meta)
-        assert result is None  # No rule, no bank heuristic for crypto.
-
-    def test_type_override_falls_to_bank_heuristic(self) -> None:
-        """Bank transaction with type override still gets bank description heuristic."""
-        tx = _tx(
-            source_name="kbank",
-            tx_type=TransactionType.WITHDRAWAL,
-            raw_json='{"description": "QRyment"}',
-        )
-        meta = TransactionMetadata(transaction_id=1, type_override="spend")
-        result = categorize_transaction(tx, [], meta)
-        assert result is not None
-        assert result.category == "other_spend"
-        assert result.source == "heuristic"
+        assert result is None
 
     def test_builtin_vs_user_confidence(self) -> None:
         tx = _tx(tx_type=TransactionType.TRADE)
@@ -245,75 +230,17 @@ class TestCompoundRuleMatching:
         assert result_user.confidence == 0.95
 
 
-class TestBankDescriptionHeuristics:
-    def test_qr_payment_is_spend(self) -> None:
-        tx = _tx(
-            source_name="kbank",
-            tx_type=TransactionType.SPEND,
-            asset="THB",
-            raw_json='{"description": "QRyment", "balance": "45457.78"}',
-        )
-        result = categorize_transaction(tx, [])
-        assert result is not None
-        assert result.category == "other_spend"
-        assert result.confidence == 0.7
-
-    def test_card_spending_is_shopping(self) -> None:
-        tx = _tx(
-            source_name="kbank",
-            tx_type=TransactionType.SPEND,
-            asset="THB",
-            raw_json='{"description": "Pabit Card Spending", "balance": "3141.94"}',
-        )
-        result = categorize_transaction(tx, [])
-        assert result is not None
-        assert result.category == "shopping"
-
-    def test_salary_deposit(self) -> None:
-        tx = _tx(
-            source_name="kbank",
-            tx_type=TransactionType.DEPOSIT,
-            asset="THB",
-            raw_json='{"description": "Salary", "balance": "90000.00"}',
-        )
-        result = categorize_transaction(tx, [])
-        assert result is not None
-        assert result.category == "salary"
-
-    def test_non_bank_ignores_description(self) -> None:
-        tx = _tx(
-            source_name="okx",
-            tx_type=TransactionType.WITHDRAWAL,
-            raw_json='{"description": "QRyment", "balance": "100"}',
-        )
-        result = categorize_transaction(tx, [])
-        # OKX is crypto, not bank — description heuristic skipped.
-        assert result is None
-
-    def test_direct_debit_is_subscriptions(self) -> None:
-        tx = _tx(
-            source_name="kbank",
-            tx_type=TransactionType.SPEND,
-            asset="THB",
-            raw_json='{"description": "Direct Debit subscription", "balance": "1000"}',
-        )
-        result = categorize_transaction(tx, [])
-        assert result is not None
-        assert result.category == "subscriptions"
-
-
 class TestCategorizeBatch:
     def test_batch_returns_all_results(self) -> None:
         txs = [
             _tx(source_name="okx", tx_id=1, tx_type=TransactionType.TRADE),
             _tx(source_name="kbank", tx_type=TransactionType.SPEND, tx_id=2, raw_json='{"description": "QRyment"}'),
         ]
-        rules = [_rule(type_match="trade", result_category="spot_trade")]
+        rules = [_rule(type_match="trade", result_category="trade")]
         results = categorize_batch(txs, rules)
         assert len(results) == 2
         # OKX trade matched by rule.
         assert results[0][1] is not None
-        assert results[0][1].category == "spot_trade"
-        # KBank spend: no rule, falls to heuristic.
-        assert results[1][1] is not None
-        assert results[1][1].category == "other_spend"
+        assert results[0][1].category == "trade"
+        # KBank spend: no rule matches → None (user must categorize manually).
+        assert results[1][1] is None

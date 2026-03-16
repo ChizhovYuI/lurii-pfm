@@ -307,8 +307,8 @@ async def test_bitget_wallet_fetch_transactions_from_aave_api():
 
     txs = await collector.fetch_transactions(since=date(2024, 1, 1))
     assert len(txs) == 2
-    assert txs[0].tx_type == TransactionType.DEPOSIT
-    assert txs[1].tx_type == TransactionType.WITHDRAWAL
+    assert txs[0].tx_type == TransactionType.UNKNOWN
+    assert txs[1].tx_type == TransactionType.UNKNOWN
     assert txs[0].amount == Decimal(1)
     assert txs[1].amount == Decimal("0.5")
 

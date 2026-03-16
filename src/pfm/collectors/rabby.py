@@ -136,52 +136,57 @@ class RabbyCollector(BaseCollector):
         if not sends and not receives:
             return None
 
-        cate_id = str(row.get("cate_id", "")).lower()
         tx_date = _parse_unix_date(row.get("time_at"))
         tx_id = _extract_tx_id(row)
 
+        # Determine flow for type resolution
+        if receives and not sends:
+            flow = "receive_only"
+        elif sends and not receives:
+            flow = "send_only"
+        else:
+            flow = "both"
+        row_with_flow = {**row, "_flow": flow}
+
         if receives and not sends:
             asset, amount = receives[0]
-            tx_type = TransactionType.DEPOSIT
             return Transaction(
                 date=tx_date,
                 source=self.source_name,
-                tx_type=tx_type,
+                tx_type=TransactionType.UNKNOWN,
                 asset=asset,
                 amount=amount,
                 usd_value=Decimal(0),
                 tx_id=tx_id,
-                raw_json=json.dumps(row),
+                raw_json=json.dumps(row_with_flow),
             )
 
         if sends and not receives:
             asset, amount = sends[0]
-            tx_type = TransactionType.WITHDRAWAL
             return Transaction(
                 date=tx_date,
                 source=self.source_name,
-                tx_type=tx_type,
+                tx_type=TransactionType.UNKNOWN,
                 asset=asset,
                 amount=amount,
                 usd_value=Decimal(0),
                 tx_id=tx_id,
-                raw_json=json.dumps(row),
+                raw_json=json.dumps(row_with_flow),
             )
 
         send_asset, send_amount = sends[0]
         recv_asset, recv_amount = receives[0]
-        tx_type = TransactionType.TRADE if "swap" in cate_id or "trade" in cate_id else TransactionType.TRANSFER
         return Transaction(
             date=tx_date,
             source=self.source_name,
-            tx_type=tx_type,
+            tx_type=TransactionType.UNKNOWN,
             asset=send_asset,
             amount=send_amount,
             usd_value=Decimal(0),
             counterparty_asset=recv_asset,
             counterparty_amount=recv_amount,
             tx_id=tx_id,
-            raw_json=json.dumps(row),
+            raw_json=json.dumps(row_with_flow),
         )
 
 
