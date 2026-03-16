@@ -44,15 +44,6 @@ _DESC_TX_TYPE: dict[str, TransactionType] = {
     "Transfer Withdrawal": TransactionType.WITHDRAWAL,
 }
 
-_DETAIL_CONTINUATION_PREFIXES = ("(", "Name:", "A/C", "name:", "CO.,", "Co.,")
-
-
-def _is_detail_continuation(text: str) -> bool:
-    """Return True if a line is a continuation of the previous detail entry."""
-    if not text:
-        return True
-    return text.startswith(_DETAIL_CONTINUATION_PREFIXES)
-
 
 _APP_SUPPORT_DIR = Path.home() / "Library" / "Application Support" / "Lurii Finance"
 _KBANK_PDF_DIR = _APP_SUPPORT_DIR / "kbank"
@@ -197,7 +188,7 @@ class KbankCollector(BaseCollector):
 
         KBank PDFs have a specific structure per page:
         - Table 1: header with account info, period, and ending balance (page 1)
-        - Table 2: transactions with all entries newline-delimited in one row
+        - Table 2: transaction table (parsed via word coordinates for accuracy)
         """
         if not pdf_path.exists():
             logger.error("KBank PDF not found: %s", pdf_path)
@@ -211,15 +202,16 @@ class KbankCollector(BaseCollector):
         with pdfplumber.open(str(pdf_path), password=self._pdf_password or None) as pdf:
             for page_num, page in enumerate(pdf.pages):
                 tables = page.extract_tables()
+                found_tables = page.find_tables()
 
                 # Extract ending balance and period from header table (page 1)
                 if page_num == 0 and tables:
                     ending_balance = self._parse_header_balance(tables[0])
                     statement_date = self._parse_period_end_date(tables[0])
 
-                # Transaction table is the last table on each page
-                if len(tables) >= 2:  # noqa: PLR2004
-                    txs = self._parse_transaction_table(tables[-1])
+                # Parse transactions via word coordinates (last table on page).
+                if len(found_tables) >= 2:  # noqa: PLR2004
+                    txs = self._parse_transaction_table_by_coords(page, found_tables[-1])
                     transactions.extend(txs)
 
         snapshot_date = (statement_date + timedelta(days=1)) if statement_date else self._pricing.today()
@@ -284,72 +276,118 @@ class KbankCollector(BaseCollector):
                     pass
         return None
 
-    def _parse_transaction_table(self, table: list[list[Any]]) -> list[Transaction]:
-        """Parse a KBank transaction table with newline-delimited entries.
+    def _parse_transaction_table_by_coords(
+        self,
+        page: Any,  # noqa: ANN401
+        table: Any,  # noqa: ANN401
+    ) -> list[Transaction]:
+        """Parse transactions using word coordinates for precise column alignment.
 
-        pdfplumber returns 6 columns per page (all entries newline-delimited):
-        - Column 0: "DD-MM-YY HH:MM Xx\\n..." (date + time + description start)
-        - Column 1: "description continuation\\n..." (Descriptions)
-        - Column 2: "amount\\n..." (Withdrawal / Deposit)
-        - Column 3: "balance\\n..." (Outstanding Balance)
-        - Column 4: "channel\\n..." (Channel)
-        - Column 5: "details\\n..." (Details)
-
-        The first entry on each page is "Beginning Balance" (no amount).
+        Instead of relying on ``extract_tables()`` (which loses row alignment
+        for wrapped text), we use ``extract_words()`` to get per-word (x, y)
+        positions.  Words are grouped into physical rows by Y coordinate, then
+        assigned to columns by X position.  A row with a date in column 0 starts
+        a new transaction; rows without a date are continuations (detail wraps).
         """
-        if len(table) < 2:  # noqa: PLR2004
+        # Column X boundaries from the table structure.
+        col_starts = sorted({c[0] for c in table.cells})
+        col_ends = sorted({c[2] for c in table.cells})
+        if len(col_starts) < 4:  # noqa: PLR2004
+            return []
+        col_bounds = list(zip(col_starts, col_ends, strict=False))
+
+        # Header row Y boundary (skip header).
+        table_y0 = table.bbox[1]
+        table_y1 = table.bbox[3]
+        row_ys = sorted({c[1] for c in table.cells})
+        data_y0 = row_ys[1] if len(row_ys) > 1 else table_y0
+
+        # Extract words within the data area of the table.
+        words = page.extract_words(keep_blank_chars=True, x_tolerance=3, y_tolerance=3)
+        data_words = [w for w in words if w["top"] >= data_y0 and w["bottom"] <= table_y1]
+        if not data_words:
             return []
 
-        data_row = table[1]  # row 0 is header, row 1 is all data
-        if not data_row or len(data_row) < 4:  # noqa: PLR2004
+        # Group words into physical rows by Y coordinate (tolerance 2pt).
+        physical_rows = self._group_words_into_rows(data_words)
+
+        # Assign each row's words into columns and build logical transaction rows.
+        return self._rows_to_transactions(physical_rows, col_bounds)
+
+    @staticmethod
+    def _group_words_into_rows(
+        words: list[dict[str, Any]],
+    ) -> list[list[dict[str, Any]]]:
+        """Group words into physical rows by Y coordinate."""
+        if not words:
             return []
+        sorted_words = sorted(words, key=lambda w: (w["top"], w["x0"]))
+        rows: list[list[dict[str, Any]]] = []
+        current_y = sorted_words[0]["top"]
+        current_row: list[dict[str, Any]] = []
 
-        dates_raw = str(data_row[0] or "").split("\n")
-        descs_raw = str(data_row[1] or "").split("\n")
-        amounts_raw = str(data_row[2] or "").split("\n")
-        balances_raw = str(data_row[3] or "").split("\n")
-        # Channels (col 4) and Details (col 5) have no Beginning Balance row —
-        # aligned with amounts.
-        channels_raw = str(data_row[4] or "").split("\n") if len(data_row) > 4 else []  # noqa: PLR2004
-        # Details (col 5) may have multi-line entries (text wraps in cells).
-        # Group the lines into N entries matching the transaction count.
-        tx_count = len(amounts_raw)
-        details_text = str(data_row[5] or "") if len(data_row) > 5 else ""  # noqa: PLR2004
-        details_raw = self._group_wrapped_column(details_text, tx_count)
+        for w in sorted_words:
+            if abs(w["top"] - current_y) > 2:  # noqa: PLR2004
+                if current_row:
+                    rows.append(current_row)
+                current_row = [w]
+                current_y = w["top"]
+            else:
+                current_row.append(w)
+        if current_row:
+            rows.append(current_row)
+        return rows
 
-        # dates/descs/balances have 27 lines (includes Beginning Balance at index 0).
-        # amounts/channels have 26 lines (no Beginning Balance).
-        # date_idx = i + 1 offsets into dates/descs/balances to skip Beginning Balance.
+    def _rows_to_transactions(
+        self,
+        physical_rows: list[list[dict[str, Any]]],
+        col_bounds: list[tuple[float, float]],
+    ) -> list[Transaction]:
+        """Convert physical rows into Transaction objects using column bounds."""
+        # Each physical row → assign words to column indices.
+        logical_groups: list[list[dict[int, str]]] = []  # list of groups, each group = list of col-dicts
+
+        for row_words in physical_rows:
+            col_texts = self._assign_words_to_columns(row_words, col_bounds)
+            date_text = col_texts.get(0, "")
+            has_date = bool(self._parse_tx_date(date_text))
+
+            if has_date:
+                logical_groups.append([col_texts])
+            elif logical_groups:
+                # Continuation row — append to the previous transaction group.
+                logical_groups[-1].append(col_texts)
+
+        # Build transactions from logical groups.
         transactions: list[Transaction] = []
-        for i, amount_str in enumerate(amounts_raw):
-            date_idx = i + 1  # offset by Beginning Balance entry
-            if date_idx >= len(dates_raw) or date_idx >= len(balances_raw):
-                break
+        prev_balance: Decimal | None = None
 
-            tx_date = self._parse_tx_date(dates_raw[date_idx])
+        for group in logical_groups:
+            first = group[0]  # primary row with date
+
+            tx_date = self._parse_tx_date(first.get(0, ""))
             if not tx_date:
                 continue
 
-            amount = self._parse_amount(amount_str)
+            amount = self._parse_amount(first.get(2, ""))
+            balance = self._parse_amount(first.get(3, ""))
+
+            # Beginning Balance: no amount, just record balance.
             if not amount or amount <= 0:
+                prev_balance = balance
                 continue
 
-            # Determine deposit vs withdrawal from balance change
-            prev_bal = self._parse_amount(balances_raw[date_idx - 1])
-            curr_bal = self._parse_amount(balances_raw[date_idx])
-            is_deposit = prev_bal is not None and curr_bal is not None and curr_bal > prev_bal
-
-            # Reconstruct description from truncated date tail + description column.
-            # descs_raw uses date_idx (same offset as dates — includes Beginning Balance).
-            date_tail = dates_raw[date_idx].split()[-1] if dates_raw[date_idx].strip() else ""
-            desc_cont = descs_raw[date_idx] if date_idx < len(descs_raw) else ""
-            description = date_tail + desc_cont
+            is_deposit = prev_balance is not None and balance is not None and balance > prev_balance
+            description = first.get(1, "")
             fallback = TransactionType.DEPOSIT if is_deposit else TransactionType.WITHDRAWAL
             tx_type = _DESC_TX_TYPE.get(description, fallback)
 
-            tx_time = self._parse_tx_time(dates_raw[date_idx])
-            channel = channels_raw[i].strip() if i < len(channels_raw) else ""
-            details = details_raw[i].strip() if i < len(details_raw) else ""
+            tx_time = self._parse_tx_time(first.get(0, ""))
+            channel = first.get(4, "")
+
+            # Details: join primary + all continuation rows.
+            detail_parts = [r.get(5, "") for r in group if r.get(5, "")]
+            details = " ".join(detail_parts)
 
             transactions.append(
                 Transaction(
@@ -364,12 +402,12 @@ class KbankCollector(BaseCollector):
                         tx_type=tx_type,
                         amount=amount,
                         description=description,
-                        balance=curr_bal,
+                        balance=balance,
                     ),
                     raw_json=json.dumps(
                         {
                             "description": description,
-                            "balance": str(curr_bal or ""),
+                            "balance": str(balance or ""),
                             "time": tx_time or "",
                             "channel": channel,
                             "details": details,
@@ -377,8 +415,39 @@ class KbankCollector(BaseCollector):
                     ),
                 )
             )
+            prev_balance = balance
 
         return transactions
+
+    @staticmethod
+    def _assign_words_to_columns(
+        row_words: list[dict[str, Any]],
+        col_bounds: list[tuple[float, float]],
+    ) -> dict[int, str]:
+        """Assign words to column indices by X position.
+
+        Uses column start positions as boundaries: a word belongs to the
+        last column whose start X is <= the word's X.  Column 0 packs
+        date + time + description; words at x > col0_end - 10 are shifted
+        to column 1.
+        """
+        if not col_bounds:
+            return {}
+        starts = [cx0 for cx0, _ in col_bounds]
+        col0_end = col_bounds[0][1]
+        buckets: dict[int, list[str]] = {}
+        for w in sorted(row_words, key=lambda w: w["x0"]):
+            x = w["x0"]
+            # Find column: last start <= x.
+            ci = 0
+            for i, sx in enumerate(starts):
+                if sx <= x + 5:
+                    ci = i
+            # Description words near the col 0/1 boundary → col 1.
+            if ci == 0 and x > col0_end - 10:
+                ci = 1
+            buckets.setdefault(ci, []).append(w["text"])
+        return {ci: " ".join(parts) for ci, parts in buckets.items()}
 
     @staticmethod
     def _build_tx_id(
@@ -424,38 +493,6 @@ class KbankCollector(BaseCollector):
             if len(candidate) == 5 and candidate[2] == ":":  # noqa: PLR2004
                 return candidate
         return None
-
-    @staticmethod
-    def _group_wrapped_column(raw_text: str, count: int) -> list[str]:
-        """Group multi-line column text into ``count`` entries.
-
-        The Details column can have text that wraps across multiple PDF lines.
-        New entries start with ``Paid for``, ``To X``, or similar patterns.
-        Continuation lines (starting with ``(``, ``Name:``, etc.) are joined
-        to the previous entry with a space.
-        """
-        if not raw_text or not raw_text.strip():
-            return [""] * count
-
-        lines = raw_text.split("\n")
-        if len(lines) <= count:
-            padded = lines + [""] * (count - len(lines))
-            return [line.strip() for line in padded]
-
-        # More lines than entries — group continuation lines.
-        groups: list[list[str]] = []
-        for line in lines:
-            stripped = line.strip()
-            is_new = not groups or (len(groups) < count and not _is_detail_continuation(stripped))
-            if is_new:
-                groups.append([stripped])
-            else:
-                groups[-1].append(stripped)
-
-        result = [" ".join(filter(None, parts)) for parts in groups]
-        while len(result) < count:
-            result.append("")
-        return result[:count]
 
     @staticmethod
     def _parse_amount(amount_str: str) -> Decimal | None:

@@ -1608,79 +1608,41 @@ def test_kbank_parse_header_balance_missing(pricing):
     assert collector._parse_header_balance(table) == Decimal(0)
 
 
-def test_kbank_parse_transaction_table(pricing):
-    collector = KbankCollector(pricing)
-    # Details column has multi-line wrapped entries (matches real PDF structure).
-    table = [
-        ["Time/\nDate", "Descriptions", "Withdrawal / Deposit", "Outstanding Balance\n(THB)", "Channel", "Details"],
-        [
-            "01-02-26 Be\n01-02-26 02:22 De\n01-02-26 12:09 Pa\n02-02-26 00:21 Tr",
-            "ginning Balance\nbit Card Spending\nyment\nansfer Deposit",
-            "1,850.00\n160.00\n45,000.00",
-            "5,151.94\n3,301.94\n3,141.94\n48,141.94",
-            "K PLUS\nEDC/K SHOP/MYQR\nK PLUS",
-            # 3 transactions but 5 detail lines (entries 2 and 3 wrap).
-            "To X0554 MS. THI VAN ANH NG++\n"
-            "Paid for Ref X3423 บริษัท ซีพี\n"
-            "(มหาชน) (A/C Name: CP AXTRA\n"
-            "Savings Account\n"
-            "Name: extra wrap",
-        ],
+def test_kbank_assign_words_to_columns():
+    """Words are assigned to the correct column by X position."""
+    col_bounds = [(66.0, 129.1), (129.1, 202.0), (202.0, 270.0), (270.0, 332.0), (332.0, 403.0), (403.0, 535.0)]
+    words = [
+        {"x0": 67.9, "text": "01-10-25"},
+        {"x0": 101.2, "text": "02:16"},
+        {"x0": 123.0, "text": "Debit Card Spending"},  # near col 0/1 boundary → col 1
+        {"x0": 229.4, "text": "1,800.00"},
+        {"x0": 303.1, "text": "19,991.20"},
+        {"x0": 333.0, "text": "EDC/E-Commerce"},
+        {"x0": 404.0, "text": "Ref Code EDC50445"},
     ]
-    txs = collector._parse_transaction_table(table)
-    assert len(txs) == 3
-    assert txs[0].tx_type == TransactionType.SPEND  # "Debit Card Spending" → spend
-    assert txs[0].amount == Decimal("1850.00")
-    assert txs[0].date == date(2026, 2, 1)
-    assert txs[1].tx_type == TransactionType.SPEND  # "Payment" → spend
-    assert txs[1].amount == Decimal("160.00")
-    assert txs[2].tx_type == TransactionType.DEPOSIT  # "Transfer Deposit" → deposit
-    assert txs[2].amount == Decimal("45000.00")
-    assert txs[2].date == date(2026, 2, 2)
-    assert all(tx.tx_id.startswith("kbank:") for tx in txs)
-    assert len({tx.tx_id for tx in txs}) == len(txs)
-
-    # Verify raw_json includes channel and properly grouped details.
-    raw0 = json.loads(txs[0].raw_json)
-    assert raw0["channel"] == "K PLUS"
-    assert raw0["details"] == "To X0554 MS. THI VAN ANH NG++"
-    raw1 = json.loads(txs[1].raw_json)
-    assert raw1["details"] == "Paid for Ref X3423 บริษัท ซีพี (มหาชน) (A/C Name: CP AXTRA"
-    raw2 = json.loads(txs[2].raw_json)
-    assert raw2["details"] == "Savings Account Name: extra wrap"
-
-    txs_repeat = collector._parse_transaction_table(table)
-    assert [tx.tx_id for tx in txs_repeat] == [tx.tx_id for tx in txs]
+    result = KbankCollector._assign_words_to_columns(words, col_bounds)
+    assert result[0] == "01-10-25 02:16"
+    assert result[1] == "Debit Card Spending"
+    assert result[2] == "1,800.00"
+    assert result[3] == "19,991.20"
+    assert result[4] == "EDC/E-Commerce"
+    assert result[5] == "Ref Code EDC50445"
 
 
-def test_kbank_group_wrapped_column():
-    group = KbankCollector._group_wrapped_column
-
-    # Simple case: one line per entry.
-    assert group("A\nB\nC", 3) == ["A", "B", "C"]
-
-    # Multi-line with continuation: (มหาชน) joins previous entry.
-    text = "To X0554 MS. THI VAN ANH\nPaid for Ref X3423\n(มหาชน)\nSavings Account"
-    result = group(text, 3)
-    assert result == ["To X0554 MS. THI VAN ANH", "Paid for Ref X3423 (มหาชน)", "Savings Account"]
-
-    # Name: continuation joins previous.
-    text = "Paid for Ref X8530 shop\nName: FORTH SMART"
-    result = group(text, 1)
-    assert result == ["Paid for Ref X8530 shop Name: FORTH SMART"]
-
-    # Empty text returns empty strings.
-    assert group("", 3) == ["", "", ""]
-
-    # Fewer lines than count pads with empty strings.
-    assert group("A\nB", 4) == ["A", "B", "", ""]
-
-
-def test_kbank_parse_transaction_table_too_short(pricing):
-    collector = KbankCollector(pricing)
-    assert collector._parse_transaction_table([["header only"]]) == []
-    assert collector._parse_transaction_table([["h"], [None]]) == []
-    assert collector._parse_transaction_table([["h"], ["a", "b"]]) == []
+def test_kbank_group_words_into_rows():
+    """Words at similar Y positions are grouped into rows."""
+    words = [
+        {"top": 200.0, "x0": 68, "text": "01-10-25"},
+        {"top": 200.0, "x0": 404, "text": "Ref Code EDC50445"},
+        {"top": 212.0, "x0": 68, "text": "01-10-25"},
+        {"top": 212.0, "x0": 404, "text": "Paid for Ref X123"},
+        {"top": 223.5, "x0": 404, "text": "Ksher_FITNESS"},  # continuation (no date)
+    ]
+    rows = KbankCollector._group_words_into_rows(words)
+    assert len(rows) == 3
+    assert len(rows[0]) == 2  # first tx + detail
+    assert len(rows[1]) == 2  # second tx + detail
+    assert len(rows[2]) == 1  # continuation (detail only)
 
 
 async def test_kbank_fetch_transactions_with_cache(pricing):
