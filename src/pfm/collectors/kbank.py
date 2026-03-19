@@ -410,25 +410,24 @@ class KbankCollector(BaseCollector):
     ) -> dict[int, str]:
         """Assign words to column indices by X position.
 
-        Uses column start positions as boundaries: a word belongs to the
-        last column whose start X is <= the word's X.  Column 0 packs
-        date + time + description; words at x > col0_end - 10 are shifted
-        to column 1.
+        Column 0 contains date + time (x < 120).  Description words in
+        column 0 (x >= 120) are shifted to column 1, because the PDF cell
+        boundary between date/time and description varies across pages.
         """
         if not col_bounds:
             return {}
         starts = [cx0 for cx0, _ in col_bounds]
-        col0_end = col_bounds[0][1]
+        # Date starts at ~66, time at ~101, description at ~120+.
+        # The cell boundary varies (128-135) but description always starts at 120+.
+        desc_start_x = 120
         buckets: dict[int, list[str]] = {}
         for w in sorted(row_words, key=lambda w: w["x0"]):
             x = w["x0"]
-            # Find column: last start <= x.
             ci = 0
             for i, sx in enumerate(starts):
                 if sx <= x + 5:
                     ci = i
-            # Description words near the col 0/1 boundary → col 1.
-            if ci == 0 and x > col0_end - 10:
+            if ci == 0 and x >= desc_start_x:
                 ci = 1
             buckets.setdefault(ci, []).append(w["text"])
         return {ci: " ".join(parts) for ci, parts in buckets.items()}

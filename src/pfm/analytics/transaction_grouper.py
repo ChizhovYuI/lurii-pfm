@@ -30,6 +30,8 @@ class TransactionGroup:
     child_ids: list[int]
     from_source: str
     to_source: str
+    from_source_type: str
+    to_source_type: str
     from_asset: str
     to_asset: str
     from_amount: Decimal
@@ -205,6 +207,8 @@ def _group_internal_transfers(
                 child_ids=sorted([tx.id, pair_id]),
                 from_source=from_source,
                 to_source=to_source,
+                from_source_type=from_tx.source,
+                to_source_type=to_tx.source,
                 from_asset=from_tx.asset,
                 to_asset=to_tx.asset,
                 from_amount=abs(from_tx.amount),
@@ -271,6 +275,7 @@ def _try_pair_cluster(
     all_txs = from_txs + to_txs
     child_ids = sorted(t.id for t in all_txs if t.id is not None)
 
+    source_type = all_txs[0].source if all_txs else source
     return TransactionGroup(
         group_type="trade_pair",
         display_date=dt,
@@ -279,6 +284,8 @@ def _try_pair_cluster(
         child_ids=child_ids,
         from_source=source,
         to_source=source,
+        from_source_type=source_type,
+        to_source_type=source_type,
         from_asset=from_asset,
         to_asset=to_asset,
         from_amount=sum((abs(t.amount) for t in from_txs), Decimal(0)),
@@ -345,6 +352,7 @@ def _group_partial_fills(
         total_amount = sum((abs(t.amount) for t in bucket_txs), Decimal(0))
         total_usd = sum((abs(t.usd_value) for t in bucket_txs), Decimal(0))
 
+        source_type = bucket_txs[0].source if bucket_txs else source
         groups.append(
             TransactionGroup(
                 group_type="partial_fill",
@@ -354,6 +362,8 @@ def _group_partial_fills(
                 child_ids=child_ids,
                 from_source=source,
                 to_source=source,
+                from_source_type=source_type,
+                to_source_type=source_type,
                 from_asset=asset,
                 to_asset=asset,
                 from_amount=total_amount,

@@ -197,7 +197,7 @@ def _parse_history_row(
     fallback_share_symbol: str = "",
 ) -> Transaction | None:
     history_type = str(row.get("type", "")).lower()
-    timestamp = row.get("timestamp")
+    timestamp = row.get("blockTimestamp") or row.get("timestamp")
     tx_date = _parse_timestamp(timestamp)
     tx_hash = str(row.get("transactionHash", ""))
 

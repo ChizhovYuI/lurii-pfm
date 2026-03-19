@@ -152,6 +152,7 @@ def _serialize_grouped_tx(group: TransactionGroup, group_index: int) -> dict[str
     return {
         "id": -(group_index + 1),
         "date": group.display_date.isoformat(),
+        "time": None,
         "source": group.from_source,
         "source_name": group.from_source,
         "tx_type": group.display_tx_type,
@@ -171,6 +172,8 @@ def _serialize_grouped_tx(group: TransactionGroup, group_index: int) -> dict[str
             "child_count": len(group.child_ids),
             "from_source": group.from_source,
             "to_source": group.to_source,
+            "from_source_type": group.from_source_type,
+            "to_source_type": group.to_source_type,
             "from_asset": group.from_asset,
             "to_asset": group.to_asset,
             "from_amount": _str_decimal(group.from_amount),
