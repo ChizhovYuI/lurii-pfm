@@ -275,7 +275,10 @@ class MetadataStore:
                 await self._db.execute(
                     "UPDATE transaction_metadata SET"
                     " is_internal_transfer = 0, transfer_pair_id = NULL,"
-                    " transfer_detected_by = NULL, updated_at = datetime('now')"
+                    " transfer_detected_by = NULL,"
+                    " type_override = NULL, category = NULL,"
+                    " category_source = 'auto', category_confidence = NULL,"
+                    " updated_at = datetime('now')"
                     " WHERE transaction_id = ?",
                     (tid,),
                 )
