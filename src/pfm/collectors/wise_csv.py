@@ -1,4 +1,4 @@
-"""Parse Wise CSV exports into Transaction objects."""
+"""Parse Wise per-currency statement CSV exports into Transaction objects."""
 
 from __future__ import annotations
 
@@ -13,22 +13,12 @@ from pfm.db.models import Transaction, TransactionType
 
 logger = logging.getLogger(__name__)
 
-# ── Format detection ──────────────────────────────────────────────────
-
-_HISTORY_MARKER = "Direction"
 _STATEMENT_MARKER = "Running Balance"
 
 
-def detect_wise_csv(header: str) -> str | None:
-    """Return 'history' or 'statement' if the header looks like a Wise CSV, else None."""
-    if _HISTORY_MARKER in header:
-        return "history"
-    if _STATEMENT_MARKER in header:
-        return "statement"
-    return None
-
-
-# ── Shared helpers ────────────────────────────────────────────────────
+def detect_wise_csv(header: str) -> bool:
+    """Return True if the header looks like a Wise per-currency statement CSV."""
+    return _STATEMENT_MARKER in header
 
 
 def _dec(value: str) -> Decimal:
@@ -39,99 +29,15 @@ def _dec(value: str) -> Decimal:
 
 
 def _parse_date(value: str) -> date:
-    """Parse date from Wise CSV (multiple formats)."""
+    """Parse date from Wise statement CSV (DD-MM-YYYY or DD-MM-YYYY HH:MM:SS.ms)."""
     value = value.strip()
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%d-%m-%Y", "%d-%m-%Y %H:%M:%S.%f"):
+    for fmt in ("%d-%m-%Y", "%d-%m-%Y %H:%M:%S.%f"):
         try:
             return datetime.strptime(value, fmt).date()  # noqa: DTZ007
         except ValueError:
             continue
     msg = f"Cannot parse Wise date: {value!r}"
     raise ValueError(msg)
-
-
-# ── Transaction history parser ────────────────────────────────────────
-
-
-def _parse_history_row(row: dict[str, str], source_name: str) -> Transaction | None:
-    """Parse one row from transaction-history.csv."""
-    status = row.get("Status", "").strip()
-    if status != "COMPLETED":
-        return None
-
-    direction = row.get("Direction", "").strip()
-    if direction == "OUT":
-        tx_type = TransactionType.WITHDRAWAL
-    elif direction == "IN":
-        tx_type = TransactionType.DEPOSIT
-    else:
-        return None
-
-    tx_id = row.get("ID", "").strip()
-    if not tx_id:
-        return None
-
-    source_currency = row.get("Source currency", "").strip()
-    target_currency = row.get("Target currency", "").strip()
-    source_amount = _dec(row.get("Source amount (after fees)", ""))
-    target_amount = _dec(row.get("Target amount (after fees)", ""))
-    fee = _dec(row.get("Source fee amount", ""))
-
-    date_str = row.get("Finished on") or row.get("Created on", "")
-    try:
-        tx_date = _parse_date(date_str)
-    except ValueError:
-        logger.warning("Skipping Wise history row with bad date: %s", date_str)
-        return None
-
-    # For outgoing: asset is source currency, amount includes fee
-    # For incoming: asset is target currency
-    if direction == "OUT":
-        asset = source_currency
-        amount = source_amount + fee  # total deducted
-        counterparty_asset = target_currency if target_currency != source_currency else ""
-        counterparty_amount = target_amount if counterparty_asset else Decimal(0)
-    else:
-        asset = target_currency or source_currency
-        amount = target_amount or source_amount
-        counterparty_asset = ""
-        counterparty_amount = Decimal(0)
-
-    raw = {
-        "id": tx_id,
-        "direction": direction,
-        "status": status,
-        "source_name": row.get("Source name", ""),
-        "target_name": row.get("Target name", ""),
-        "source_currency": source_currency,
-        "target_currency": target_currency,
-        "source_amount": str(source_amount),
-        "target_amount": str(target_amount),
-        "fee": str(fee),
-        "fee_currency": row.get("Source fee currency", ""),
-        "exchange_rate": row.get("Exchange rate", ""),
-        "reference": row.get("Reference", ""),
-        "category": row.get("Category", ""),
-        "description": row.get("Target name", "") or row.get("Source name", ""),
-        "dateTime": date_str.strip(),
-    }
-
-    return Transaction(
-        date=tx_date,
-        source="wise",
-        source_name=source_name,
-        tx_type=tx_type,
-        asset=asset,
-        amount=amount,
-        usd_value=Decimal(0),
-        counterparty_asset=counterparty_asset,
-        counterparty_amount=counterparty_amount,
-        tx_id=f"wise:{tx_id}",
-        raw_json=json.dumps(raw),
-    )
-
-
-# ── Statement parser ──────────────────────────────────────────────────
 
 
 def _parse_statement_row(row: dict[str, str], source_name: str) -> Transaction | None:
@@ -199,22 +105,16 @@ def _parse_statement_row(row: dict[str, str], source_name: str) -> Transaction |
     )
 
 
-# ── Public API ────────────────────────────────────────────────────────
-
-
 def parse_wise_csv(content: str, source_name: str = "wise") -> list[Transaction]:
-    """Parse a Wise CSV (auto-detecting format) into Transaction objects."""
+    """Parse a Wise per-currency statement CSV into Transaction objects."""
     first_line = content.split("\n", maxsplit=1)[0]
-    fmt = detect_wise_csv(first_line)
-    if fmt is None:
+    if not detect_wise_csv(first_line):
         return []
 
     reader = csv.DictReader(io.StringIO(content))
-    parser = _parse_history_row if fmt == "history" else _parse_statement_row
-
     txs: list[Transaction] = []
     for row in reader:
-        tx = parser(row, source_name)
+        tx = _parse_statement_row(row, source_name)
         if tx is not None:
             txs.append(tx)
     return txs

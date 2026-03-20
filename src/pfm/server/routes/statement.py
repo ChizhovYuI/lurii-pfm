@@ -30,11 +30,9 @@ async def upload_statement(request: web.Request) -> web.Response:
 
     # Detect source type from content.
     first_line = file_content.split("\n", maxsplit=1)[0]
-    wise_fmt = detect_wise_csv(first_line)
-
-    if wise_fmt is None:
+    if not detect_wise_csv(first_line):
         return web.json_response(
-            {"error": "Unrecognized statement format. Currently supported: Wise CSV."},
+            {"error": "Unrecognized statement format. Currently supported: Wise per-currency statement CSV."},
             status=400,
         )
 
