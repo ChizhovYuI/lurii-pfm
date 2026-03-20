@@ -111,7 +111,9 @@ async def compute_monthly_trends(
     prices = await build_price_map(repo, dates)
 
     # Group by month.
-    monthly: dict[str, dict[str, Decimal]] = defaultdict(lambda: defaultdict(Decimal))
+    spending: dict[str, Decimal] = defaultdict(Decimal)
+    income: dict[str, Decimal] = defaultdict(Decimal)
+    spending_cats: dict[str, dict[str, Decimal]] = defaultdict(lambda: defaultdict(Decimal))
 
     for tx in txs:
         if tx.id is None:
@@ -122,29 +124,37 @@ async def compute_monthly_trends(
 
         month_key = tx.date.strftime("%Y-%m")
         category: str = meta.category if meta and meta.category else f"uncategorized_{tx.tx_type.value}"
+        usd = resolve_usd(tx, prices)
 
         if tx.tx_type in _SPENDING_TYPES:
-            monthly[month_key][category] += resolve_usd(tx, prices)
+            spending[month_key] += usd
+            spending_cats[month_key][category] += usd
+        elif tx.tx_type in _INCOME_TYPES or (tx.tx_type == TransactionType.DEPOSIT and category == _INCOME_CATEGORY):
+            income[month_key] += usd
 
-    # Get category display names.
     categories = await store.get_categories()
     display_map = {cat.category: cat.display_name for cat in categories}
 
-    months_list = sorted(monthly.keys())
+    all_months = sorted({*spending, *income})
     return {
         "months": [
             {
-                "month": month,
+                "month": m,
+                "spending": _str_decimal(spending.get(m, Decimal(0))),
+                "income": _str_decimal(income.get(m, Decimal(0))),
                 "categories": [
                     {
                         "category": cat,
                         "display_name": display_map.get(cat, cat),
                         "usd_value": _str_decimal(value),
                     }
-                    for cat, value in sorted(cats.items(), key=lambda item: item[1], reverse=True)
+                    for cat, value in sorted(
+                        spending_cats.get(m, {}).items(),
+                        key=lambda item: item[1],
+                        reverse=True,
+                    )
                 ],
-                "total": _str_decimal(sum(cats.values(), Decimal(0))),
             }
-            for month, cats in ((m, monthly[m]) for m in months_list)
+            for m in all_months
         ],
     }
