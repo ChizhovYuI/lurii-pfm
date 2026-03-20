@@ -241,16 +241,25 @@ class MetadataStore:
     # ── Transfer linking ───────────────────────────────────────────────
 
     async def link_transfer(self, tx_id_a: int, tx_id_b: int) -> None:
-        """Link two transactions as an internal transfer pair."""
+        """Link two transactions as an internal transfer pair.
+
+        Sets type_override=transfer and category=transfer for both sides.
+        """
         for tx_id, pair_id in [(tx_id_a, tx_id_b), (tx_id_b, tx_id_a)]:
             await self._db.execute(
                 "INSERT INTO transaction_metadata"
-                " (transaction_id, is_internal_transfer, transfer_pair_id, transfer_detected_by, updated_at)"
-                " VALUES (?, 1, ?, 'manual', datetime('now'))"
+                " (transaction_id, is_internal_transfer, transfer_pair_id,"
+                "  transfer_detected_by, type_override, category, category_source,"
+                "  category_confidence, updated_at)"
+                " VALUES (?, 1, ?, 'manual', 'transfer', 'transfer', 'manual', 1.0, datetime('now'))"
                 " ON CONFLICT(transaction_id) DO UPDATE SET"
                 "  is_internal_transfer = 1,"
                 "  transfer_pair_id = excluded.transfer_pair_id,"
                 "  transfer_detected_by = 'manual',"
+                "  type_override = 'transfer',"
+                "  category = 'transfer',"
+                "  category_source = 'manual',"
+                "  category_confidence = 1.0,"
                 "  updated_at = excluded.updated_at",
                 (tx_id, pair_id),
             )
