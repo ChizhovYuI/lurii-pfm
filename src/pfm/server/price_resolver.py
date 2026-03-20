@@ -29,13 +29,42 @@ def resolve_usd(tx: Transaction, prices: dict[str, Decimal]) -> Decimal:
 
 
 async def build_price_map(repo: Repository, dates: list[date]) -> dict[str, Decimal]:
-    """Build asset -> USD price map from the prices table (first date with data)."""
+    """Build asset -> USD price map from the prices table.
+
+    Tries exact transaction dates first (most recent), then falls back
+    to the latest available price date in the DB.
+    """
     for d in sorted(dates, reverse=True):
-        prices = await repo.get_prices_by_date(d)
-        if prices:
-            result: dict[str, Decimal] = {}
-            for p in prices:
-                if p.currency == "USD" and p.asset.upper() not in result:
-                    result[p.asset.upper()] = p.price
+        result = await _prices_for_date(repo, d)
+        if result:
+            return result
+    # No prices on any transaction date — use latest available price date.
+    latest = await _latest_price_date(repo)
+    if latest:
+        result = await _prices_for_date(repo, latest)
+        if result:
             return result
     return {}
+
+
+async def _latest_price_date(repo: Repository) -> date | None:
+    """Return the most recent date that has cached prices."""
+    cursor = await repo.connection.execute("SELECT MAX(date) FROM prices")
+    row = await cursor.fetchone()
+    if row is None or row[0] is None:
+        return None
+    from datetime import date as date_cls
+
+    return date_cls.fromisoformat(row[0])
+
+
+async def _prices_for_date(repo: Repository, d: date) -> dict[str, Decimal]:
+    """Return asset->USD price map for a specific date, or empty dict."""
+    prices = await repo.get_prices_by_date(d)
+    if not prices:
+        return {}
+    result: dict[str, Decimal] = {}
+    for p in prices:
+        if p.currency == "USD" and p.asset.upper() not in result:
+            result[p.asset.upper()] = p.price
+    return result
