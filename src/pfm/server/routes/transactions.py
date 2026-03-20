@@ -734,6 +734,110 @@ async def get_transaction(request: web.Request) -> web.Response:
     return web.json_response(data)
 
 
+_OUTFLOW_EFFECTIVE_TYPES = frozenset({"withdrawal", "transfer"})
+
+
+def _score_transfer_candidates(  # noqa: PLR0913
+    tx: Transaction,
+    meta: TransactionMetadata | None,
+    tx_id: int,
+    tx_source: str,
+    source_filter: str | None,
+    nearby: list[Transaction],
+    meta_map: dict[int, TransactionMetadata],
+) -> list[tuple[float, Transaction]]:
+    """Score nearby transactions as potential transfer counterparts."""
+    from pfm.analytics.transfer_detector import (
+        _amounts_within_tolerance,
+        _assets_equivalent,
+        _date_proximity_score,
+    )
+
+    is_outflow = effective_type(tx, meta) in _OUTFLOW_EFFECTIVE_TYPES
+    scored: list[tuple[float, Transaction]] = []
+
+    for candidate in nearby:
+        if candidate.id is None or candidate.id == tx_id:
+            continue
+        c_meta = meta_map.get(candidate.id)
+        if c_meta and c_meta.is_internal_transfer and c_meta.transfer_pair_id:
+            continue
+        c_source = candidate.source_name or candidate.source
+        if c_source == tx_source:
+            continue
+        if source_filter and c_source != source_filter:
+            continue
+        if not _assets_equivalent(tx.asset, candidate.asset):
+            continue
+        c_is_outflow = effective_type(candidate, c_meta) in _OUTFLOW_EFFECTIVE_TYPES
+        if c_is_outflow == is_outflow:
+            continue
+        amount_score = _amounts_within_tolerance(tx.amount, candidate.amount)
+        date_score = _date_proximity_score(tx.date, candidate.date)
+        if amount_score == 0.0 and date_score == 0.0:
+            continue
+        scored.append((amount_score * 0.6 + date_score * 0.4, candidate))
+
+    return scored
+
+
+@routes.get("/api/v1/transactions/{id}/transfer-candidates")
+async def transfer_candidates(request: web.Request) -> web.Response:
+    """Find transactions that could be the other side of a transfer."""
+    from datetime import timedelta
+
+    tx_id = _parse_int_param(request)
+    if isinstance(tx_id, web.Response):
+        return tx_id
+
+    store = _get_metadata_store(request.app)
+    result = await store.get_transaction_by_id(tx_id)
+    if result is None:
+        return web.json_response({"error": "Transaction not found"}, status=404)
+    tx, meta = result
+
+    source_filter = request.query.get("source")
+    tx_source = tx.source_name or tx.source
+
+    # Fetch nearby transactions (±3 days).
+    repo = get_repo(request.app)
+    nearby = await repo.get_transactions(
+        start=tx.date - timedelta(days=3),
+        end=tx.date + timedelta(days=3),
+    )
+    nearby_ids = [t.id for t in nearby if t.id is not None]
+    meta_map = await store.get_metadata_batch(nearby_ids)
+
+    scored = _score_transfer_candidates(tx, meta, tx_id, tx_source, source_filter, nearby, meta_map)
+    scored.sort(key=lambda p: p[0], reverse=True)
+
+    # Collect unique source names for the source picker.
+    sources: list[str] = []
+    seen_sources: set[str] = set()
+    for _, c in scored:
+        s = c.source_name or c.source
+        if s not in seen_sources:
+            seen_sources.add(s)
+            sources.append(s)
+
+    prices = await _build_price_map(request.app, [(tx, None)])
+    candidates_list = [
+        {
+            "id": c.id,
+            "date": c.date.isoformat(),
+            "source": c.source,
+            "source_name": c.source_name or c.source,
+            "asset": c.asset,
+            "amount": _str_decimal(c.amount),
+            "usd_value": _str_decimal(_resolve_usd(c, prices)),
+            "score": round(score, 4),
+        }
+        for score, c in scored[:20]
+    ]
+
+    return web.json_response({"sources": sources, "candidates": candidates_list})
+
+
 # ── Metadata update ────────────────────────────────────────────────────
 
 
