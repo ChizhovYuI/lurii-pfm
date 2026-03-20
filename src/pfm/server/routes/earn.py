@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from aiohttp import web
 
+from pfm.db.models import is_sync_marker_snapshot
 from pfm.server.serializers import _str_decimal, asset_type_for_snapshot
 from pfm.server.state import get_repo
 
@@ -17,10 +18,13 @@ if TYPE_CHECKING:
 
 routes = web.RouteTableDef()
 
+_IDLE_ASSET_TYPES: frozenset[str] = frozenset({"crypto", "defi"})
+_IDLE_MIN_USD = Decimal(10)
+
 
 @routes.get("/api/v1/earn/summary")
 async def earn_summary(request: web.Request) -> web.Response:
-    """Return yield-earning positions and aggregate totals."""
+    """Return yield-earning positions, idle crypto/stablecoin assets, and aggregate totals."""
     repo = get_repo(request.app)
     latest = await repo.get_latest_snapshots()
     if not latest:
@@ -29,6 +33,8 @@ async def earn_summary(request: web.Request) -> web.Response:
     analysis_date = max(s.date for s in latest)
     positions = [s for s in latest if _is_earn_position(s)]
     total_usd_value, weighted_avg_apy = _earn_totals(positions)
+    idle = _idle_assets(latest, positions)
+    idle_total = sum((s.usd_value for s in idle), Decimal(0))
 
     return web.json_response(
         {
@@ -36,6 +42,8 @@ async def earn_summary(request: web.Request) -> web.Response:
             "total_usd_value": _str_decimal(total_usd_value),
             "weighted_avg_apy": _str_decimal(weighted_avg_apy),
             "positions": [_position_to_dict(snap) for snap in positions],
+            "idle_assets": [_position_to_dict(snap) for snap in idle],
+            "idle_total_usd_value": _str_decimal(idle_total),
         }
     )
 
@@ -128,3 +136,18 @@ def _is_earn_position(snapshot: Snapshot) -> bool:
         return False
     account_type = raw.get("account_type")
     return isinstance(account_type, str) and account_type.lower() == "financial"
+
+
+def _idle_assets(all_snapshots: list[Snapshot], earn_positions: list[Snapshot]) -> list[Snapshot]:
+    """Return crypto/stablecoin snapshots that are not earning yield, sorted by USD value."""
+    earn_ids = {s.id for s in earn_positions}
+    idle = [
+        s
+        for s in all_snapshots
+        if not is_sync_marker_snapshot(s)
+        and s.id not in earn_ids
+        and s.usd_value >= _IDLE_MIN_USD
+        and asset_type_for_snapshot(s.source, s.asset) in _IDLE_ASSET_TYPES
+    ]
+    idle.sort(key=lambda s: s.usd_value, reverse=True)
+    return idle
