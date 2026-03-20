@@ -8,6 +8,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from pfm.db.models import TransactionType
+from pfm.server.price_resolver import build_price_map, resolve_usd
 from pfm.server.serializers import _str_decimal
 
 if TYPE_CHECKING:
@@ -15,8 +16,8 @@ if TYPE_CHECKING:
     from pfm.db.repository import Repository
 
 
-_SPENDING_TYPES = frozenset({TransactionType.WITHDRAWAL, TransactionType.FEE})
-_INCOME_TYPES = frozenset({TransactionType.DEPOSIT, TransactionType.YIELD})
+_SPENDING_TYPES = frozenset({TransactionType.SPEND, TransactionType.FEE})
+_INCOME_TYPES = frozenset({TransactionType.YIELD})
 
 
 async def compute_analytics_summary(
@@ -29,6 +30,9 @@ async def compute_analytics_summary(
     txs = await repo.get_transactions(start=start, end=end)
     tx_ids = [tx.id for tx in txs if tx.id is not None]
     metadata_map = await store.get_metadata_batch(tx_ids)
+
+    dates = list({tx.date for tx in txs})
+    prices = await build_price_map(repo, dates)
 
     spending_by_category: dict[str, Decimal] = defaultdict(Decimal)
     income_by_category: dict[str, Decimal] = defaultdict(Decimal)
@@ -48,12 +52,13 @@ async def compute_analytics_summary(
         if not category:
             category = f"uncategorized_{tx.tx_type.value}"
 
+        usd = resolve_usd(tx, prices)
         if tx.tx_type in _SPENDING_TYPES:
-            spending_by_category[category] += tx.usd_value
-            total_spending += tx.usd_value
+            spending_by_category[category] += usd
+            total_spending += usd
         elif tx.tx_type in _INCOME_TYPES:
-            income_by_category[category] += tx.usd_value
-            total_income += tx.usd_value
+            income_by_category[category] += usd
+            total_income += usd
 
     # Get category display names.
     categories = await store.get_categories()
@@ -101,6 +106,9 @@ async def compute_monthly_trends(
     tx_ids = [tx.id for tx in txs if tx.id is not None]
     metadata_map = await store.get_metadata_batch(tx_ids)
 
+    dates = list({tx.date for tx in txs})
+    prices = await build_price_map(repo, dates)
+
     # Group by month.
     monthly: dict[str, dict[str, Decimal]] = defaultdict(lambda: defaultdict(Decimal))
 
@@ -115,7 +123,7 @@ async def compute_monthly_trends(
         category: str = meta.category if meta and meta.category else f"uncategorized_{tx.tx_type.value}"
 
         if tx.tx_type in _SPENDING_TYPES:
-            monthly[month_key][category] += tx.usd_value
+            monthly[month_key][category] += resolve_usd(tx, prices)
 
     # Get category display names.
     categories = await store.get_categories()
