@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import socket
 from datetime import UTC, datetime, time, timedelta
 from typing import TYPE_CHECKING
 
@@ -15,6 +16,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _TARGET_TIME = time(0, 5, tzinfo=UTC)  # 00:05 UTC
+_INTERNET_CHECK_HOST = "api.coingecko.com"
+_INTERNET_RETRY_DELAY = 300  # 5 minutes
+_INTERNET_MAX_RETRIES = 12  # 1 hour total
 
 
 def _seconds_until(target: time) -> float:
@@ -24,6 +28,28 @@ def _seconds_until(target: time) -> float:
     if today_target <= now:
         today_target += timedelta(days=1)
     return (today_target - now).total_seconds()
+
+
+async def _check_internet() -> bool:
+    """Return True if internet is reachable (DNS resolve probe)."""
+    loop = asyncio.get_running_loop()
+    try:
+        await loop.getaddrinfo(_INTERNET_CHECK_HOST, 443, family=socket.AF_INET)
+    except socket.gaierror:
+        return False
+    return True
+
+
+async def _wait_for_internet() -> bool:
+    """Wait up to 1 hour for internet. Return True if connected, False if timed out."""
+    for attempt in range(_INTERNET_MAX_RETRIES):
+        if await _check_internet():
+            if attempt > 0:
+                logger.info("Internet restored after %d retries", attempt)
+            return True
+        logger.warning("No internet — retry %d/%d in %ds", attempt + 1, _INTERNET_MAX_RETRIES, _INTERNET_RETRY_DELAY)
+        await asyncio.sleep(_INTERNET_RETRY_DELAY)
+    return False
 
 
 async def run_daily_collector(app: web.Application) -> None:
@@ -41,6 +67,10 @@ async def run_daily_collector(app: web.Application) -> None:
 
             if state.collecting:
                 logger.warning("Scheduled collection skipped — already running")
+                continue
+
+            if not await _wait_for_internet():
+                logger.error("No internet after %d retries — skipping today's collection", _INTERNET_MAX_RETRIES)
                 continue
 
             logger.info("Scheduled daily collection started")
