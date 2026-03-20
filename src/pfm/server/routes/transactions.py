@@ -69,52 +69,102 @@ _TIME_KEYS_DATETIME = (
 )
 
 
-def _parse_time_value(val: object) -> str | None:
-    """Parse a single timestamp value into HH:MM."""
-    if isinstance(val, int | float):
-        from datetime import UTC, datetime
+_LocalDT = tuple[str | None, str]  # (local_date or None, local_time HH:MM)
 
+
+def _epoch_to_local(epoch: float) -> _LocalDT:
+    """Convert epoch seconds to (YYYY-MM-DD, HH:MM) in the system local timezone."""
+    from datetime import UTC, datetime
+
+    dt = datetime.fromtimestamp(epoch, tz=UTC).astimezone()
+    return dt.strftime("%Y-%m-%d"), dt.strftime("%H:%M")
+
+
+def _parse_time_value(val: object) -> _LocalDT | None:  # noqa: PLR0911
+    """Parse a single timestamp value into (local_date, HH:MM)."""
+    if isinstance(val, int | float):
         epoch = val / 1000 if val > 1e12 else val  # noqa: PLR2004
-        return datetime.fromtimestamp(epoch, tz=UTC).strftime("%H:%M")
+        return _epoch_to_local(epoch)
     if not isinstance(val, str) or len(val) < 5:  # noqa: PLR2004
         return None
     # Numeric string (epoch ms or seconds, e.g. OKX "ts": "1773935980602")
     if val.isdigit():
-        from datetime import UTC, datetime
-
         epoch_num = int(val)
         epoch = epoch_num / 1000 if epoch_num > 1e12 else epoch_num  # noqa: PLR2004
-        return datetime.fromtimestamp(epoch, tz=UTC).strftime("%H:%M")
-    # ISO datetime: "2026-03-02T12:58:35.000Z"
+        return _epoch_to_local(epoch)
+    # ISO datetime with timezone: "2026-03-02T12:58:35.000Z" or "+07:00"
     if "T" in val:
-        hhmm = val.split("T", maxsplit=1)[1][:5]
-        return hhmm if len(hhmm) == 5 and hhmm[2] == ":" else None  # noqa: PLR2004
+        return _parse_iso_to_local(val)
     # Space-separated: "2026-02-25 17:47:41"
     if " " in val and len(val) >= 16:  # noqa: PLR2004
-        hhmm = val.split(" ", maxsplit=1)[1][:5]
-        return hhmm if len(hhmm) == 5 and hhmm[2] == ":" else None  # noqa: PLR2004
-    # Direct HH:MM
-    return val[:5] if val[2] == ":" else None
+        return _parse_spaced_to_local(val)
+    # Direct HH:MM (already local, e.g. KBank) — no date shift
+    if val[2] == ":":
+        return None, val[:5]
+    return None
 
 
-def _extract_time(tx: Transaction) -> str | None:
-    """Extract time (HH:MM) from raw_json if present."""
+def _parse_iso_to_local(val: str) -> _LocalDT | None:
+    """Parse ISO datetime and convert to local (date, HH:MM)."""
+    from datetime import datetime
+
+    try:
+        dt = datetime.fromisoformat(val)
+        local = dt.astimezone()
+        return local.strftime("%Y-%m-%d"), local.strftime("%H:%M")
+    except (ValueError, OSError):
+        pass
+    # Fallback: extract HH:MM directly, no date shift
+    hhmm = val.split("T", maxsplit=1)[1][:5]
+    if len(hhmm) == 5 and hhmm[2] == ":":  # noqa: PLR2004
+        return None, hhmm
+    return None
+
+
+def _parse_spaced_to_local(val: str) -> _LocalDT | None:
+    """Parse space-separated datetime and convert to local (date, HH:MM)."""
+    from datetime import datetime
+
+    try:
+        dt = datetime.fromisoformat(val)
+        if dt.tzinfo is not None:
+            local = dt.astimezone()
+            return local.strftime("%Y-%m-%d"), local.strftime("%H:%M")
+        # No timezone — return parsed date and time as-is (assumed local)
+        return dt.strftime("%Y-%m-%d"), dt.strftime("%H:%M")
+    except (ValueError, OSError):
+        pass
+    # Fallback
+    hhmm = val.split(" ", maxsplit=1)[1][:5]
+    if len(hhmm) == 5 and hhmm[2] == ":":  # noqa: PLR2004
+        return None, hhmm
+    return None
+
+
+def _extract_datetime(tx: Transaction) -> tuple[str | None, str | None]:
+    """Extract local (date, time) from raw_json. Date is non-None only when it differs from tx.date."""
     if not tx.raw_json:
-        return None
+        return None, None
     try:
         parsed = json.loads(tx.raw_json)
         if not isinstance(parsed, dict):
-            return None
-        for key in _TIME_KEYS_DIRECT:
-            result = _parse_time_value(parsed.get(key))
-            if result:
-                return result
-        for key in _TIME_KEYS_DATETIME:
-            result = _parse_time_value(parsed.get(key))
-            if result:
-                return result
+            return None, None
+        result = _find_time_in_raw(parsed, tx.date.isoformat())
+        if result:
+            return result
     except (json.JSONDecodeError, TypeError, OSError, OverflowError, ValueError):
         pass
+    return None, None
+
+
+def _find_time_in_raw(parsed: dict[str, object], tx_date_iso: str) -> tuple[str | None, str] | None:
+    """Search raw_json dict for a parseable timestamp, return (shifted_date, HH:MM) or None."""
+    for key in _TIME_KEYS_DIRECT + _TIME_KEYS_DATETIME:
+        result = _parse_time_value(parsed.get(key))
+        if result:
+            local_date, local_time = result
+            shifted = local_date if local_date and local_date != tx_date_iso else None
+            return shifted, local_time
     return None
 
 
@@ -127,10 +177,11 @@ def _build_id_lookup(
 
 def _serialize_tx(tx: Transaction, meta: TransactionMetadata | None) -> dict[str, object]:
     etype = effective_type(tx, meta)
+    local_date, local_time = _extract_datetime(tx)
     result: dict[str, object] = {
         "id": tx.id,
-        "date": tx.date.isoformat(),
-        "time": _extract_time(tx),
+        "date": local_date or tx.date.isoformat(),
+        "time": local_time,
         "source": tx.source,
         "source_name": tx.source_name or tx.source,
         "tx_type": tx.tx_type.value,
@@ -167,12 +218,12 @@ def _serialize_grouped_tx(
     by_id: dict[int, tuple[Transaction, TransactionMetadata | None]] | None = None,
 ) -> dict[str, object]:
     """Serialize a transaction group as a single row with negative synthetic ID."""
-    time = _group_time(group, by_id)
+    local_date, local_time = _group_datetime(group, by_id)
     category = _group_category(group, by_id)
     return {
         "id": -(group_index + 1),
-        "date": group.display_date.isoformat(),
-        "time": time,
+        "date": local_date or group.display_date.isoformat(),
+        "time": local_time,
         "source": group.from_source,
         "source_name": group.from_source,
         "tx_type": group.display_tx_type,
@@ -202,22 +253,24 @@ def _serialize_grouped_tx(
     }
 
 
-def _group_time(
+def _group_datetime(
     group: TransactionGroup,
     by_id: dict[int, tuple[Transaction, TransactionMetadata | None]] | None,
-) -> str | None:
-    """Return the earliest HH:MM from child transactions."""
+) -> tuple[str | None, str | None]:
+    """Return (local_date, earliest HH:MM) from child transactions."""
     if not by_id:
-        return None
-    times: list[str] = []
+        return None, None
+    times: list[tuple[str | None, str]] = []
     for cid in group.child_ids:
         pair = by_id.get(cid)
         if pair is None:
             continue
-        t = _extract_time(pair[0])
-        if t:
-            times.append(t)
-    return min(times) if times else None
+        local_date, local_time = _extract_datetime(pair[0])
+        if local_time:
+            times.append((local_date, local_time))
+    if not times:
+        return None, None
+    return min(times, key=lambda t: t[1])
 
 
 def _group_category(
