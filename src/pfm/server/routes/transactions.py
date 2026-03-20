@@ -749,7 +749,6 @@ def _score_transfer_candidates(  # noqa: PLR0913
     """Score nearby transactions as potential transfer counterparts."""
     from pfm.analytics.transfer_detector import (
         _amounts_within_tolerance,
-        _assets_equivalent,
         _date_proximity_score,
     )
 
@@ -766,8 +765,6 @@ def _score_transfer_candidates(  # noqa: PLR0913
         if c_source == tx_source:
             continue
         if source_filter and c_source != source_filter:
-            continue
-        if not _assets_equivalent(tx.asset, candidate.asset):
             continue
         c_is_outflow = effective_type(candidate, c_meta) in _OUTFLOW_EFFECTIVE_TYPES
         if c_is_outflow == is_outflow:
