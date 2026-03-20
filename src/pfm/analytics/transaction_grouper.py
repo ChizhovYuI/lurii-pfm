@@ -224,6 +224,61 @@ def _group_internal_transfers(
 # ── Pass 2: Trade pairs ──────────────────────────────────────────────
 
 
+_RAW_CHANGE_KEYS = ("change", "balChg")
+
+
+def _raw_change_sum(txs: list[Transaction]) -> Decimal | None:
+    """Sum the raw balance-change values from raw_json (preserves sign)."""
+    total = Decimal(0)
+    found = False
+    for tx in txs:
+        if not tx.raw_json:
+            continue
+        try:
+            parsed = json.loads(tx.raw_json)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        for key in _RAW_CHANGE_KEYS:
+            val = parsed.get(key)
+            if val is not None:
+                try:
+                    total += Decimal(str(val))
+                    found = True
+                except ArithmeticError:
+                    pass
+                break
+    return total if found else None
+
+
+def _is_sell_side(
+    a_txs: list[Transaction],
+    b_txs: list[Transaction],
+    a_asset: str,
+    b_asset: str,
+) -> bool:
+    """Return True if a_txs is the sell (from) side of a trade pair.
+
+    Priority: trade_side field > raw balance change sign > alphabetical order.
+    """
+    a_sell = any(t.trade_side == "sell" for t in a_txs)
+    b_sell = any(t.trade_side == "sell" for t in b_txs)
+    if a_sell and not b_sell:
+        return True
+    if b_sell and not a_sell:
+        return False
+    # Negative raw change = outflow (sell side).
+    a_chg = _raw_change_sum(a_txs)
+    b_chg = _raw_change_sum(b_txs)
+    if a_chg is not None and b_chg is not None:
+        if a_chg < 0 and b_chg >= 0:
+            return True
+        if b_chg < 0 and a_chg >= 0:
+            return False
+    return a_asset <= b_asset
+
+
 def _try_pair_cluster(
     cluster: list[Transaction],
     source: str,
@@ -258,16 +313,8 @@ def _try_pair_cluster(
     if not _usd_totals_close(a_usd, b_usd):
         return None
 
-    # Determine sell/buy sides using trade_side field.
-    a_is_sell = any(t.trade_side == "sell" for t in a_txs)
-    b_is_sell = any(t.trade_side == "sell" for t in b_txs)
-
-    if a_is_sell and not b_is_sell:
-        from_asset, from_txs, to_asset, to_txs = a_asset, a_txs, b_asset, b_txs
-    elif b_is_sell and not a_is_sell:
-        from_asset, from_txs, to_asset, to_txs = b_asset, b_txs, a_asset, a_txs
-    # Alphabetical fallback.
-    elif a_asset <= b_asset:
+    a_first = _is_sell_side(a_txs, b_txs, a_asset, b_asset)
+    if a_first:
         from_asset, from_txs, to_asset, to_txs = a_asset, a_txs, b_asset, b_txs
     else:
         from_asset, from_txs, to_asset, to_txs = b_asset, b_txs, a_asset, a_txs
