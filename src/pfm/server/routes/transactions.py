@@ -54,7 +54,7 @@ def _extract_description(tx: Transaction) -> str:
     return ""
 
 
-_TIME_KEYS_DIRECT = ("time", "ts", "transactionTime")
+_TIME_KEYS_DIRECT = ("time", "ts", "fillTime", "transactionTime")
 _TIME_KEYS_DATETIME = (
     "timestamp",
     "blockTimestamp",
@@ -78,6 +78,13 @@ def _parse_time_value(val: object) -> str | None:
         return datetime.fromtimestamp(epoch, tz=UTC).strftime("%H:%M")
     if not isinstance(val, str) or len(val) < 5:  # noqa: PLR2004
         return None
+    # Numeric string (epoch ms or seconds, e.g. OKX "ts": "1773935980602")
+    if val.isdigit():
+        from datetime import UTC, datetime
+
+        epoch_num = int(val)
+        epoch = epoch_num / 1000 if epoch_num > 1e12 else epoch_num  # noqa: PLR2004
+        return datetime.fromtimestamp(epoch, tz=UTC).strftime("%H:%M")
     # ISO datetime: "2026-03-02T12:58:35.000Z"
     if "T" in val:
         hhmm = val.split("T", maxsplit=1)[1][:5]
