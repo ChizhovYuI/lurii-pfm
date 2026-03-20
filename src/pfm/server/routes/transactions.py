@@ -492,72 +492,67 @@ def _filter_by_local_date(
 
 @routes.get("/api/v1/transactions")
 async def list_transactions(request: web.Request) -> web.Response:
-    """Fetch transactions for N complete days (local timezone)."""
-    from datetime import UTC, datetime, timedelta
+    """Fetch transactions for a calendar month (local timezone).
+
+    Use ``month=YYYY-MM`` to select a month. Omit for the current month.
+    Response includes ``next_month`` cursor for older pages.
+    """
+    from calendar import monthrange
+    from datetime import UTC, date, datetime, timedelta
 
     store = _get_metadata_store(request.app)
     source_name = request.query.get("source_name")
     tx_type = request.query.get("tx_type")
     category = request.query.get("category")
-    start_str = request.query.get("start")
-    end_str = request.query.get("end")
     search = request.query.get("search")
     grouped = request.query.get("grouped", "true").lower() != "false"
-    days_param = request.query.get("days", "7")
+    month_param = request.query.get("month")
 
-    try:
-        days = int(days_param)
-    except ValueError:
-        return web.json_response({"error": "days must be a positive integer"}, status=400)
-    if days <= 0:
-        return web.json_response({"error": "days must be a positive integer"}, status=400)
+    today = datetime.now(tz=UTC).astimezone().date()
+    if month_param:
+        try:
+            parts = month_param.split("-")
+            year, month = int(parts[0]), int(parts[1])
+        except (ValueError, IndexError):
+            return web.json_response({"error": "month must be YYYY-MM"}, status=400)
+    else:
+        year, month = today.year, today.month
 
-    from datetime import date as date_cls
+    window_start = date(year, month, 1)
+    _, last_day = monthrange(year, month)
+    window_end = date(year, month, last_day)
+    window_end = min(window_end, today)
 
-    start = date_cls.fromisoformat(start_str) if start_str else None
-    end = date_cls.fromisoformat(end_str) if end_str else None
-
-    # ``end`` is the cursor — if omitted, use today (local).
-    if end is None:
-        end = datetime.now(tz=UTC).astimezone().date()
-    window_start = end - timedelta(days=days - 1)
-    if start is not None:
-        window_start = max(window_start, start)
-
-    # Fetch with ±1 day buffer so timezone-shifted transactions are included.
-    db_start = window_start - timedelta(days=1)
-    db_end = end + timedelta(days=1)
+    # Fetch with ±1 day buffer for timezone-shifted transactions.
     items, _ = await store.get_transactions_paginated(
         source_name=source_name,
         tx_type=tx_type,
         category=category,
-        start=db_start,
-        end=db_end,
+        start=window_start - timedelta(days=1),
+        end=window_end + timedelta(days=1),
         search=search,
-        limit=5000,
+        limit=10000,
         offset=0,
     )
 
-    # Resolve local dates and filter to the requested window.
-    window_start_iso = window_start.isoformat()
-    window_end_iso = end.isoformat()
-    items = _filter_by_local_date(items, window_start_iso, window_end_iso)
+    items = _filter_by_local_date(items, window_start.isoformat(), window_end.isoformat())
     total = len(items)
 
-    # Check if there are older transactions for the "load more" cursor.
-    next_end = window_start - timedelta(days=1)
+    # Cursor for the previous month.
+    prev_month_end = window_start - timedelta(days=1)
     _, older_total = await store.get_transactions_paginated(
         source_name=source_name,
         tx_type=tx_type,
         category=category,
-        start=start,
-        end=next_end,
+        start=None,
+        end=prev_month_end,
         search=search,
         limit=1,
         offset=0,
     )
+    next_month = f"{prev_month_end.year}-{prev_month_end.month:02d}" if older_total > 0 else None
 
-    # Fetch transfer counterparts that may fall outside the date window.
+    # Fetch transfer counterparts that may fall outside the month.
     if grouped:
         page_ids = {tx.id for tx, _ in items if tx.id is not None}
         for _, meta in items:
@@ -568,9 +563,10 @@ async def list_transactions(request: web.Request) -> web.Response:
 
     prices = await _build_price_map(request.app, items)
     extra: dict[str, object] = {
-        "window_start": window_start_iso,
-        "window_end": window_end_iso,
-        "next_end_date": next_end.isoformat() if older_total > 0 else None,
+        "month": f"{year}-{month:02d}",
+        "window_start": window_start.isoformat(),
+        "window_end": window_end.isoformat(),
+        "next_month": next_month,
     }
 
     if not grouped:
