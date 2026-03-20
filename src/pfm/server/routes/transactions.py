@@ -661,10 +661,10 @@ async def analytics_summary(request: web.Request) -> web.Response:
     start_str = request.query.get("start")
     end_str = request.query.get("end")
 
-    from datetime import UTC, date, datetime, timedelta
+    from datetime import UTC, date, datetime
 
     end = date.fromisoformat(end_str) if end_str else datetime.now(tz=UTC).date()
-    start = date.fromisoformat(start_str) if start_str else end - timedelta(days=30)
+    start = date.fromisoformat(start_str) if start_str else date(2020, 1, 1)
 
     summary = await compute_analytics_summary(repo, store, start, end)
     return web.json_response(summary)
