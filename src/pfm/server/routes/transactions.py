@@ -122,6 +122,11 @@ def _parse_time_value(val: object) -> _LocalDT | None:  # noqa: PLR0911
     # Space-separated: "2026-02-25 17:47:41"
     if " " in val and len(val) >= 16:  # noqa: PLR2004
         return _parse_spaced_to_local(val)
+    # IBKR Flex format: "YYYYMMDD;HHMMSS" (already local)
+    if ";" in val and len(val) >= 15:  # noqa: PLR2004
+        parts = val.split(";", maxsplit=1)
+        if len(parts[1]) >= 4:  # noqa: PLR2004
+            return None, f"{parts[1][:2]}:{parts[1][2:4]}"
     # Direct HH:MM (already local, e.g. KBank) — no date shift
     if val[2] == ":":
         return None, val[:5]
