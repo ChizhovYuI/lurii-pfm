@@ -492,6 +492,21 @@ def _parse_raw_fields(tx: Transaction) -> dict[str, str]:
 # ── Transaction list (static path — before /{id}) ──────────────────────
 
 
+def _filter_by_local_date(
+    items: list[tuple[Transaction, TransactionMetadata | None]],
+    start_iso: str,
+    end_iso: str,
+) -> list[tuple[Transaction, TransactionMetadata | None]]:
+    """Keep only transactions whose local-timezone date falls within [start, end]."""
+    result: list[tuple[Transaction, TransactionMetadata | None]] = []
+    for tx, meta in items:
+        local_date, _ = _extract_datetime(tx)
+        effective = local_date or tx.date.isoformat()
+        if start_iso <= effective <= end_iso:
+            result.append((tx, meta))
+    return result
+
+
 @routes.get("/api/v1/transactions")
 async def list_transactions(request: web.Request) -> web.Response:
     """Fetch transactions for N complete days (local timezone)."""
@@ -526,16 +541,25 @@ async def list_transactions(request: web.Request) -> web.Response:
     if start is not None:
         window_start = max(window_start, start)
 
-    items, total = await store.get_transactions_paginated(
+    # Fetch with ±1 day buffer so timezone-shifted transactions are included.
+    db_start = window_start - timedelta(days=1)
+    db_end = end + timedelta(days=1)
+    items, _ = await store.get_transactions_paginated(
         source_name=source_name,
         tx_type=tx_type,
         category=category,
-        start=window_start,
-        end=end,
+        start=db_start,
+        end=db_end,
         search=search,
         limit=5000,
         offset=0,
     )
+
+    # Resolve local dates and filter to the requested window.
+    window_start_iso = window_start.isoformat()
+    window_end_iso = end.isoformat()
+    items = _filter_by_local_date(items, window_start_iso, window_end_iso)
+    total = len(items)
 
     # Check if there are older transactions for the "load more" cursor.
     next_end = window_start - timedelta(days=1)
@@ -561,8 +585,8 @@ async def list_transactions(request: web.Request) -> web.Response:
 
     prices = await _build_price_map(request.app, items)
     extra: dict[str, object] = {
-        "window_start": window_start.isoformat(),
-        "window_end": end.isoformat(),
+        "window_start": window_start_iso,
+        "window_end": window_end_iso,
         "next_end_date": next_end.isoformat() if older_total > 0 else None,
     }
 
