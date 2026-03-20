@@ -55,6 +55,29 @@ def _extract_description(tx: Transaction) -> str:
     return ""
 
 
+def _extract_counterparty(tx: Transaction) -> str:
+    """Infer counterparty asset from raw_json (OKX instId, IBKR currency, etc.)."""
+    if not tx.raw_json:
+        return ""
+    try:
+        parsed = json.loads(tx.raw_json)
+        if not isinstance(parsed, dict):
+            return ""
+        # Instrument pair (e.g. OKX instId "BTC-USD").
+        inst_id = parsed.get("instId") or parsed.get("market") or ""
+        if isinstance(inst_id, str) and "-" in inst_id:
+            parts = inst_id.split("-", maxsplit=1)
+            other = parts[1] if parts[0].upper() == tx.asset.upper() else parts[0]
+            return other.upper()
+        # Settlement currency (e.g. IBKR currency "USD" for stock trades).
+        currency = parsed.get("currency")
+        if isinstance(currency, str) and currency.upper() != tx.asset.upper():
+            return currency.upper()
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return ""
+
+
 _TIME_KEYS_DIRECT = ("time", "ts", "fillTime", "transactionTime")
 _TIME_KEYS_DATETIME = (
     "timestamp",
@@ -219,6 +242,7 @@ def _serialize_tx(
     etype = effective_type(tx, meta)
     local_date, local_time = _extract_datetime(tx)
     usd_value = _resolve_usd(tx, prices) if prices else tx.usd_value
+    cp_asset = tx.counterparty_asset or _extract_counterparty(tx)
     result: dict[str, object] = {
         "id": tx.id,
         "date": local_date or tx.date.isoformat(),
@@ -230,7 +254,7 @@ def _serialize_tx(
         "asset": tx.asset,
         "amount": _str_decimal(tx.amount),
         "usd_value": _str_decimal(usd_value),
-        "counterparty_asset": tx.counterparty_asset,
+        "counterparty_asset": cp_asset or None,
         "counterparty_amount": _str_decimal(tx.counterparty_amount),
         "tx_id": tx.tx_id,
         "trade_side": tx.trade_side,
