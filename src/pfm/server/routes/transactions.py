@@ -745,15 +745,12 @@ def _score_transfer_candidates(  # noqa: PLR0913
     source_filter: str | None,
     nearby: list[Transaction],
     meta_map: dict[int, TransactionMetadata],
-) -> list[tuple[float, Transaction]]:
-    """Score nearby transactions as potential transfer counterparts."""
-    from pfm.analytics.transfer_detector import (
-        _amounts_within_tolerance,
-        _date_proximity_score,
-    )
-
+    prices: dict[str, Decimal],
+) -> list[tuple[Decimal, Transaction]]:
+    """Find transfer counterparts sorted by USD amount difference (ascending)."""
     is_outflow = effective_type(tx, meta) in _OUTFLOW_EFFECTIVE_TYPES
-    scored: list[tuple[float, Transaction]] = []
+    tx_usd = _resolve_usd(tx, prices)
+    result: list[tuple[Decimal, Transaction]] = []
 
     for candidate in nearby:
         if candidate.id is None or candidate.id == tx_id:
@@ -769,13 +766,10 @@ def _score_transfer_candidates(  # noqa: PLR0913
         c_is_outflow = effective_type(candidate, c_meta) in _OUTFLOW_EFFECTIVE_TYPES
         if c_is_outflow == is_outflow:
             continue
-        amount_score = _amounts_within_tolerance(tx.amount, candidate.amount)
-        date_score = _date_proximity_score(tx.date, candidate.date)
-        if amount_score == 0.0 and date_score == 0.0:
-            continue
-        scored.append((amount_score * 0.6 + date_score * 0.4, candidate))
+        usd_diff = abs(tx_usd - _resolve_usd(candidate, prices))
+        result.append((usd_diff, candidate))
 
-    return scored
+    return result
 
 
 @routes.get("/api/v1/transactions/{id}/transfer-candidates")
@@ -805,8 +799,9 @@ async def transfer_candidates(request: web.Request) -> web.Response:
     nearby_ids = [t.id for t in nearby if t.id is not None]
     meta_map = await store.get_metadata_batch(nearby_ids)
 
-    scored = _score_transfer_candidates(tx, meta, tx_id, tx_source, source_filter, nearby, meta_map)
-    scored.sort(key=lambda p: p[0], reverse=True)
+    prices = await _build_price_map(request.app, [(tx, None)])
+    scored = _score_transfer_candidates(tx, meta, tx_id, tx_source, source_filter, nearby, meta_map, prices)
+    scored.sort(key=lambda p: p[0])  # ascending — closest amount first
 
     # Collect unique source names for the source picker.
     sources: list[str] = []
@@ -816,8 +811,6 @@ async def transfer_candidates(request: web.Request) -> web.Response:
         if s not in seen_sources:
             seen_sources.add(s)
             sources.append(s)
-
-    prices = await _build_price_map(request.app, [(tx, None)])
     candidates_list = [
         {
             "id": c.id,
@@ -827,9 +820,9 @@ async def transfer_candidates(request: web.Request) -> web.Response:
             "asset": c.asset,
             "amount": _str_decimal(c.amount),
             "usd_value": _str_decimal(_resolve_usd(c, prices)),
-            "score": round(score, 4),
+            "usd_diff": _str_decimal(diff),
         }
-        for score, c in scored[:20]
+        for diff, c in scored[:20]
     ]
 
     return web.json_response({"sources": sources, "candidates": candidates_list})
