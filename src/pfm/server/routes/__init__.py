@@ -22,6 +22,7 @@ def setup_routes(app: web.Application) -> None:
     from pfm.server.routes.report import routes as report_routes
     from pfm.server.routes.settings import routes as settings_routes
     from pfm.server.routes.sources import routes as sources_routes
+    from pfm.server.routes.statement import routes as statement_routes
     from pfm.server.routes.transactions import routes as transactions_routes
     from pfm.server.routes.updates import routes as updates_routes
     from pfm.server.ws import websocket_handler
@@ -38,6 +39,7 @@ def setup_routes(app: web.Application) -> None:
     app.router.add_routes(report_routes)
     app.router.add_routes(settings_routes)
     app.router.add_routes(apy_rules_routes)
+    app.router.add_routes(statement_routes)
     app.router.add_routes(transactions_routes)
     app.router.add_routes(updates_routes)
     app.router.add_route("GET", "/api/v1/ws", websocket_handler)
