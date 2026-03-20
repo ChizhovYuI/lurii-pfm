@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from aiohttp import web
@@ -168,6 +169,24 @@ def _find_time_in_raw(parsed: dict[str, object], tx_date_iso: str) -> tuple[str 
     return None
 
 
+async def _build_price_map(
+    app: web.Application,
+    items: list[tuple[Transaction, TransactionMetadata | None]],
+) -> dict[str, Decimal]:
+    """Build asset -> USD price map from the prices table (latest available date)."""
+    repo = get_repo(app)
+    dates = sorted({tx.date for tx, _ in items}, reverse=True)
+    for d in dates:
+        prices = await repo.get_prices_by_date(d)
+        if prices:
+            result: dict[str, Decimal] = {}
+            for p in prices:
+                if p.currency == "USD" and p.asset.upper() not in result:
+                    result[p.asset.upper()] = p.price
+            return result
+    return {}
+
+
 def _build_id_lookup(
     items: list[tuple[Transaction, TransactionMetadata | None]],
 ) -> dict[int, tuple[Transaction, TransactionMetadata | None]]:
@@ -175,9 +194,31 @@ def _build_id_lookup(
     return {tx.id: (tx, meta) for tx, meta in items if tx.id is not None}
 
 
-def _serialize_tx(tx: Transaction, meta: TransactionMetadata | None) -> dict[str, object]:
+_STABLECOIN_TICKERS: frozenset[str] = frozenset({"USDC", "USDT", "DAI", "BUSD", "TUSD", "USDP", "FDUSD"})
+_FIAT_USD: frozenset[str] = frozenset({"USD"})
+
+
+def _resolve_usd(tx: Transaction, prices: dict[str, Decimal]) -> Decimal:
+    """Return stored usd_value, or estimate from price map when zero."""
+    if tx.usd_value:
+        return tx.usd_value
+    ticker = tx.asset.upper()
+    if ticker in _STABLECOIN_TICKERS or ticker in _FIAT_USD:
+        return abs(tx.amount)
+    price = prices.get(ticker)
+    if price:
+        return abs(tx.amount) * price
+    return Decimal(0)
+
+
+def _serialize_tx(
+    tx: Transaction,
+    meta: TransactionMetadata | None,
+    prices: dict[str, Decimal] | None = None,
+) -> dict[str, object]:
     etype = effective_type(tx, meta)
     local_date, local_time = _extract_datetime(tx)
+    usd_value = _resolve_usd(tx, prices) if prices else tx.usd_value
     result: dict[str, object] = {
         "id": tx.id,
         "date": local_date or tx.date.isoformat(),
@@ -188,7 +229,7 @@ def _serialize_tx(tx: Transaction, meta: TransactionMetadata | None) -> dict[str
         "effective_type": etype,
         "asset": tx.asset,
         "amount": _str_decimal(tx.amount),
-        "usd_value": _str_decimal(tx.usd_value),
+        "usd_value": _str_decimal(usd_value),
         "counterparty_asset": tx.counterparty_asset,
         "counterparty_amount": _str_decimal(tx.counterparty_amount),
         "tx_id": tx.tx_id,
@@ -216,10 +257,12 @@ def _serialize_grouped_tx(
     group: TransactionGroup,
     group_index: int,
     by_id: dict[int, tuple[Transaction, TransactionMetadata | None]] | None = None,
+    prices: dict[str, Decimal] | None = None,
 ) -> dict[str, object]:
     """Serialize a transaction group as a single row with negative synthetic ID."""
     local_date, local_time = _group_datetime(group, by_id)
     category = _group_category(group, by_id)
+    usd_value = _group_usd_value(group, by_id, prices)
     return {
         "id": -(group_index + 1),
         "date": local_date or group.display_date.isoformat(),
@@ -230,7 +273,7 @@ def _serialize_grouped_tx(
         "effective_type": group.display_tx_type,
         "asset": group.from_asset,
         "amount": _str_decimal(group.from_amount),
-        "usd_value": _str_decimal(group.display_usd_value),
+        "usd_value": _str_decimal(usd_value),
         "counterparty_asset": None,
         "counterparty_amount": None,
         "tx_id": None,
@@ -291,6 +334,28 @@ def _group_category(
     if not counts:
         return None
     return max(counts, key=lambda k: counts[k])
+
+
+def _group_usd_value(
+    group: TransactionGroup,
+    by_id: dict[int, tuple[Transaction, TransactionMetadata | None]] | None,
+    prices: dict[str, Decimal] | None,
+) -> Decimal:
+    """Return group USD value, estimating from prices if stored value is zero."""
+    if group.display_usd_value:
+        return group.display_usd_value
+    if not by_id or not prices:
+        return Decimal(0)
+    # Sum USD for the from-asset side only (avoids double-counting trade pairs).
+    total = Decimal(0)
+    for cid in group.child_ids:
+        pair = by_id.get(cid)
+        if pair is None:
+            continue
+        tx = pair[0]
+        if tx.asset.upper() == group.from_asset.upper():
+            total += _resolve_usd(tx, prices)
+    return total
 
 
 def _serialize_category_rule(rule: CategoryRule) -> dict[str, object]:
@@ -429,10 +494,12 @@ async def list_transactions(request: web.Request) -> web.Response:
         offset=offset,
     )
 
+    prices = await _build_price_map(request.app, items)
+
     if not grouped:
         return web.json_response(
             {
-                "items": [_serialize_tx(tx, meta) for tx, meta in items],
+                "items": [_serialize_tx(tx, meta, prices) for tx, meta in items],
                 "total": total,
                 "limit": limit,
                 "offset": offset,
@@ -459,11 +526,11 @@ async def list_transactions(request: web.Request) -> web.Response:
 
     serialized: list[dict[str, object]] = []
     for i, group in enumerate(grouping.groups):
-        row = _serialize_grouped_tx(group, i, by_id)
+        row = _serialize_grouped_tx(group, i, by_id, prices)
         serialized.append(row)
 
     for tx, meta in grouping.ungrouped:
-        row = _serialize_tx(tx, meta)
+        row = _serialize_tx(tx, meta, prices)
         row["group"] = None
         serialized.append(row)
 
@@ -563,7 +630,8 @@ async def get_transaction(request: web.Request) -> web.Response:
         return web.json_response({"error": "Transaction not found"}, status=404)
     tx, meta = result
 
-    data = _serialize_tx(tx, meta)
+    prices = await _build_price_map(request.app, [(tx, meta)])
+    data = _serialize_tx(tx, meta, prices)
     data["rawFields"] = _parse_raw_fields(tx)
 
     # Find the matched category rule (if any).
