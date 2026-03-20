@@ -494,9 +494,10 @@ def _parse_raw_fields(tx: Transaction) -> dict[str, str]:
 
 @routes.get("/api/v1/transactions")
 async def list_transactions(request: web.Request) -> web.Response:
-    """Paginated transaction list with optional filters."""
-    store = _get_metadata_store(request.app)
+    """Fetch transactions for N complete days (local timezone)."""
+    from datetime import UTC, datetime, timedelta
 
+    store = _get_metadata_store(request.app)
     source_name = request.query.get("source_name")
     tx_type = request.query.get("tx_type")
     category = request.query.get("category")
@@ -504,50 +505,86 @@ async def list_transactions(request: web.Request) -> web.Response:
     end_str = request.query.get("end")
     search = request.query.get("search")
     grouped = request.query.get("grouped", "true").lower() != "false"
-    limit = min(_parse_int_query(request, "limit", 50), 200)
-    offset = _parse_int_query(request, "offset", 0)
+    days_param = request.query.get("days", "7")
 
-    from datetime import date
+    try:
+        days = int(days_param)
+    except ValueError:
+        return web.json_response({"error": "days must be a positive integer"}, status=400)
+    if days <= 0:
+        return web.json_response({"error": "days must be a positive integer"}, status=400)
 
-    start = date.fromisoformat(start_str) if start_str else None
-    end = date.fromisoformat(end_str) if end_str else None
+    from datetime import date as date_cls
+
+    start = date_cls.fromisoformat(start_str) if start_str else None
+    end = date_cls.fromisoformat(end_str) if end_str else None
+
+    # ``end`` is the cursor — if omitted, use today (local).
+    if end is None:
+        end = datetime.now(tz=UTC).astimezone().date()
+    window_start = end - timedelta(days=days - 1)
+    if start is not None:
+        window_start = max(window_start, start)
 
     items, total = await store.get_transactions_paginated(
         source_name=source_name,
         tx_type=tx_type,
         category=category,
-        start=start,
+        start=window_start,
         end=end,
         search=search,
-        limit=limit,
-        offset=offset,
+        limit=5000,
+        offset=0,
     )
 
+    # Check if there are older transactions for the "load more" cursor.
+    next_end = window_start - timedelta(days=1)
+    _, older_total = await store.get_transactions_paginated(
+        source_name=source_name,
+        tx_type=tx_type,
+        category=category,
+        start=start,
+        end=next_end,
+        search=search,
+        limit=1,
+        offset=0,
+    )
+
+    # Fetch transfer counterparts that may fall outside the date window.
+    if grouped:
+        page_ids = {tx.id for tx, _ in items if tx.id is not None}
+        for _, meta in items:
+            if meta and meta.is_internal_transfer and meta.transfer_pair_id and meta.transfer_pair_id not in page_ids:
+                pair = await store.get_transaction_by_id(meta.transfer_pair_id)
+                if pair:
+                    items.append(pair)
+
     prices = await _build_price_map(request.app, items)
+    extra: dict[str, object] = {
+        "window_start": window_start.isoformat(),
+        "window_end": end.isoformat(),
+        "next_end_date": next_end.isoformat() if older_total > 0 else None,
+    }
 
     if not grouped:
         return web.json_response(
             {
                 "items": [_serialize_tx(tx, meta, prices) for tx, meta in items],
                 "total": total,
-                "limit": limit,
-                "offset": offset,
+                **extra,
             }
         )
 
-    # Fetch transfer counterparts that may be outside the current page.
-    counterpart_ids: list[int] = []
-    page_ids = {tx.id for tx, _ in items if tx.id is not None}
-    for _, meta in items:
-        if meta and meta.is_internal_transfer and meta.transfer_pair_id and meta.transfer_pair_id not in page_ids:
-            counterpart_ids.append(meta.transfer_pair_id)
+    return _grouped_response(items, total, prices, extra)
 
-    if counterpart_ids:
-        for cid in counterpart_ids:
-            result = await store.get_transaction_by_id(cid)
-            if result:
-                items.append(result)
 
+def _grouped_response(
+    items: list[tuple[Transaction, TransactionMetadata | None]],
+    total: int,
+    prices: dict[str, Decimal],
+    extra: dict[str, object],
+) -> web.Response:
+    """Build grouped transaction response (counterparts must be pre-fetched by caller)."""
     from pfm.analytics.transaction_grouper import group_transactions
 
     grouping = group_transactions(items)
@@ -555,15 +592,12 @@ async def list_transactions(request: web.Request) -> web.Response:
 
     serialized: list[dict[str, object]] = []
     for i, group in enumerate(grouping.groups):
-        row = _serialize_grouped_tx(group, i, by_id, prices)
-        serialized.append(row)
-
+        serialized.append(_serialize_grouped_tx(group, i, by_id, prices))
     for tx, meta in grouping.ungrouped:
         row = _serialize_tx(tx, meta, prices)
         row["group"] = None
         serialized.append(row)
 
-    # Sort by date descending (grouped rows use display_date).
     serialized.sort(key=lambda r: (str(r.get("date", "")), r.get("id", 0)), reverse=True)
 
     return web.json_response(
@@ -571,8 +605,7 @@ async def list_transactions(request: web.Request) -> web.Response:
             "items": serialized,
             "total": total,
             "total_ungrouped": grouping.total_ungrouped,
-            "limit": limit,
-            "offset": offset,
+            **extra,
         }
     )
 
