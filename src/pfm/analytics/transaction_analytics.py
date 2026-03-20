@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 
 _SPENDING_TYPES = frozenset({TransactionType.SPEND, TransactionType.FEE})
 _INCOME_TYPES = frozenset({TransactionType.YIELD})
+_INCOME_CATEGORY = "income"
 
 
 async def compute_analytics_summary(
@@ -56,7 +57,7 @@ async def compute_analytics_summary(
         if tx.tx_type in _SPENDING_TYPES:
             spending_by_category[category] += usd
             total_spending += usd
-        elif tx.tx_type in _INCOME_TYPES:
+        elif tx.tx_type in _INCOME_TYPES or (tx.tx_type == TransactionType.DEPOSIT and category == _INCOME_CATEGORY):
             income_by_category[category] += usd
             total_income += usd
 
