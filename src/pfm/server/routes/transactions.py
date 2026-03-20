@@ -111,6 +111,13 @@ def _extract_time(tx: Transaction) -> str | None:
     return None
 
 
+def _build_id_lookup(
+    items: list[tuple[Transaction, TransactionMetadata | None]],
+) -> dict[int, tuple[Transaction, TransactionMetadata | None]]:
+    """Build a mapping from transaction ID to (Transaction, metadata) pair."""
+    return {tx.id: (tx, meta) for tx, meta in items if tx.id is not None}
+
+
 def _serialize_tx(tx: Transaction, meta: TransactionMetadata | None) -> dict[str, object]:
     etype = effective_type(tx, meta)
     result: dict[str, object] = {
@@ -147,12 +154,18 @@ def _serialize_tx(tx: Transaction, meta: TransactionMetadata | None) -> dict[str
     return result
 
 
-def _serialize_grouped_tx(group: TransactionGroup, group_index: int) -> dict[str, object]:
+def _serialize_grouped_tx(
+    group: TransactionGroup,
+    group_index: int,
+    by_id: dict[int, tuple[Transaction, TransactionMetadata | None]] | None = None,
+) -> dict[str, object]:
     """Serialize a transaction group as a single row with negative synthetic ID."""
+    time = _group_time(group, by_id)
+    category = _group_category(group, by_id)
     return {
         "id": -(group_index + 1),
         "date": group.display_date.isoformat(),
-        "time": None,
+        "time": time,
         "source": group.from_source,
         "source_name": group.from_source,
         "tx_type": group.display_tx_type,
@@ -165,7 +178,7 @@ def _serialize_grouped_tx(group: TransactionGroup, group_index: int) -> dict[str
         "tx_id": None,
         "trade_side": None,
         "description": "",
-        "metadata": None,
+        "metadata": {"category": category} if category else None,
         "group": {
             "type": group.group_type,
             "child_ids": group.child_ids,
@@ -180,6 +193,44 @@ def _serialize_grouped_tx(group: TransactionGroup, group_index: int) -> dict[str
             "to_amount": _str_decimal(group.to_amount),
         },
     }
+
+
+def _group_time(
+    group: TransactionGroup,
+    by_id: dict[int, tuple[Transaction, TransactionMetadata | None]] | None,
+) -> str | None:
+    """Return the earliest HH:MM from child transactions."""
+    if not by_id:
+        return None
+    times: list[str] = []
+    for cid in group.child_ids:
+        pair = by_id.get(cid)
+        if pair is None:
+            continue
+        t = _extract_time(pair[0])
+        if t:
+            times.append(t)
+    return min(times) if times else None
+
+
+def _group_category(
+    group: TransactionGroup,
+    by_id: dict[int, tuple[Transaction, TransactionMetadata | None]] | None,
+) -> str | None:
+    """Return the most common category from child transaction metadata."""
+    if not by_id:
+        return None
+    counts: dict[str, int] = {}
+    for cid in group.child_ids:
+        pair = by_id.get(cid)
+        if pair is None:
+            continue
+        meta = pair[1]
+        if meta and meta.category:
+            counts[meta.category] = counts.get(meta.category, 0) + 1
+    if not counts:
+        return None
+    return max(counts, key=lambda k: counts[k])
 
 
 def _serialize_category_rule(rule: CategoryRule) -> dict[str, object]:
@@ -344,10 +395,11 @@ async def list_transactions(request: web.Request) -> web.Response:
     from pfm.analytics.transaction_grouper import group_transactions
 
     grouping = group_transactions(items)
+    by_id = _build_id_lookup(items)
 
     serialized: list[dict[str, object]] = []
     for i, group in enumerate(grouping.groups):
-        row = _serialize_grouped_tx(group, i)
+        row = _serialize_grouped_tx(group, i, by_id)
         serialized.append(row)
 
     for tx, meta in grouping.ungrouped:
