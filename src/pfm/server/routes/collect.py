@@ -83,6 +83,7 @@ async def _run_collection(app: web.Application, source_name: str | None) -> None
         store = SourceStore(db_path)
 
         if source_name:
+            logger.info("Single-source collection requested: %s", source_name)
             try:
                 sources = [await store.get(source_name)]
             except SourceNotFoundError:
@@ -94,6 +95,7 @@ async def _run_collection(app: web.Application, source_name: str | None) -> None
                 )
                 return
         else:
+            logger.info("Full collection requested (all enabled sources)")
             sources = await store.list_enabled()
 
         if not source_name:
@@ -105,6 +107,7 @@ async def _run_collection(app: web.Application, source_name: str | None) -> None
 
         collectors = await _build_collectors(sources, pricing, db_path)
         total = len(collectors)
+        logger.info("Built %d collector(s) for sources: %s", total, [s.name for s in sources])
 
         async def _on_progress(current: float, total: float, message: str) -> None:
             await broadcaster.broadcast(
