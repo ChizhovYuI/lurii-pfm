@@ -145,7 +145,7 @@ class MetadataStore:
         return result
 
     async def upsert_metadata_batch(self, items: list[TransactionMetadata]) -> None:
-        """Batch upsert metadata for multiple transactions."""
+        """Batch upsert category metadata. Preserves type_override, transfer, and review fields."""
         if not items:
             return
         await self._db.executemany(
@@ -158,12 +158,6 @@ class MetadataStore:
             "  category = excluded.category,"
             "  category_source = excluded.category_source,"
             "  category_confidence = excluded.category_confidence,"
-            "  type_override = excluded.type_override,"
-            "  is_internal_transfer = excluded.is_internal_transfer,"
-            "  transfer_pair_id = excluded.transfer_pair_id,"
-            "  transfer_detected_by = excluded.transfer_detected_by,"
-            "  reviewed = excluded.reviewed,"
-            "  notes = excluded.notes,"
             "  updated_at = excluded.updated_at",
             [
                 (
