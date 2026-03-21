@@ -48,12 +48,10 @@ async def collect_status(request: web.Request) -> web.Response:
 @routes.post("/api/v1/collect")
 async def start_collection(request: web.Request) -> web.Response:
     """Spawn a background collection task. Returns 202 immediately."""
-    body: dict[str, Any] = {}
-    if request.can_read_body:
-        try:
-            body = await request.json()
-        except json.JSONDecodeError:
-            logger.debug("Could not parse collection request body as JSON")
+    try:
+        body: dict[str, Any] = await request.json()
+    except (json.JSONDecodeError, ValueError, TypeError):
+        body = {}
 
     source_name: str | None = body.get("source")
 
