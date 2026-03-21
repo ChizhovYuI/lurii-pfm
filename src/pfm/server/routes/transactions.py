@@ -1152,6 +1152,15 @@ async def _apply_type_rule(repo: object, store: MetadataStore, rule: TypeRule) -
             "UPDATE transactions SET tx_type = ? WHERE id = ?",
             [(t, tid) for tid, t in updates],
         )
+        # Clear category for affected transactions so re-categorization picks up the new type.
+        affected_ids = [tid for tid, _ in updates]
+        placeholders = ",".join("?" for _ in affected_ids)
+        await repo.connection.execute(
+            f"UPDATE transaction_metadata SET category = NULL, category_source = 'auto',"  # noqa: S608
+            f" category_confidence = NULL WHERE transaction_id IN ({placeholders})"
+            f" AND category_source != 'manual'",
+            affected_ids,
+        )
         await repo.connection.commit()
         logger.info("Type rule applied to %d transactions", len(updates))
 
