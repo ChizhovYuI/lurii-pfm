@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import socket
 from datetime import UTC, datetime, time, timedelta
 from typing import TYPE_CHECKING
 
@@ -31,13 +30,15 @@ def _seconds_until(target: time) -> float:
 
 
 async def _check_internet() -> bool:
-    """Return True if internet is reachable (DNS resolve probe)."""
-    loop = asyncio.get_running_loop()
+    """Return True if internet is reachable (HTTP HEAD probe)."""
+    import httpx
+
     try:
-        await loop.getaddrinfo(_INTERNET_CHECK_HOST, 443, family=socket.AF_INET)
-    except socket.gaierror:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.head(f"https://{_INTERNET_CHECK_HOST}/api/v3/ping")
+            return resp.status_code < 500  # noqa: PLR2004
+    except (httpx.TransportError, OSError):
         return False
-    return True
 
 
 async def _wait_for_internet() -> bool:
