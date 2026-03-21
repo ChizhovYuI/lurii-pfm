@@ -978,17 +978,33 @@ async def set_type_override(request: web.Request) -> web.Response:
         notes=existing_meta.notes if existing_meta else "",
     )
 
-    # Re-categorize with the new type.
+    # Re-categorize: try rules first, then auto-set if only one category exists.
     from pfm.analytics.categorizer import categorize_transaction
 
     rules = await store.get_category_rules()
     cat_result = categorize_transaction(tx, rules, meta)
+    resolved_category: str | None = None
+    resolved_source = "auto"
+    resolved_confidence: float | None = None
+
     if cat_result and cat_result.source == "rule":
+        resolved_category = cat_result.category
+        resolved_source = cat_result.source
+        resolved_confidence = cat_result.confidence
+    else:
+        # Auto-set if exactly one category available for this type.
+        categories = await store.get_categories(tx_type=new_type)
+        if len(categories) == 1:
+            resolved_category = categories[0].category
+            resolved_source = "auto"
+            resolved_confidence = 0.5
+
+    if resolved_category:
         meta = await store.upsert_metadata(
             tx_id,
-            category=cat_result.category,
-            category_source=cat_result.source,
-            category_confidence=cat_result.confidence,
+            category=resolved_category,
+            category_source=resolved_source,
+            category_confidence=resolved_confidence,
             type_override=new_type,
             is_internal_transfer=meta.is_internal_transfer,
             transfer_pair_id=meta.transfer_pair_id,
