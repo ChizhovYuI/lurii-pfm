@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -16,6 +17,8 @@ if TYPE_CHECKING:
     from pfm.analytics.transaction_grouper import TransactionGroup
     from pfm.db.metadata_store import MetadataStore
     from pfm.db.models import CategoryRule, Transaction, TransactionMetadata
+
+logger = logging.getLogger(__name__)
 
 routes = web.RouteTableDef()
 
@@ -1088,9 +1091,25 @@ async def create_category_rule(request: web.Request) -> web.Response:
         field_operator=field_op,
         field_value=field_value,
         source=body.get("source", "*"),
-        priority=body.get("priority"),
+        priority=body.get("priority", 400),
     )
+
+    # Apply new rule to uncategorized transactions.
+    repo = get_repo(request.app)
+    await _run_categorization(repo, store)
+
     return web.json_response(_serialize_category_rule(rule), status=201)
+
+
+async def _run_categorization(repo: object, store: MetadataStore) -> None:
+    from pfm.analytics.categorization_runner import run_categorization
+    from pfm.db.repository import Repository
+
+    if isinstance(repo, Repository):
+        try:
+            await run_categorization(repo, store)
+        except Exception:
+            logger.exception("Post-rule categorization failed")
 
 
 @routes.delete("/api/v1/category-rules/{id}")
@@ -1244,8 +1263,13 @@ async def create_type_rule(request: web.Request) -> web.Response:
         field_name=body.get("field_name", ""),
         field_operator=field_op,
         field_value=field_value,
-        priority=body.get("priority"),
+        priority=body.get("priority", 400),
     )
+
+    # Apply new rule — re-run full categorization (types affect all transactions).
+    repo = get_repo(request.app)
+    await _run_categorization(repo, store)
+
     return web.json_response(_serialize_type_rule(rule), status=201)
 
 
