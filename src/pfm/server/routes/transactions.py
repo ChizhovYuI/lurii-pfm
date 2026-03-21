@@ -671,14 +671,25 @@ async def analytics_summary(request: web.Request) -> web.Response:
 
 @routes.get("/api/v1/transactions/analytics/trends")
 async def analytics_trends(request: web.Request) -> web.Response:
-    """Monthly category trends."""
-    from pfm.analytics.transaction_analytics import compute_monthly_trends
+    """Spending/income trends with configurable granularity (day/week/month)."""
+    from datetime import UTC, datetime
+    from datetime import date as date_cls
+
+    from pfm.analytics.transaction_analytics import compute_trends
 
     repo = get_repo(request.app)
     store = _get_metadata_store(request.app)
 
-    months = _parse_int_query(request, "months", 6)
-    trends = await compute_monthly_trends(repo, store, months)
+    start_str = request.query.get("start")
+    end_str = request.query.get("end")
+    granularity = request.query.get("granularity", "month")
+    if granularity not in ("day", "week", "month"):
+        return web.json_response({"error": "granularity must be day, week, or month"}, status=400)
+
+    end = date_cls.fromisoformat(end_str) if end_str else datetime.now(tz=UTC).date()
+    start = date_cls.fromisoformat(start_str) if start_str else date_cls(2020, 1, 1)
+
+    trends = await compute_trends(repo, store, start, end, granularity)
     return web.json_response(trends)
 
 

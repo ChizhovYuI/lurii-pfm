@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -94,15 +94,25 @@ async def compute_analytics_summary(
     }
 
 
-async def compute_monthly_trends(
+def _bucket_key(d: date, granularity: str) -> str:
+    """Return the bucket key for a date at the given granularity."""
+    if granularity == "day":
+        return d.isoformat()
+    if granularity == "week":
+        # ISO week start (Monday).
+        monday = d - timedelta(days=d.weekday())
+        return monday.isoformat()
+    return d.strftime("%Y-%m")
+
+
+async def compute_trends(
     repo: Repository,
     store: MetadataStore,
-    months: int = 6,
+    start: date,
+    end: date,
+    granularity: str = "month",
 ) -> dict[str, object]:
-    """Compute monthly category breakdown for the last N months."""
-    end = datetime.now(tz=UTC).date()
-    start = end - timedelta(days=months * 31)
-
+    """Compute spending/income trends bucketed by day, week, or month."""
     txs = await repo.get_transactions(start=start, end=end)
     tx_ids = [tx.id for tx in txs if tx.id is not None]
     metadata_map = await store.get_metadata_batch(tx_ids)
@@ -110,7 +120,6 @@ async def compute_monthly_trends(
     dates = list({tx.date for tx in txs})
     prices = await build_price_map(repo, dates)
 
-    # Group by month.
     spending: dict[str, Decimal] = defaultdict(Decimal)
     income: dict[str, Decimal] = defaultdict(Decimal)
     spending_cats: dict[str, dict[str, Decimal]] = defaultdict(lambda: defaultdict(Decimal))
@@ -122,26 +131,27 @@ async def compute_monthly_trends(
         if meta and meta.is_internal_transfer:
             continue
 
-        month_key = tx.date.strftime("%Y-%m")
+        key = _bucket_key(tx.date, granularity)
         category: str = meta.category if meta and meta.category else f"uncategorized_{tx.tx_type.value}"
         usd = resolve_usd(tx, prices)
 
         if tx.tx_type in _SPENDING_TYPES:
-            spending[month_key] += usd
-            spending_cats[month_key][category] += usd
+            spending[key] += usd
+            spending_cats[key][category] += usd
         elif tx.tx_type in _INCOME_TYPES or (tx.tx_type == TransactionType.DEPOSIT and category == _INCOME_CATEGORY):
-            income[month_key] += usd
+            income[key] += usd
 
     categories = await store.get_categories()
     display_map = {cat.category: cat.display_name for cat in categories}
 
-    all_months = sorted({*spending, *income})
+    all_keys = sorted({*spending, *income})
     return {
-        "months": [
+        "granularity": granularity,
+        "points": [
             {
-                "month": m,
-                "spending": _str_decimal(spending.get(m, Decimal(0))),
-                "income": _str_decimal(income.get(m, Decimal(0))),
+                "key": k,
+                "spending": _str_decimal(spending.get(k, Decimal(0))),
+                "income": _str_decimal(income.get(k, Decimal(0))),
                 "categories": [
                     {
                         "category": cat,
@@ -149,12 +159,12 @@ async def compute_monthly_trends(
                         "usd_value": _str_decimal(value),
                     }
                     for cat, value in sorted(
-                        spending_cats.get(m, {}).items(),
+                        spending_cats.get(k, {}).items(),
                         key=lambda item: item[1],
                         reverse=True,
                     )
                 ],
             }
-            for m in all_months
+            for k in all_keys
         ],
     }
