@@ -1118,7 +1118,7 @@ async def create_category_rule(request: web.Request) -> web.Response:
         field_operator=field_op,
         field_value=field_value,
         source=body.get("source", "*"),
-        priority=body.get("priority", 400),
+        priority=body.get("priority", 50),
     )
 
     # Apply new rule to uncategorized transactions.
@@ -1327,7 +1327,7 @@ async def create_type_rule(request: web.Request) -> web.Response:
         field_name=body.get("field_name", ""),
         field_operator=field_op,
         field_value=field_value,
-        priority=body.get("priority", 400),
+        priority=body.get("priority", 50),
     )
 
     # Apply new rule to all non-transfer transactions.
