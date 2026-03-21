@@ -1142,7 +1142,7 @@ async def _apply_type_rule(repo: object, store: MetadataStore, rule: TypeRule) -
         if tx.id is None:
             continue
         meta = meta_map.get(tx.id)
-        if meta and meta.is_internal_transfer:
+        if meta and (meta.is_internal_transfer or meta.type_override):
             continue
         if match_type_rule(tx, rule):
             updates.append((tx.id, rule.result_type))
