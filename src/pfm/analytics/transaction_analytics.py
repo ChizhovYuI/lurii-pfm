@@ -94,6 +94,25 @@ async def compute_analytics_summary(
     }
 
 
+def _generate_all_keys(start: date, end: date, granularity: str) -> list[str]:
+    """Generate all bucket keys in the range, including empty ones."""
+    keys: list[str] = []
+    current = start
+    while current <= end:
+        keys.append(_bucket_key(current, granularity))
+        if granularity == "day":
+            current += timedelta(days=1)
+        elif granularity == "week":
+            current += timedelta(weeks=1)
+        elif current.month == 12:  # noqa: PLR2004
+            current = date(current.year + 1, 1, 1)
+        else:
+            current = date(current.year, current.month + 1, 1)
+    # Deduplicate while preserving order.
+    seen: set[str] = set()
+    return [k for k in keys if not (k in seen or seen.add(k))]  # type: ignore[func-returns-value]
+
+
 def _bucket_key(d: date, granularity: str) -> str:
     """Return the bucket key for a date at the given granularity."""
     if granularity == "day":
@@ -144,7 +163,7 @@ async def compute_trends(
     categories = await store.get_categories()
     display_map = {cat.category: cat.display_name for cat in categories}
 
-    all_keys = sorted({*spending, *income})
+    all_keys = _generate_all_keys(start, end, granularity)
     return {
         "granularity": granularity,
         "points": [
