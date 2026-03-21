@@ -1096,18 +1096,18 @@ async def create_category_rule(request: web.Request) -> web.Response:
 
     # Apply new rule to uncategorized transactions.
     repo = get_repo(request.app)
-    await _run_categorization(repo, store)
+    await _run_categorization(repo, store, force=True)
 
     return web.json_response(_serialize_category_rule(rule), status=201)
 
 
-async def _run_categorization(repo: object, store: MetadataStore) -> None:
+async def _run_categorization(repo: object, store: MetadataStore, *, force: bool = False) -> None:
     from pfm.analytics.categorization_runner import run_categorization
     from pfm.db.repository import Repository
 
     if isinstance(repo, Repository):
         try:
-            await run_categorization(repo, store)
+            await run_categorization(repo, store, force=force)
         except Exception:
             logger.exception("Post-rule categorization failed")
 
@@ -1268,7 +1268,7 @@ async def create_type_rule(request: web.Request) -> web.Response:
 
     # Apply new rule — re-run full categorization (types affect all transactions).
     repo = get_repo(request.app)
-    await _run_categorization(repo, store)
+    await _run_categorization(repo, store, force=True)
 
     return web.json_response(_serialize_type_rule(rule), status=201)
 
