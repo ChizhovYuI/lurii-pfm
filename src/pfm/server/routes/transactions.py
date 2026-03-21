@@ -1128,6 +1128,34 @@ async def create_category_rule(request: web.Request) -> web.Response:
     return web.json_response(_serialize_category_rule(rule), status=201)
 
 
+async def _apply_type_rule(repo: object, store: MetadataStore, rule: TypeRule) -> None:
+    """Apply a single type rule to all non-transfer transactions."""
+    from pfm.analytics.type_resolver import match_type_rule
+    from pfm.db.repository import Repository
+
+    assert isinstance(repo, Repository)  # noqa: S101
+    all_txs = await repo.get_transactions()
+    meta_map = await store.get_metadata_batch([tx.id for tx in all_txs if tx.id is not None])
+
+    updates: list[tuple[int, str]] = []
+    for tx in all_txs:
+        if tx.id is None:
+            continue
+        meta = meta_map.get(tx.id)
+        if meta and meta.is_internal_transfer:
+            continue
+        if match_type_rule(tx, rule):
+            updates.append((tx.id, rule.result_type))
+
+    if updates:
+        await repo.connection.executemany(
+            "UPDATE transactions SET tx_type = ? WHERE id = ?",
+            [(t, tid) for tid, t in updates],
+        )
+        await repo.connection.commit()
+        logger.info("Type rule applied to %d transactions", len(updates))
+
+
 async def _run_categorization(repo: object, store: MetadataStore, *, force: bool = False) -> None:
     from pfm.analytics.categorization_runner import run_categorization
     from pfm.db.repository import Repository
@@ -1293,8 +1321,9 @@ async def create_type_rule(request: web.Request) -> web.Response:
         priority=body.get("priority", 400),
     )
 
-    # Apply new rule — re-run full categorization (types affect all transactions).
+    # Apply new rule to all non-transfer transactions.
     repo = get_repo(request.app)
+    await _apply_type_rule(repo, store, rule)
     await _run_categorization(repo, store, force=True)
 
     return web.json_response(_serialize_type_rule(rule), status=201)
