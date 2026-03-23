@@ -876,7 +876,7 @@ async def test_bybit_dedup_across_account_types(pricing):
     async def mock_get(path, **kwargs):
         nonlocal calls
         calls += 1
-        params = kwargs.get("params", {})
+        params = kwargs.get("params") or {}
         acct_type = params.get("accountType", "")
         if acct_type == "UNIFIED":
             return _mock_response(
@@ -908,7 +908,7 @@ async def test_bybit_fetch_earn_with_apy(pricing):
     collector = BybitCollector(pricing, api_key="key", api_secret="secret")
 
     async def mock_get(path, **kwargs):
-        params = kwargs.get("params", {})
+        params = kwargs.get("params") or {}
         acct_type = params.get("accountType", "")
         category = params.get("category", "")
         if acct_type == "UNIFIED":

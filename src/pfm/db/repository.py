@@ -260,6 +260,8 @@ class Repository:
                 analytics_count = analytics_cursor.rowcount
 
             await self._db.execute("DELETE FROM app_settings WHERE key = ?", (apy_rules_key,))
+            earn_overrides_key = f"earn_overrides:{source_name}"
+            await self._db.execute("DELETE FROM app_settings WHERE key = ?", (earn_overrides_key,))
 
             source_cursor = await self._db.execute(
                 "DELETE FROM sources WHERE name = ?",

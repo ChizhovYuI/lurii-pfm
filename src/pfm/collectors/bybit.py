@@ -28,6 +28,9 @@ _BASE_URL = "https://api.bybit.com"
 _RECV_WINDOW = "20000"
 _RATE_LIMITER = RateLimiter(requests_per_minute=600.0)
 
+# Earn sub-categories already covered by _fetch_earn_raw() via /v5/earn/position.
+_KNOWN_EARN_CATEGORIES: frozenset[str] = frozenset({"Easy Earn"})
+
 
 @register_collector
 class BybitCollector(BaseCollector):
@@ -196,6 +199,64 @@ class BybitCollector(BaseCollector):
                 apr_by_coin[coin] = apr
         return apr_by_product_id, apr_by_coin
 
+    def _find_earn_override(self, category: str, coin: str) -> dict[str, str] | None:
+        """Look up a user-supplied earn override for (category, coin)."""
+        overrides: list[dict[str, str]] = getattr(self, "earn_overrides", [])
+        for ov in overrides:
+            if ov.get("category") == category and ov.get("coin", "").upper() == coin.upper():
+                return ov
+        return None
+
+    def _apply_earn_override(self, cat_name: str, ticker: str, meta: dict[str, object]) -> Decimal:
+        """Apply user-supplied earn override (APR, settlement) and return APR as-is."""
+        override = self._find_earn_override(cat_name, ticker)
+        if not override:
+            return Decimal(0)
+        apy = self._to_apr(override.get("apr", "0"))
+        settlement = override.get("settlement_at", "")
+        if settlement:
+            meta["settlement_at"] = settlement
+        return apy
+
+    async def _fetch_earn_extra_raw(self) -> list[RawBalance]:
+        """Fetch Earn sub-categories not covered by /v5/earn/position (e.g. Dual Asset)."""
+        try:
+            data = await self._get("/v5/asset/asset-overview")
+        except (httpx.HTTPStatusError, ValueError):
+            logger.warning("Bybit: failed to fetch asset-overview for extra earn categories")
+            return []
+
+        raw: list[RawBalance] = []
+        for account in data.get("result", {}).get("list", []):
+            if account.get("accountType") != "Earn":
+                continue
+            for cat in account.get("categories", []):
+                cat_name = str(cat.get("category", ""))
+                if cat_name in _KNOWN_EARN_CATEGORIES:
+                    continue
+                for coin in cat.get("coinDetail", []):
+                    ticker = str(coin.get("coin", "")).upper()
+                    amount = self._to_decimal(coin.get("equity", "0"))
+                    if not ticker or amount == 0:
+                        continue
+
+                    meta: dict[str, object] = {
+                        "account_type": "earn",
+                        "category": cat_name,
+                        "row": coin,
+                    }
+                    apy = self._apply_earn_override(cat_name, ticker, meta)
+
+                    raw.append(
+                        RawBalance(
+                            asset=ticker,
+                            amount=amount,
+                            apy=apy,
+                            raw_json=json.dumps(meta),
+                        )
+                    )
+        return raw
+
     async def fetch_raw_balances(self) -> list[RawBalance]:
         """Fetch unified + funding + earn account balances."""
         totals: dict[str, Decimal] = {}
@@ -216,6 +277,10 @@ class BybitCollector(BaseCollector):
         # Earn accounts are separate — append as distinct raw balances with APY
         earn_raw = await self._fetch_earn_raw()
         raw.extend(earn_raw)
+
+        # Extra earn sub-categories (Dual Asset, Double-Win, etc.)
+        earn_extra = await self._fetch_earn_extra_raw()
+        raw.extend(earn_extra)
 
         logger.info("Bybit: found %d non-zero balances", len(raw))
         return raw

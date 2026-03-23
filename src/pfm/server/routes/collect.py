@@ -118,9 +118,7 @@ async def _run_collection(app: web.Application, source_name: str | None) -> None
 
         ok_count = sum(1 for r in results if not r.errors)
         err_count = sum(1 for r in results if r.errors)
-        summary = f"Done. {ok_count} ok"
-        if err_count:
-            summary += f". {err_count} error{'s' if err_count != 1 else ''}"
+        summary = f"Done. {ok_count} ok" + (f". {err_count} error{'s' if err_count != 1 else ''}" if err_count else "")
 
         try:
             await _run_analyze(repo)
@@ -128,13 +126,14 @@ async def _run_collection(app: web.Application, source_name: str | None) -> None
         except Exception:
             logger.exception("Post-collection analyze failed")
 
-        await broadcaster.broadcast(
-            {
-                "type": "collection_completed",
-                "results": [collector_result_to_dict(r) for r in results],
-                "message": summary,
-            }
-        )
+        event: dict[str, object] = {
+            "type": "collection_completed",
+            "results": [collector_result_to_dict(r) for r in results],
+            "message": summary,
+        }
+        if source_name:
+            event["source"] = source_name
+        await broadcaster.broadcast(event)
 
     except Exception as exc:
         logger.exception("Collection background task failed")
@@ -162,6 +161,7 @@ async def _build_collectors(
         collector = collector_cls(pricing, **creds)
         collector.instance_name = src.name
         await _inject_apy_rules(collector, src, db_path)
+        await _inject_earn_overrides(collector, src, db_path)
         collectors.append((src, collector))
     return collectors
 
@@ -191,6 +191,16 @@ async def _inject_apy_rules(collector: object, src: Source, db_path: str | Path)
 
     store = ApyRulesStore(db_path)
     collector.apy_rules = await store.load_rules(src.name)  # type: ignore[attr-defined]
+
+
+async def _inject_earn_overrides(collector: object, src: Source, db_path: str | Path) -> None:
+    """Load earn overrides (APR, settlement) for sources that have them."""
+    from pfm.db.earn_override_store import EarnOverrideStore
+
+    store = EarnOverrideStore(db_path)
+    overrides = await store.load(src.name)
+    if overrides:
+        collector.earn_overrides = overrides  # type: ignore[attr-defined]
 
 
 async def _run_analyze(repo: object) -> None:

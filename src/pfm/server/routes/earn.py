@@ -97,8 +97,59 @@ async def earn_history(request: web.Request) -> web.Response:
     )
 
 
+# ── Earn overrides (manual APR / settlement for positions the API can't detail) ──
+
+
+@routes.get("/api/v1/sources/{name}/earn-overrides")
+async def list_earn_overrides(request: web.Request) -> web.Response:
+    """List earn overrides for a source."""
+    from pfm.db.earn_override_store import EarnOverrideStore
+
+    source_name = request.match_info["name"]
+    store = EarnOverrideStore(request.app["db_path"])
+    overrides = await store.load(source_name)
+    return web.json_response({"overrides": overrides})
+
+
+@routes.put("/api/v1/sources/{name}/earn-overrides")
+async def set_earn_overrides(request: web.Request) -> web.Response:
+    """Replace all earn overrides for a source.
+
+    Body: {"overrides": [{"category": "..", "coin": "..", "apr": "..", "settlement_at": ".."}]}
+    """
+    from pfm.db.earn_override_store import EarnOverrideStore
+
+    source_name = request.match_info["name"]
+    body = await request.json()
+    overrides = body.get("overrides")
+    if not isinstance(overrides, list):
+        return web.json_response({"error": "overrides must be a list"}, status=400)
+
+    for ov in overrides:
+        if not isinstance(ov, dict) or not ov.get("category") or not ov.get("coin"):
+            return web.json_response({"error": "each override must have category and coin"}, status=400)
+
+    store = EarnOverrideStore(request.app["db_path"])
+    await store.save(source_name, overrides)
+    return web.json_response({"overrides": overrides})
+
+
+@routes.delete("/api/v1/sources/{name}/earn-overrides")
+async def delete_earn_overrides(request: web.Request) -> web.Response:
+    """Delete all earn overrides for a source."""
+    from pfm.db.earn_override_store import EarnOverrideStore
+
+    source_name = request.match_info["name"]
+    store = EarnOverrideStore(request.app["db_path"])
+    await store.save(source_name, [])
+    return web.json_response({"overrides": []})
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+
 def _position_to_dict(snap: Snapshot) -> dict[str, str | int | None]:
-    return {
+    result: dict[str, str | int | None] = {
         "id": snap.id,
         "source": snap.source,
         "source_name": snap.source_name or snap.source,
@@ -109,6 +160,18 @@ def _position_to_dict(snap: Snapshot) -> dict[str, str | int | None]:
         "price": _str_decimal(snap.price),
         "apy": _str_decimal(snap.apy),
     }
+    # Expose earn metadata from raw_json when present.
+    if snap.raw_json:
+        try:
+            raw = json.loads(snap.raw_json)
+        except json.JSONDecodeError:
+            raw = {}
+        if isinstance(raw, dict):
+            if raw.get("settlement_at"):
+                result["settlement_at"] = raw["settlement_at"]
+            if raw.get("category"):
+                result["earn_category"] = raw["category"]
+    return result
 
 
 def _earn_totals(positions: list[Snapshot]) -> tuple[Decimal, Decimal]:
@@ -124,8 +187,6 @@ def _earn_totals(positions: list[Snapshot]) -> tuple[Decimal, Decimal]:
 def _is_earn_position(snapshot: Snapshot) -> bool:
     if snapshot.apy > 0:
         return True
-    if snapshot.source != "coinex":
-        return False
     if not snapshot.raw_json:
         return False
     try:
@@ -135,7 +196,9 @@ def _is_earn_position(snapshot: Snapshot) -> bool:
     if not isinstance(raw, dict):
         return False
     account_type = raw.get("account_type")
-    return isinstance(account_type, str) and account_type.lower() == "financial"
+    if not isinstance(account_type, str):
+        return False
+    return account_type.lower() in {"earn", "financial"}
 
 
 def _idle_assets(all_snapshots: list[Snapshot], earn_positions: list[Snapshot]) -> list[Snapshot]:

@@ -377,7 +377,7 @@ class MexcCollector(BaseCollector):
                 tx_date = datetime.now(tz=UTC).date()
         else:
             try:
-                tx_date = datetime.fromisoformat(str(apply_time)).date()
+                tx_date = datetime.fromisoformat(str(apply_time)).replace(tzinfo=UTC).date()
             except (TypeError, ValueError):
                 tx_date = datetime.now(tz=UTC).date()
 

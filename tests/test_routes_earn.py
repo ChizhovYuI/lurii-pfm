@@ -205,6 +205,44 @@ async def test_earn_summary_includes_coinex_financial_when_apy_zero(db_path, aio
     assert data["positions"][0]["asset"] == "USDT"
 
 
+async def test_earn_summary_exposes_settlement_and_category(db_path, aiohttp_client):
+    """Positions with settlement_at and category in raw_json expose them in the API."""
+    import json
+
+    async with Repository(db_path) as repo:
+        snaps = [
+            Snapshot(
+                date=date(2024, 1, 7),
+                source="bybit",
+                source_name="bybit-main",
+                asset="USDT",
+                amount=Decimal("1053.6253"),
+                usd_value=Decimal("1053.6253"),
+                price=Decimal(1),
+                apy=Decimal("1.7936"),
+                raw_json=json.dumps(
+                    {
+                        "account_type": "earn",
+                        "category": "Dual Asset",
+                        "settlement_at": "2026-03-28T07:59:00Z",
+                        "row": {"coin": "USDT", "equity": "1053.6253"},
+                    }
+                ),
+            ),
+        ]
+        await repo.save_snapshots(snaps)
+
+    app = create_app(db_path)
+    client = await aiohttp_client(app)
+
+    resp = await client.get("/api/v1/earn/summary")
+    assert resp.status == 200
+    data = await resp.json()
+    pos = data["positions"][0]
+    assert pos["settlement_at"] == "2026-03-28T07:59:00Z"
+    assert pos["earn_category"] == "Dual Asset"
+
+
 async def test_earn_history_returns_daily_points_and_latest_anchor(db_path, aiohttp_client):
     async with Repository(db_path) as repo:
         await repo.save_snapshots(

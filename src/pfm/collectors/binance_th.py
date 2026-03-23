@@ -131,7 +131,7 @@ class BinanceThCollector(BinanceCollector):
 
         apply_time = wd.get("applyTime", "")
         try:
-            tx_date = datetime.fromisoformat(apply_time).date()
+            tx_date = datetime.fromisoformat(apply_time).replace(tzinfo=UTC).date()
         except (ValueError, AttributeError):
             tx_date = datetime.now(tz=UTC).date()
 
