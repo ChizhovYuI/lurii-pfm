@@ -1,3 +1,3 @@
 """Personal Financial Management — aggregate assets, statements, PnL."""
 
-__version__ = "0.22.5"
+__version__ = "0.22.6"
