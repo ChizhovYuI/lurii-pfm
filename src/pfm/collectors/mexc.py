@@ -25,10 +25,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _SPOT_BASE_URL = "https://api.mexc.com"
-_CONTRACT_BASE_URL = "https://contract.mexc.com"
+_CONTRACT_BASE_URL = "https://api.mexc.com"
 _CONTRACT_ASSETS_PATH = "/api/v1/private/account/assets"
 _RATE_LIMITER = RateLimiter(requests_per_minute=600.0)
 _EARN_POSITION_PATH = "/api/v3/asset/earn/position"
+_CLOCK_DRIFT_LOG_THRESHOLD_MS = 500
 
 
 @register_collector
@@ -56,26 +57,53 @@ class MexcCollector(BaseCollector):
             base_url=_CONTRACT_BASE_URL,
             timeout=30.0,
         )
+        self._time_offset_ms = 0
+        self._time_synced = False
+
+    async def _sync_server_time(self) -> None:
+        """Fetch exchange server time and compute clock offset to prevent timestamp errors."""
+        try:
+            resp = await self._client.get("/api/v3/time")
+            resp.raise_for_status()
+            server_time = resp.json()["serverTime"]
+            local_time = int(time.time() * 1000)
+            self._time_offset_ms = server_time - local_time
+            if abs(self._time_offset_ms) > _CLOCK_DRIFT_LOG_THRESHOLD_MS:
+                logger.info("MEXC: server clock offset: %dms", self._time_offset_ms)
+        except (httpx.HTTPError, KeyError, TypeError, ValueError):
+            logger.warning("MEXC: failed to sync server time, using local clock")
+        self._time_synced = True
 
     def _signed_params(self, params: dict[str, str] | None = None) -> dict[str, str]:
         """Add required timestamp/signature params for signed MEXC endpoints."""
         payload = dict(params or {})
-        payload["timestamp"] = str(int(time.time() * 1000))
+        payload["timestamp"] = str(int(time.time() * 1000) + self._time_offset_ms)
         query = "&".join(f"{k}={v}" for k, v in payload.items())
         payload["signature"] = sign_binance(query, self._api_secret)
         return payload
 
     @retry()
     async def _get(self, path: str, params: dict[str, str] | None = None) -> Any:  # noqa: ANN401
+        if not self._time_synced:
+            await self._sync_server_time()
         await _RATE_LIMITER.acquire()
         signed = self._signed_params(params)
         resp = await self._client.get(path, params=signed)
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
+        if isinstance(data, dict) and "code" in data and data.get("code") != 0:
+            error_msg = str(data.get("msg", "unknown error"))
+            logger.warning("MEXC: API error on %s: code=%s msg=%s", path, data["code"], error_msg)
+            raise httpx.HTTPStatusError(
+                error_msg,
+                request=resp.request,
+                response=resp,
+            )
+        return data
 
     def _openapi_headers(self, params: dict[str, str] | None = None) -> dict[str, str]:
         """Create OPEN-API auth headers (ApiKey, Request-Time, Signature)."""
-        request_time = str(int(time.time() * 1000))
+        request_time = str(int(time.time() * 1000) + self._time_offset_ms)
         param_string = _build_openapi_param_string(params)
         signature_payload = f"{self._api_key}{request_time}{param_string}"
         return {

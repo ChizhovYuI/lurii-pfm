@@ -389,6 +389,7 @@ async def test_binance_th_transactions_404_on_all_paths_is_clean_skip(pricing):
 
 async def test_mexc_fetch_balances(pricing):
     collector = MexcCollector(pricing, api_key="key", api_secret="secret")
+    collector._time_synced = True
     collector._get_openapi = AsyncMock(return_value={"success": True, "data": []})  # type: ignore[method-assign]
     account_resp = _mock_response(
         {
@@ -409,6 +410,7 @@ async def test_mexc_fetch_balances(pricing):
 
 async def test_mexc_fetch_transactions(pricing):
     collector = MexcCollector(pricing, api_key="key", api_secret="secret")
+    collector._time_synced = True
     deposit_resp = _mock_response(
         [
             {
@@ -464,6 +466,39 @@ async def test_mexc_openapi_headers(pricing):
     assert headers["Signature"] == "93c3bb21b72cc9f5d779a973b8f4f862bc52d6567033a5c1c4dc9d0bfa7c4aca"
 
 
+async def test_mexc_sync_server_time(pricing):
+    collector = MexcCollector(pricing, api_key="key", api_secret="secret")
+    time_resp = _mock_response({"serverTime": 1700000005000})
+    collector._client.get = AsyncMock(return_value=time_resp)
+
+    with patch("pfm.collectors.mexc.time.time", return_value=1700000000.0):
+        await collector._sync_server_time()
+
+    assert collector._time_synced is True
+    assert collector._time_offset_ms == 5000
+
+
+async def test_mexc_sync_server_time_failure_uses_local_clock(pricing):
+    collector = MexcCollector(pricing, api_key="key", api_secret="secret")
+    error_resp = _mock_response({})
+    collector._client.get = AsyncMock(return_value=error_resp)
+
+    await collector._sync_server_time()
+
+    assert collector._time_synced is True
+    assert collector._time_offset_ms == 0
+
+
+async def test_mexc_get_raises_on_api_error_code(pricing):
+    collector = MexcCollector(pricing, api_key="key", api_secret="secret")
+    collector._time_synced = True
+    error_resp = _mock_response({"code": 700002, "msg": "Signature for this request is not valid."})
+    collector._client.get = AsyncMock(return_value=error_resp)
+
+    with pytest.raises(httpx.HTTPStatusError, match="Signature for this request is not valid."):
+        await collector._get("/api/v3/account")
+
+
 async def test_mexc_fetch_contract_balances(pricing):
     collector = MexcCollector(pricing, api_key="key", api_secret="secret")
     collector._get_openapi = AsyncMock(  # type: ignore[method-assign]
@@ -485,6 +520,7 @@ async def test_mexc_fetch_contract_balances(pricing):
 async def test_mexc_fetch_earn_with_apy(pricing):
     pricing._set_cache("USDC", Decimal(1))
     collector = MexcCollector(pricing, api_key="key", api_secret="secret")
+    collector._time_synced = True
     collector._get_openapi = AsyncMock(return_value={"success": True, "data": []})  # type: ignore[method-assign]
 
     async def mock_get(path, **kwargs):
@@ -516,6 +552,7 @@ async def test_mexc_fetch_earn_with_apy(pricing):
 async def test_mexc_fetch_fixed_earn_uses_realized_rate_over_show_apr(pricing):
     pricing._set_cache("USDT", Decimal(1))
     collector = MexcCollector(pricing, api_key="key", api_secret="secret")
+    collector._time_synced = True
     collector._get_openapi = AsyncMock(return_value={"success": True, "data": []})  # type: ignore[method-assign]
 
     async def mock_get(path, **kwargs):
@@ -553,6 +590,7 @@ async def test_mexc_fetch_fixed_earn_uses_realized_rate_over_show_apr(pricing):
 async def test_mexc_fetch_earn_nets_out_spot_balance(pricing):
     pricing._set_cache("USDC", Decimal(1))
     collector = MexcCollector(pricing, api_key="key", api_secret="secret")
+    collector._time_synced = True
     collector._get_openapi = AsyncMock(return_value={"success": True, "data": []})  # type: ignore[method-assign]
 
     async def mock_get(path, **kwargs):
