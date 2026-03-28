@@ -34,6 +34,7 @@ _FIAT_ASSETS = {
     "NZD",
     "SGD",
     "HKD",
+    "AMD",
 }
 _KNOWN_CRYPTO_ASSETS = {
     "BTC",

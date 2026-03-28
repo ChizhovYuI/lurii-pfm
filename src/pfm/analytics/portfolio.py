@@ -30,6 +30,7 @@ _FIAT_ASSETS: frozenset[str] = frozenset(
         "NZD",
         "SGD",
         "HKD",
+        "AMD",
     }
 )
 _DEPOSIT_SOURCES: frozenset[str] = frozenset({"emcd"})

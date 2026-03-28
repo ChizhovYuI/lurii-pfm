@@ -21,7 +21,9 @@ logger = logging.getLogger(__name__)
 STABLECOINS: frozenset[str] = frozenset({"USDC", "USDT", "DAI", "BUSD", "TUSD", "USDP", "FDUSD"})
 
 # Fiat currencies — use /exchange_rates or /simple/price with vs_currencies
-FIAT_TICKERS: frozenset[str] = frozenset({"USD", "GBP", "EUR", "THB", "JPY", "CHF", "CAD", "AUD", "NZD", "SGD", "HKD"})
+FIAT_TICKERS: frozenset[str] = frozenset(
+    {"USD", "GBP", "EUR", "THB", "JPY", "CHF", "CAD", "AUD", "NZD", "SGD", "HKD", "AMD"}
+)
 
 _BASE_URL = "https://api.coingecko.com/api/v3"
 _RATE_LIMIT_DELAY = 2.1  # seconds between requests (30 req/min = 1 per 2s)

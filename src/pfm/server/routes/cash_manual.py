@@ -33,6 +33,7 @@ _SUPPORTED_FIAT_CURRENCIES: tuple[str, ...] = (
     "NZD",
     "SGD",
     "HKD",
+    "AMD",
 )
 _SUPPORTED_FIAT_SET = set(_SUPPORTED_FIAT_CURRENCIES)
 
