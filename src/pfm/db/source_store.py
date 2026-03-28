@@ -34,6 +34,9 @@ class InvalidCredentialsError(SourceError):
     """Raised when required credential fields are missing."""
 
 
+_CREATED_AT_COL = 5
+
+
 class SourceStore:
     """Async CRUD for the sources table."""
 
@@ -160,5 +163,5 @@ class SourceStore:
             type=row[2],
             credentials=row[3],
             enabled=bool(row[4]),
-            created_at=None,
+            created_at=row[5] if len(row) > _CREATED_AT_COL else None,
         )

@@ -74,6 +74,7 @@ def source_to_dict(source: Source, *, mask_secrets: bool = True) -> dict[str, An
         "type": source.type,
         "credentials": creds,
         "enabled": source.enabled,
+        "created_at": source.created_at,
     }
 
 
