@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-# ruff: noqa: T201, S603, TRY003, EM101, EM102, PLR2004, C901, PLR0912
+# ruff: noqa: T201, S603, TRY003, EM101, EM102, PLR2004, C901
 """Release automation for lurii-pfm, lurii-finance, and the Homebrew tap.
 
 This script is intentionally opinionated:
 - It assumes the three repos live side-by-side in the same workspace.
 - It aborts if the targeted repos are dirty. Feature commits should already exist.
 - It performs the same steps used for manual releases:
-  version bump -> optional verification -> build assets -> commit -> push -> tag ->
+  version bump -> verification -> build assets -> commit -> push -> tag ->
   GitHub release -> tap update.
 """
 
@@ -47,7 +47,6 @@ class ReleaseTarget:
     pfm_version: str | None
     app_version: str | None
     app_build: str | None
-    skip_verify: bool
     changelog_comment: str
     verify_brew: bool
 
@@ -73,11 +72,10 @@ def main() -> int:
     if target.release_app and target.app_version is not None and target.app_build is not None:
         write_app_version(paths, target.app_version, target.app_build)
 
-    if not target.skip_verify:
-        if target.release_pfm:
-            verify_pfm(paths)
-        if target.release_app:
-            verify_app(paths)
+    if target.release_pfm:
+        verify_pfm(paths)
+    if target.release_app:
+        verify_app(paths)
 
     if target.release_pfm and target.pfm_version is not None:
         pfm_asset = build_pfm_asset(paths, target.pfm_version)
@@ -164,11 +162,6 @@ def parse_args() -> argparse.Namespace:
         help="Explicit CURRENT_PROJECT_VERSION for lurii-finance. Defaults to the current build number plus 1.",
     )
     parser.add_argument(
-        "--skip-verify",
-        action="store_true",
-        help="Skip pytest/ruff/mypy and xcodebuild Debug verification before building release assets.",
-    )
-    parser.add_argument(
         "--changelog-comment",
         help="Required text to prepend to the generated GitHub release notes.",
     )
@@ -242,7 +235,6 @@ def prepare_target(paths: RepoPaths, args: argparse.Namespace) -> ReleaseTarget:
         pfm_version=pfm_version,
         app_version=app_version,
         app_build=app_build,
-        skip_verify=bool(args.skip_verify),
         changelog_comment=changelog_comment,
         verify_brew=bool(args.verify_brew),
     )
