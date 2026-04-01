@@ -384,7 +384,7 @@ class KbankCollector(BaseCollector):
                     tx_id=self._build_tx_id(
                         tx_date=tx_date,
                         amount=amount,
-                        description=description,
+                        tx_time=tx_time or "",
                         balance=balance,
                     ),
                     raw_json=json.dumps(
@@ -437,17 +437,20 @@ class KbankCollector(BaseCollector):
         *,
         tx_date: date,
         amount: Decimal,
-        description: str,
+        tx_time: str,
         balance: Decimal | None,
     ) -> str:
-        """Build a deterministic transaction id from parsed statement fields."""
+        """Build a deterministic transaction id from parsed statement fields.
+
+        Uses only language-independent fields (time, amount, balance) so that
+        re-importing a PDF in a different language does not create duplicates.
+        """
         canonical = "|".join(
             [
                 tx_date.isoformat(),
-                "tx",
+                tx_time,
                 "THB",
                 format(amount.normalize(), "f"),
-                description.strip(),
                 format(balance.normalize(), "f") if balance is not None else "",
             ]
         )
