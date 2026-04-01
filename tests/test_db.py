@@ -28,7 +28,7 @@ async def test_init_db(tmp_path):
     async with aiosqlite.connect(str(db_path)) as db:
         version_row = await (await db.execute("SELECT version_num FROM alembic_version")).fetchone()
     assert version_row is not None
-    assert version_row[0] == "f6g7h8i9j0k1"
+    assert version_row[0] == "g7h8i9j0k1l2"
 
 
 def test_runner_uses_package_relative_migration_path(tmp_path):
@@ -271,7 +271,7 @@ async def test_init_db_deduplicates_kbank_rows_with_empty_tx_id(tmp_path):
         rows = await cursor.fetchall()
 
     assert version_row is not None
-    assert version_row[0] == "f6g7h8i9j0k1"
+    assert version_row[0] == "g7h8i9j0k1l2"
     # Migration drops all transactions (stale data incompatible with new type rules).
     assert rows == []
 
