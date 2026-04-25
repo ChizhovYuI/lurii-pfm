@@ -968,6 +968,50 @@ async def unlink_transfer(
 
 
 @mcp.tool()
+async def audit_category_rules(
+    ctx: Context[ServerSession, AppContext],
+    source: str | None = None,
+    scope_source: str | None = None,
+) -> str:
+    """Audit category rules — count matches and post-priority wins per rule.
+
+    Returns ``{rules, dead, shadowed_dead}``. ``rules`` is sorted by
+    ``matched_count`` ascending so dead rules float to the top. ``dead``
+    is the rule_id list with ``matched_count == 0`` (safe to delete).
+    ``shadowed_dead`` rules match in isolation but lose to higher-precedence
+    rules — they're harmless until something above them is removed.
+
+    ``source`` filters the rules under audit; ``scope_source`` filters the
+    transactions used to evaluate them. Both default to all.
+    """
+    from pfm.analytics.rule_audit import audit_category_rules as _impl
+
+    repo = _ctx_repo(ctx)
+    store = _ctx_store(ctx)
+    result = await _impl(repo, store, source=source, scope_source=scope_source)
+    return _json(result)
+
+
+@mcp.tool()
+async def audit_type_rules(
+    ctx: Context[ServerSession, AppContext],
+    source: str | None = None,
+    scope_source: str | None = None,
+) -> str:
+    """Audit type rules — count matches and post-priority wins per rule.
+
+    Same shape as :func:`audit_category_rules`; rule rows carry
+    ``result_type`` instead of ``result_category``.
+    """
+    from pfm.analytics.rule_audit import audit_type_rules as _impl
+
+    repo = _ctx_repo(ctx)
+    store = _ctx_store(ctx)
+    result = await _impl(repo, store, source=source, scope_source=scope_source)
+    return _json(result)
+
+
+@mcp.tool()
 async def validate_rule_args(
     ctx: Context[ServerSession, AppContext],  # noqa: ARG001
     field_operator: str = "",

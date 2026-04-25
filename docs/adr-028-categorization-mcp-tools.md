@@ -297,6 +297,30 @@ Schema-wise: callers that relied on the old `ValueError` path must
 switch to checking `parsed.get("error") == "validation"`. Soft break —
 only known caller is the skill, updated in lockstep.
 
+### Phase 6.4 — audit_rules + dead-rule sub-flow
+
+Finding dead rules (`matched_count == 0` on current data) used to
+require dry-running each of 158 rules individually. Two new tools
+do the audit in a single pass:
+
+- `audit_category_rules(source?, scope_source?)` — for each
+  non-deleted category rule, count isolation matches and post-priority
+  wins over the current transaction set. Returns `rules` (sorted by
+  `matched_count` ASC), `dead` (rule_ids that match nothing — safe
+  to delete), and `shadowed_dead` (match in isolation but lose to
+  higher-precedence — harmless until something above is removed).
+- `audit_type_rules(source?, scope_source?)` — same shape for type
+  rules.
+
+Both live in a new module `src/pfm/analytics/rule_audit.py` that
+mirrors `rule_dryrun.py`. Cost is O(rules × txs) — single tx scan
+with per-rule match counters and one engine call per tx for the
+winner.
+
+Skill cleanup pass updated to call audit first (cheap one-shot)
+before any manual dedup work. Closes Skill #3 (dead-rule sub-flow
+gap).
+
 ### Phase 6.3 — bulk_delete_*_rules + skill batch-confirm
 
 Cleanup pass with 14 deletes meant 14 tool round-trips and 14 user

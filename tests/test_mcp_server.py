@@ -797,6 +797,99 @@ class TestCategorizationTools:
             assert r2.id not in remaining_ids
 
     @pytest.mark.asyncio
+    async def test_audit_category_rules_flags_dead_and_shadowed(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import audit_category_rules
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+
+            await repo.save_transactions(
+                [_make_tx(tx_id="s1", raw_json=json.dumps({"description": "FX 100"}))],
+            )
+            # Live: matches and wins.
+            live = await store.create_category_rule(
+                "spend",
+                "fx",
+                field_name="description",
+                field_operator="contains",
+                field_value="FX",
+                priority=100,
+            )
+            # Shadowed: matches but loses to live (lower priority value wins).
+            shadowed = await store.create_category_rule(
+                "spend",
+                "fx",
+                field_name="description",
+                field_operator="contains",
+                field_value="FX",
+                priority=200,
+            )
+            # Dead: pattern doesn't match any tx.
+            dead = await store.create_category_rule(
+                "spend",
+                "fx",
+                field_name="description",
+                field_operator="contains",
+                field_value="ZZZNEVER",
+            )
+
+            parsed = json.loads(await audit_category_rules(ctx))
+            ids = {r["id"]: r for r in parsed["rules"]}
+            assert ids[live.id]["matched_count"] == 1
+            assert ids[live.id]["winning_count"] == 1
+            assert ids[shadowed.id]["matched_count"] == 1
+            assert ids[shadowed.id]["winning_count"] == 0
+            assert ids[dead.id]["matched_count"] == 0
+            assert ids[dead.id]["winning_count"] == 0
+            assert dead.id in parsed["dead"]
+            assert shadowed.id in parsed["shadowed_dead"]
+            assert live.id not in parsed["dead"]
+            assert live.id not in parsed["shadowed_dead"]
+
+    @pytest.mark.asyncio
+    async def test_audit_type_rules_basic(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.models import TransactionType
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import audit_type_rules
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+
+            await repo.save_transactions(
+                [
+                    _make_tx(
+                        tx_id="u1",
+                        tx_type=TransactionType.UNKNOWN,
+                        raw_json=json.dumps({"kind": "purchase"}),
+                    ),
+                ],
+            )
+            live = await store.create_type_rule(
+                "spend",
+                field_name="kind",
+                field_operator="eq",
+                field_value="purchase",
+            )
+            dead = await store.create_type_rule(
+                "income",
+                field_name="kind",
+                field_operator="eq",
+                field_value="never_value",
+            )
+
+            parsed = json.loads(await audit_type_rules(ctx))
+            ids = {r["id"]: r for r in parsed["rules"]}
+            assert ids[live.id]["matched_count"] == 1
+            assert ids[live.id]["winning_count"] == 1
+            assert ids[dead.id]["matched_count"] == 0
+            assert dead.id in parsed["dead"]
+
+    @pytest.mark.asyncio
     async def test_bulk_delete_type_rules(self, tmp_path):
         from pfm.db.metadata_store import MetadataStore
         from pfm.db.repository import Repository

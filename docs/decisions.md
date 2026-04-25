@@ -1140,6 +1140,12 @@ contract to allow writes scoped to categorization metadata only.
 - Skill `categorization-curator` updated: cleanup pass step 5 collects all delete candidates into a numbered list with their args, asks for one batch confirmation ("all", "1, 3, 5", "none"), then calls the bulk tool. Hard rule #2 reworded to allow batch confirmation. Cleanup tiebreak advice neutralized — "either rule, criterion is clarity" instead of "lower-priority/older-id".
 - Files: `src/pfm/mcp_server.py`, `tests/test_mcp_server.py` (+2 tests), and skill updates in `../lurii-portfolio`.
 
+**Phase 6.4 (done) — audit_rules + dead-rule sub-flow:**
+- Finding dead rules (matched=0 on current data) required dry-running each of 158 rules individually — too expensive to do casually, so dead rules accumulated.
+- New `audit_category_rules(source?, scope_source?)` and `audit_type_rules(source?, scope_source?)` MCP tools. Single pass over all txs × all active rules; per rule, returns `matched_count` (isolation match — pattern correctness) and `winning_count` (post-priority — actually fires). Result is sorted by `matched_count` ASC so dead rules float to the top. Output also includes `dead` (rule_ids with `matched_count == 0`, safe to delete) and `shadowed_dead` (matches but loses to higher-precedence — harmless until something above is removed).
+- Skill `categorization-curator` cleanup pass updated: step 1 calls audit before manual dedup; step 2 surfaces `dead` first since they're 100% safe to delete. Closes Skill #3 (dead-rule sub-flow).
+- New module `src/pfm/analytics/rule_audit.py` (mirrors `rule_dryrun.py` pattern). Files: `src/pfm/analytics/rule_audit.py`, `src/pfm/mcp_server.py`, `tests/test_mcp_server.py` (+2 tests), and skill updates in `../lurii-portfolio`.
+
 ---
 
 ## ADR-029: Opt-in raw_sample + non-discriminating suggestion filter
