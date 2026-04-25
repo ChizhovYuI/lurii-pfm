@@ -53,7 +53,7 @@ class MetadataStore:
     ) -> TransactionCategory:
         """Create a custom category."""
         cursor = await self._db.execute(
-            "INSERT INTO transaction_categories (tx_type, category, display_name, sort_order)" " VALUES (?, ?, ?, ?)",
+            "INSERT INTO transaction_categories (tx_type, category, display_name, sort_order) VALUES (?, ?, ?, ?)",
             (tx_type, category, display_name, sort_order),
         )
         await self._db.commit()
@@ -638,7 +638,7 @@ class MetadataStore:
         if search:
             escaped = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             where_clauses.append(
-                "(t.asset LIKE ? ESCAPE '\\' OR t.source_name LIKE ? ESCAPE '\\'" " OR t.tx_id LIKE ? ESCAPE '\\')"
+                "(t.asset LIKE ? ESCAPE '\\' OR t.source_name LIKE ? ESCAPE '\\' OR t.tx_id LIKE ? ESCAPE '\\')"
             )
             pattern = f"%{escaped}%"
             params.extend([pattern, pattern, pattern])
@@ -735,6 +735,133 @@ class MetadataStore:
                 notes=row["m_notes"] or "",
             )
         return tx, meta
+
+    # ── Categorization summary / discovery ────────────────────────────
+
+    async def get_categorization_summary(
+        self,
+        *,
+        source_name: str | None = None,
+    ) -> list[dict[str, object]]:
+        """Per-source counts for the categorization workflow.
+
+        Each entry: source_name, total, unknown_type, no_category, internal_transfer.
+        """
+        params: list[str] = []
+        where_sql = ""
+        if source_name is not None:
+            where_sql = " WHERE t.source_name = ?"
+            params.append(source_name)
+        cursor = await self._db.execute(
+            "SELECT t.source_name AS source_name,"  # noqa: S608
+            "  COUNT(*) AS total,"
+            "  SUM(CASE WHEN t.tx_type = 'unknown'"
+            "       AND (m.type_override IS NULL OR m.type_override = '') THEN 1 ELSE 0 END) AS unknown_type,"
+            "  SUM(CASE WHEN m.category IS NULL"
+            "       AND COALESCE(m.is_internal_transfer, 0) = 0 THEN 1 ELSE 0 END) AS no_category,"
+            "  SUM(CASE WHEN COALESCE(m.is_internal_transfer, 0) = 1 THEN 1 ELSE 0 END) AS internal_transfer"
+            " FROM transactions t"
+            " LEFT JOIN transaction_metadata m ON t.id = m.transaction_id"
+            f"{where_sql}"
+            " GROUP BY t.source_name"
+            " ORDER BY t.source_name",
+            params,
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "source_name": row["source_name"],
+                "total": int(row["total"]),
+                "unknown_type": int(row["unknown_type"] or 0),
+                "no_category": int(row["no_category"] or 0),
+                "internal_transfer": int(row["internal_transfer"] or 0),
+            }
+            for row in rows
+        ]
+
+    async def get_uncategorized_transactions(
+        self,
+        *,
+        source_name: str | None = None,
+        missing_type: bool = False,
+        missing_category: bool = False,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[list[tuple[Transaction, TransactionMetadata | None]], int]:
+        """Paginated transactions missing type and/or category.
+
+        - missing_type: tx_type='unknown' AND no type_override.
+        - missing_category: m.category IS NULL AND not internal_transfer.
+        - Both False (default): OR — surface anything needing attention.
+        - Both True: AND.
+        """
+        from pfm.db.repository import Repository
+
+        type_clause = "(t.tx_type = 'unknown' AND (m.type_override IS NULL OR m.type_override = ''))"
+        cat_clause = "(m.category IS NULL AND COALESCE(m.is_internal_transfer, 0) = 0)"
+
+        if missing_type and missing_category:
+            filter_clause = f"({type_clause} AND {cat_clause})"
+        elif missing_type:
+            filter_clause = type_clause
+        elif missing_category:
+            filter_clause = cat_clause
+        else:
+            filter_clause = f"({type_clause} OR {cat_clause})"
+
+        where_clauses: list[str] = [filter_clause]
+        params: list[str | int] = []
+        if source_name is not None:
+            where_clauses.append("t.source_name = ?")
+            params.append(source_name)
+        where_sql = " WHERE " + " AND ".join(where_clauses)
+
+        count_cursor = await self._db.execute(
+            f"SELECT COUNT(*) FROM transactions t"  # noqa: S608
+            f" LEFT JOIN transaction_metadata m ON t.id = m.transaction_id"
+            f"{where_sql}",
+            params,
+        )
+        count_row = await count_cursor.fetchone()
+        total = count_row[0] if count_row else 0
+
+        cursor = await self._db.execute(
+            f"SELECT t.*,"  # noqa: S608
+            f" m.category AS m_category, m.category_source AS m_category_source,"
+            f" m.category_confidence AS m_category_confidence,"
+            f" m.type_override AS m_type_override,"
+            f" m.is_internal_transfer AS m_is_internal_transfer,"
+            f" m.transfer_pair_id AS m_transfer_pair_id,"
+            f" m.transfer_detected_by AS m_transfer_detected_by,"
+            f" m.reviewed AS m_reviewed, m.notes AS m_notes"
+            f" FROM transactions t"
+            f" LEFT JOIN transaction_metadata m ON t.id = m.transaction_id"
+            f"{where_sql}"
+            f" ORDER BY t.date DESC, t.id DESC"
+            f" LIMIT ? OFFSET ?",
+            [*params, limit, offset],
+        )
+        rows = await cursor.fetchall()
+
+        result: list[tuple[Transaction, TransactionMetadata | None]] = []
+        for row in rows:
+            tx = Repository.row_to_transaction(row)
+            meta = None
+            if row["m_category"] is not None or row["m_category_source"] is not None:
+                meta = TransactionMetadata(
+                    transaction_id=row["id"],
+                    category=row["m_category"],
+                    category_source=row["m_category_source"] or "auto",
+                    category_confidence=row["m_category_confidence"],
+                    type_override=row["m_type_override"],
+                    is_internal_transfer=bool(row["m_is_internal_transfer"]),
+                    transfer_pair_id=row["m_transfer_pair_id"],
+                    transfer_detected_by=row["m_transfer_detected_by"],
+                    reviewed=bool(row["m_reviewed"]) if row["m_reviewed"] is not None else False,
+                    notes=row["m_notes"] or "",
+                )
+            result.append((tx, meta))
+        return result, total
 
 
 def _validate_regex_value(field_value: str) -> None:

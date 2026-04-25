@@ -1,6 +1,6 @@
 # ADR-028: Categorization Tools in MCP Server
 
-**Status:** In progress (Phase 1 accepted, Phases 2–6 proposed)
+**Status:** In progress (Phases 1–2 accepted, Phases 3–6 proposed)
 **Date:** 2026-04-25
 
 ## Context
@@ -185,8 +185,12 @@ the conservative default.
 1. ✅ **Engine — regex operator.** `categorizer.py:_match_values` +
    `_validate_regex_value` in `metadata_store.py`. Tests in
    `tests/test_type_rules.py` and `tests/test_categorizer.py`.
-2. **Store helpers.** `get_categorization_summary`,
-   `get_uncategorized_transactions` in `metadata_store.py`.
+2. ✅ **Store helpers.** `get_categorization_summary(source_name?)` and
+   `get_uncategorized_transactions(source_name?, missing_type,
+   missing_category, limit, offset)` in `metadata_store.py`. Tests in
+   `tests/test_metadata_store_helpers.py`. Default (both flags False)
+   is OR-logic; both True is AND. Skill consumes the summary for the
+   per-source dashboard and the paginated list for discovery passes.
 3. **Dry-run module.** `src/pfm/analytics/rule_dryrun.py` with tests.
 4. **MCP wiring.** `AppContext.metadata_store`, tool registrations.
 5. **MCP smoke tests.** Extend `tests/test_mcp_server.py`.

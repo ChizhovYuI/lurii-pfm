@@ -1075,7 +1075,7 @@ writes).
 
 **Date:** 2026-04-25
 
-**Status:** In progress (Phase 1 accepted, Phases 2–6 proposed)
+**Status:** In progress (Phases 1–2 accepted, Phases 3–6 proposed)
 
 See `adr-028-categorization-mcp-tools.md`. Adds a `regex` operator to
 the rule engine and a categorization tool surface (rule CRUD, dry-run,
@@ -1089,4 +1089,9 @@ contract to allow writes scoped to categorization metadata only.
 - Runtime tolerance — malformed pattern silently fails to match instead of breaking the categorization pass
 - Files: `src/pfm/analytics/categorizer.py`, `src/pfm/db/metadata_store.py`, `tests/test_type_rules.py`, `tests/test_categorizer.py`
 
-**Phases 2–6 (proposed):** store helpers (`get_categorization_summary`, `get_uncategorized_transactions`), `rule_dryrun` module with `overlapping_rules` reporting, MCP tool surface, smoke tests, Claude Code skill in `../lurii-portfolio`.
+**Phase 2 (done):**
+- `MetadataStore.get_categorization_summary(source_name?)` — per-source counts: `total`, `unknown_type`, `no_category`, `internal_transfer`. Single GROUP BY query.
+- `MetadataStore.get_uncategorized_transactions(source_name?, missing_type, missing_category, limit, offset)` — paginated `(Transaction, TransactionMetadata|None)`. Default (both flags False) is OR-logic; both True is AND.
+- Files: `src/pfm/db/metadata_store.py`, `tests/test_metadata_store_helpers.py` (11 new tests).
+
+**Phases 3–6 (proposed):** `rule_dryrun` module with `overlapping_rules` reporting, MCP tool surface, smoke tests, Claude Code skill in `../lurii-portfolio`.
