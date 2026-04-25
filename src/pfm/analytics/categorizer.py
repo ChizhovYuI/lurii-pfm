@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import TYPE_CHECKING
 
 from pfm.db.models import effective_type
@@ -27,6 +29,15 @@ def _parse_values(rule_val: str) -> list[str]:
     return [rule_val]
 
 
+@lru_cache(maxsize=512)
+def _compile_regex(pattern: str) -> re.Pattern[str] | None:
+    """Compile and cache a regex pattern. Returns None for invalid patterns."""
+    try:
+        return re.compile(pattern)
+    except re.error:
+        return None
+
+
 def _match_values(field_val: str, rule_val: str, operator: str) -> bool:
     """Compare a field value against a rule value using the given operator."""
     values = _parse_values(rule_val)
@@ -34,6 +45,12 @@ def _match_values(field_val: str, rule_val: str, operator: str) -> bool:
         return field_val in values
     if operator == "contains":
         return any(v.lower() in field_val.lower() for v in values)
+    if operator == "regex":
+        for v in values:
+            compiled = _compile_regex(v)
+            if compiled is not None and compiled.search(field_val):
+                return True
+        return False
     return False
 
 

@@ -168,6 +168,26 @@ class TestCompoundRuleMatching:
         assert result is not None
         assert result.category == "other_spend"
 
+    def test_regex_operator(self) -> None:
+        tx = _tx(
+            source_name="kbank",
+            tx_type=TransactionType.SPEND,
+            raw_json='{"description": "FX 1234.56 USD"}',
+        )
+        rules = [
+            _rule(
+                type_match="spend",
+                field_name="description",
+                field_operator="regex",
+                field_value=r"^FX \d+",
+                result_category="fx",
+                priority=100,
+            ),
+        ]
+        result = categorize_transaction(tx, rules)
+        assert result is not None
+        assert result.category == "fx"
+
     def test_array_field_value(self) -> None:
         tx = _tx(
             source_name="kbank",

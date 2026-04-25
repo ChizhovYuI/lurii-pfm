@@ -180,6 +180,11 @@ The MCP server is a thin adapter layer. All business logic lives in `pfm.analyti
 The MCP server is read-only by design. Collection and source management require
 credentials and have side effects — these stay in the HTTP backend and SwiftUI app.
 
+> **Update (ADR-028):** the read-only contract has been narrowed to allow
+> writes to categorization metadata only (rule CRUD, manual category
+> overrides). Collection, source management, and prices remain
+> read-only. See `adr-028-categorization-mcp-tools.md`.
+
 **Why string decimals instead of floats?**
 Financial data must not lose precision. String-formatted decimals ("12345.67")
 are safe for JSON serialization and prevent floating-point display artifacts.

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from typing import TYPE_CHECKING
 
 from pfm.db.models import CategoryRule, TransactionCategory, TransactionMetadata, TypeRule
@@ -315,6 +317,8 @@ class MetadataStore:
         priority: int | None = None,
     ) -> CategoryRule:
         """Create a category rule. Priority is auto-computed if not specified."""
+        if field_operator == "regex" and field_value:
+            _validate_regex_value(field_value)
         if priority is None:
             priority = _auto_priority(field_name=field_name, source=source)
         cursor = await self._db.execute(
@@ -525,6 +529,8 @@ class MetadataStore:
         priority: int | None = None,
     ) -> TypeRule:
         """Create a type rule. Priority is auto-computed if not specified."""
+        if field_operator == "regex" and field_value:
+            _validate_regex_value(field_value)
         if priority is None:
             priority = _auto_priority(field_name=field_name, source=source)
         cursor = await self._db.execute(
@@ -729,6 +735,25 @@ class MetadataStore:
                 notes=row["m_notes"] or "",
             )
         return tx, meta
+
+
+def _validate_regex_value(field_value: str) -> None:
+    """Compile each pattern (JSON-array or plain) so create rejects invalid regex."""
+    if field_value.startswith("["):
+        try:
+            parsed = json.loads(field_value)
+        except (json.JSONDecodeError, TypeError):
+            parsed = [field_value]
+        if not isinstance(parsed, list):
+            parsed = [field_value]
+    else:
+        parsed = [field_value]
+    for pat in parsed:
+        try:
+            re.compile(str(pat))
+        except re.error as exc:
+            msg = f"invalid regex pattern {pat!r}: {exc}"
+            raise ValueError(msg) from exc
 
 
 def _auto_priority(*, field_name: str, source: str) -> int:

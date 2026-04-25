@@ -1055,3 +1055,38 @@ class ApyRule:
 - UI renders protocol and coin comboboxes from API data, no hardcoded values
 - Adding APY rule support for a new source type requires only a new entry in `APY_RULES_TYPES`
 - Breaking change for `/api/v1/source-types` consumers — response shape changed from `[fields]` to `{fields, supported_apy_rules}`
+
+---
+
+## ADR-027: MCP server for portfolio data access
+
+**Date:** 2026-03-07
+
+**Status:** Accepted
+
+See `adr-027-mcp-server.md`. FastMCP-based stdio server reusing
+`Repository`, analytics, and pricing. 10 tools, 6 resources, 2 prompts.
+Read-only by design (later narrowed by ADR-028 to allow categorization
+writes).
+
+---
+
+## ADR-028: Categorization tools in MCP server
+
+**Date:** 2026-04-25
+
+**Status:** In progress (Phase 1 accepted, Phases 2–6 proposed)
+
+See `adr-028-categorization-mcp-tools.md`. Adds a `regex` operator to
+the rule engine and a categorization tool surface (rule CRUD, dry-run,
+manual category override, re-run) so a Claude Code skill can drive the
+type/category workflow end-to-end. Narrows the ADR-027 read-only
+contract to allow writes scoped to categorization metadata only.
+
+**Phase 1 (done):**
+- `regex` operator in `_match_values` (case-sensitive; `(?i)` flag for ci); compiled patterns are cached via `functools.lru_cache`
+- Pattern validation at rule-create time (`_validate_regex_value`) — invalid pattern raises `ValueError`
+- Runtime tolerance — malformed pattern silently fails to match instead of breaking the categorization pass
+- Files: `src/pfm/analytics/categorizer.py`, `src/pfm/db/metadata_store.py`, `tests/test_type_rules.py`, `tests/test_categorizer.py`
+
+**Phases 2–6 (proposed):** store helpers (`get_categorization_summary`, `get_uncategorized_transactions`), `rule_dryrun` module with `overlapping_rules` reporting, MCP tool surface, smoke tests, Claude Code skill in `../lurii-portfolio`.
