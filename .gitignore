@@ -17,6 +17,7 @@ ENV/
 .idea/
 .vscode/
 .claude/
+.mcp.json
 *.swp
 *.swo
 *~
