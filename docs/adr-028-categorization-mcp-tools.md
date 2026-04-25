@@ -297,6 +297,74 @@ Schema-wise: callers that relied on the old `ValueError` path must
 switch to checking `parsed.get("error") == "validation"`. Soft break —
 only known caller is the skill, updated in lockstep.
 
+### Source filter semantics (clarification)
+
+The `source` field on a rule, plus the `source` argument on listing
+and audit tools, are matched **by exact case-insensitive equality**
+against either the transaction's `source` (the source-type identifier
+like `kbank` or `coinex`) or its `source_name` (the user-configured
+account label like `kbank-main`). It is **not** a prefix match.
+
+Concretely, the engine match (`_match_category_rule` /
+`match_type_rule`) accepts a rule with `source != "*"` when:
+
+```
+rule.source.lower() == tx.source.lower()
+  OR
+rule.source.lower() == (tx.source_name or tx.source).lower()
+```
+
+Listing-side filtering (`list_category_rules(source=X)` etc.) returns
+rules where `source IN (X, "*")` — i.e. "rules that could apply to
+source X" — including catch-all rules. The widening to `*` only
+happens at listing time; the engine evaluates each rule's stored
+`source` directly.
+
+Implications for the skill:
+
+- A rule with `source: "kbank"` does **not** automatically apply to
+  a tx with `source_name: "kbank-main"` unless `tx.source` is also
+  `kbank` or `tx.source_name` is exactly `kbank` (case-insensitive).
+- When two source identifiers coexist in the database
+  (`kbank` / `kbank-main`), both names need separate rules unless
+  one is a strict super-set of the other.
+- This is documented in tool descriptions for `create_category_rule`,
+  `create_type_rule`, `dry_run_*_rule`, and the listing tools.
+
+### Priority resolution semantics (clarification)
+
+Priority is a single integer column on each rule. **Lower number
+wins.** The engine sorts active (non-deleted) rules by
+`priority ASC, id ASC` and returns the first match —
+`categorize_transaction` for category rules, `resolve_type_winner`
+for type rules.
+
+Tie-breaking is by `id ASC`, so an older rule with the same priority
+beats a newer one. This matters in the dry-run logic: the candidate
+rule has `id is None` and so sentinels to last in equal-priority
+ties (matches the post-create id ordering — the new rule will get
+the highest id once written).
+
+Auto-priority (assigned by `MetadataStore._auto_priority` when
+`priority` is `None` on create):
+
+| Specificity | Priority |
+|---|---|
+| Field name + non-`*` source | 100 |
+| Field name only | 150 |
+| Source only | 200 |
+| Catch-all (no field, source `*`) | 300 |
+
+Builtin rules ship with explicit priorities (often `100` for
+high-confidence patterns like `^FX\b`); user-authored rules pick up
+auto-priority unless they pass `priority` explicitly. Builtin status
+does not change tie-breaking — `id ASC` applies uniformly.
+
+To override the auto-priority scheme (e.g. a user catch-all that
+must beat all builtin rules), pass `priority` explicitly with a
+small number like `10` or `50`. That rule will then win against
+every priority-100 builtin and every priority-200/300 fallback.
+
 ### Phase 6.5 — dry_run summary_only flag
 
 Catch-all `dry_run_*_rule` calls returning hundreds of `changed` /

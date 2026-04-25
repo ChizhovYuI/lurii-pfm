@@ -1152,6 +1152,11 @@ contract to allow writes scoped to categorization metadata only.
 - Skill Step 3 updated to suggest `summary_only=true` for wide-net rules likely to produce >50 entries.
 - Files: `src/pfm/mcp_server.py`, `tests/test_mcp_server.py` (+1 test), and skill update in `../lurii-portfolio`.
 
+**Source filter & priority semantics (documentation pass — no code change):**
+- Rule `source` matches by exact case-insensitive equality against either `tx.source` or `tx.source_name`. Not a prefix match. A rule with `source: "kbank"` does not automatically apply to a tx with `source_name: "kbank-main"` — both source identifiers need separate rules unless they overlap exactly. Listing-side filtering (`list_*_rules(source=X)`) widens to include catch-all rules (`source: "*"`) on top.
+- Priority: lower number wins. Engine sorts active rules `priority ASC, id ASC` and returns first match. Auto-priority scheme: specific (field+source) = 100, field-only = 150, source-only = 200, catch-all = 300. Builtin rules ship with explicit priorities; user rules get auto-priority unless they pass `priority` explicitly. Builtin status does not change tie-breaking — `id ASC` applies uniformly.
+- Documented in `adr-028-categorization-mcp-tools.md` ("Source filter semantics" + "Priority resolution semantics" sections).
+
 ---
 
 ## ADR-029: Opt-in raw_sample + non-discriminating suggestion filter
