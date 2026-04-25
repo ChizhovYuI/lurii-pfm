@@ -206,3 +206,134 @@ class TestGetUncategorizedTransactions:
             items, total = await store.get_uncategorized_transactions(source_name="kbank", missing_type=True)
             assert total == 1
             assert items[0][0].tx_id == "k1"
+
+
+# ── get_category_suggestions: non-discriminating filter ──────────────
+
+
+class TestSuggestionFilter:
+    async def _seed_choice(
+        self,
+        store: MetadataStore,
+        repo: Repository,
+        *,
+        tx_id: str,
+        source: str,
+        category: str,
+        snapshot: str,
+    ) -> None:
+        import json
+
+        await repo.save_transactions(
+            [_tx(source_name=source, tx_id=tx_id, raw_json=snapshot)],
+        )
+        txs = await repo.get_transactions()
+        target = next(t for t in txs if t.tx_id == tx_id)
+        assert target.id is not None
+        await store.record_category_choice(
+            target.id,
+            source,
+            "spend",
+            category,
+            field_snapshot=json.dumps(json.loads(snapshot)),
+        )
+
+    async def test_filters_when_same_field_value_maps_to_multiple_categories(
+        self,
+        tmp_path,
+    ) -> None:
+        import json
+
+        snap = json.dumps({"_balance_direction": "decrease"})
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            for i in range(2):
+                await self._seed_choice(
+                    store,
+                    repo,
+                    tx_id=f"d{i}",
+                    source="kbank",
+                    category="dining",
+                    snapshot=snap,
+                )
+            for i in range(2):
+                await self._seed_choice(
+                    store,
+                    repo,
+                    tx_id=f"g{i}",
+                    source="kbank",
+                    category="groceries",
+                    snapshot=snap,
+                )
+            sugs = await store.get_category_suggestions()
+            # Both suggestions share (kbank, _balance_direction, decrease) → suppressed.
+            for s in sugs:
+                rule = s.get("suggested_rule")
+                assert isinstance(rule, dict)
+                assert rule.get("field_value") != "decrease"
+
+    async def test_include_non_discriminating_surfaces_with_flag(self, tmp_path) -> None:
+        import json
+
+        snap = json.dumps({"_balance_direction": "decrease"})
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            for i in range(2):
+                await self._seed_choice(
+                    store,
+                    repo,
+                    tx_id=f"d{i}",
+                    source="kbank",
+                    category="dining",
+                    snapshot=snap,
+                )
+            for i in range(2):
+                await self._seed_choice(
+                    store,
+                    repo,
+                    tx_id=f"g{i}",
+                    source="kbank",
+                    category="groceries",
+                    snapshot=snap,
+                )
+            sugs = await store.get_category_suggestions(include_non_discriminating=True)
+            non_disc = [s for s in sugs if s.get("non_discriminating")]
+            assert len(non_disc) == 2
+            for s in non_disc:
+                conflicting = s["conflicting_categories"]
+                assert isinstance(conflicting, list)
+                assert sorted(conflicting) == ["dining", "groceries"]
+
+    async def test_keeps_discriminating_field(self, tmp_path) -> None:
+        import json
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            for i in range(2):
+                await self._seed_choice(
+                    store,
+                    repo,
+                    tx_id=f"d{i}",
+                    source="kbank",
+                    category="dining",
+                    snapshot=json.dumps({"merchant_category": "restaurant"}),
+                )
+            for i in range(2):
+                await self._seed_choice(
+                    store,
+                    repo,
+                    tx_id=f"g{i}",
+                    source="kbank",
+                    category="groceries",
+                    snapshot=json.dumps({"merchant_category": "supermarket"}),
+                )
+            sugs = await store.get_category_suggestions()
+            # Distinct values per category → both kept, neither flagged.
+            assert len(sugs) == 2
+            assert all(not s.get("non_discriminating") for s in sugs)
+            cats: set[object] = set()
+            for s in sugs:
+                rule = s["suggested_rule"]
+                assert isinstance(rule, dict)
+                cats.add(rule["result_category"])
+            assert cats == {"dining", "groceries"}

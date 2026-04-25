@@ -515,7 +515,7 @@ class TestCategorizationTools:
             assert row["no_category"] == 2
 
     @pytest.mark.asyncio
-    async def test_list_uncategorized_transactions_with_raw_preview(self, tmp_path):
+    async def test_list_uncategorized_transactions_default_keys_only(self, tmp_path):
         from pfm.db.metadata_store import MetadataStore
         from pfm.db.repository import Repository
         from pfm.mcp_server import list_uncategorized_transactions
@@ -533,7 +533,31 @@ class TestCategorizationTools:
             assert item["tx_id"] == "s1"
             assert item["id"] is not None
             assert sorted(item["raw_keys"]) == ["description", "kind"]
+            assert "raw_sample" not in item
+
+    @pytest.mark.asyncio
+    async def test_list_uncategorized_transactions_with_raw_sample(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import list_uncategorized_transactions
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+
+            await repo.save_transactions(
+                [_make_tx(tx_id="s1", raw_json=json.dumps({"description": "FX 100", "kind": "purchase"}))]
+            )
+            parsed = json.loads(
+                await list_uncategorized_transactions(
+                    ctx,
+                    missing_category=True,
+                    include_raw_sample=True,
+                ),
+            )
+            item = parsed["items"][0]
             assert item["raw_sample"]["description"] == "FX 100"
+            assert item["raw_sample"]["kind"] == "purchase"
 
     @pytest.mark.asyncio
     async def test_get_transaction_detail_returns_full_data(self, tmp_path):

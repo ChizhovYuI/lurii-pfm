@@ -578,9 +578,14 @@ def _parse_raw_dict(raw_json: str) -> dict[str, object]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _uncategorized_item_dict(tx: object, meta: TransactionMetadata | None) -> dict[str, object]:
+def _uncategorized_item_dict(
+    tx: object,
+    meta: TransactionMetadata | None,
+    *,
+    include_raw_sample: bool = False,
+) -> dict[str, object]:
     raw = _parse_raw_dict(tx.raw_json)  # type: ignore[attr-defined]
-    return {
+    item: dict[str, object] = {
         "id": tx.id,  # type: ignore[attr-defined]
         "tx_id": tx.tx_id,  # type: ignore[attr-defined]
         "source_name": tx.source_name or tx.source,  # type: ignore[attr-defined]
@@ -592,8 +597,10 @@ def _uncategorized_item_dict(tx: object, meta: TransactionMetadata | None) -> di
         "category": meta.category if meta else None,
         "type_override": meta.type_override if meta else None,
         "raw_keys": list(raw.keys()),
-        "raw_sample": {k: str(v)[:200] for k, v in raw.items()},
     }
+    if include_raw_sample:
+        item["raw_sample"] = {k: str(v)[:200] for k, v in raw.items()}
+    return item
 
 
 @mcp.tool()
@@ -652,10 +659,21 @@ async def categorization_summary(
 async def get_rule_suggestions(
     ctx: Context[ServerSession, AppContext],
     min_evidence: int = 2,
+    *,
+    include_non_discriminating: bool = False,
 ) -> str:
-    """Suggest new category rules learned from manual category choices."""
+    """Suggest new category rules learned from manual category choices.
+
+    Suggestions where the same (source, field, value) maps to more than one
+    chosen category are non-discriminating and dropped by default. Pass
+    ``include_non_discriminating=True`` to surface them flagged with
+    ``"non_discriminating": true`` and ``"conflicting_categories": [...]``.
+    """
     store = _ctx_store(ctx)
-    suggestions = await store.get_category_suggestions(min_evidence=min_evidence)
+    suggestions = await store.get_category_suggestions(
+        min_evidence=min_evidence,
+        include_non_discriminating=include_non_discriminating,
+    )
     return _json({"count": len(suggestions), "suggestions": suggestions})
 
 
@@ -668,8 +686,16 @@ async def list_uncategorized_transactions(  # noqa: PLR0913
     missing_category: bool = False,
     limit: int = 100,
     offset: int = 0,
+    include_raw_sample: bool = False,
 ) -> str:
-    """List uncategorized transactions with raw_json preview for rule authoring."""
+    """List uncategorized transactions with raw_json preview for rule authoring.
+
+    By default returns only ``raw_keys`` (cheap). Pass
+    ``include_raw_sample=True`` to also include ``raw_sample`` (each value
+    truncated to 200 chars) — needed for pattern discovery but considerably
+    larger payload. Prefer keys-only on the survey pass; opt in for the
+    discovery pass on a narrowed limit.
+    """
     store = _ctx_store(ctx)
     items, total = await store.get_uncategorized_transactions(
         source_name=source,
@@ -678,7 +704,7 @@ async def list_uncategorized_transactions(  # noqa: PLR0913
         limit=limit,
         offset=offset,
     )
-    data = [_uncategorized_item_dict(tx, meta) for tx, meta in items]
+    data = [_uncategorized_item_dict(tx, meta, include_raw_sample=include_raw_sample) for tx, meta in items]
     return _json({"count": len(data), "total": total, "items": data})
 
 

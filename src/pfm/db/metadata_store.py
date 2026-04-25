@@ -397,12 +397,20 @@ class MetadataStore:
     async def get_category_suggestions(
         self,
         min_evidence: int = 2,
+        *,
+        include_non_discriminating: bool = False,
     ) -> list[dict[str, object]]:
         """Analyze user_category_choices to suggest new rules.
 
         Groups choices by (source, effective_type, chosen_category) and
         extracts common field values from field_snapshot JSON.
         Returns suggestions with evidence count and sample transactions.
+
+        Suggestions where the same (source, field_name, field_value) maps to
+        more than one chosen category are non-discriminating (the field is
+        not predictive). They are filtered out by default; pass
+        ``include_non_discriminating=True`` to surface them flagged with
+        ``"non_discriminating": True`` and a ``"conflicting_categories"`` list.
         """
         import json
 
@@ -470,7 +478,10 @@ class MetadataStore:
             return v if isinstance(v, int) else 0
 
         suggestions.sort(key=_sort_key, reverse=True)
-        return suggestions
+        return _annotate_non_discriminating(
+            suggestions,
+            include_non_discriminating=include_non_discriminating,
+        )
 
     # ── User category choices (recording) ─────────────────────────────
 
@@ -924,3 +935,57 @@ def _find_common_field(
     if count > threshold:
         return best_field, best_value
     return None, None
+
+
+def _annotate_non_discriminating(
+    suggestions: list[dict[str, object]],
+    *,
+    include_non_discriminating: bool,
+) -> list[dict[str, object]]:
+    """Drop or flag suggestions whose (source, field, value) maps to >1 category.
+
+    Same source/field/value producing different result categories means the
+    field is not predictive — converting it to a rule would be wrong.
+    """
+    from collections import defaultdict
+
+    groups: dict[tuple[str, str, str], set[str]] = defaultdict(set)
+    for sug in suggestions:
+        rule = sug.get("suggested_rule")
+        if not isinstance(rule, dict):
+            continue
+        field_name = rule.get("field_name")
+        field_value = rule.get("field_value")
+        source = rule.get("source")
+        category = rule.get("result_category")
+        if not (
+            isinstance(field_name, str)
+            and isinstance(field_value, str)
+            and isinstance(source, str)
+            and isinstance(category, str)
+        ):
+            continue
+        groups[(source, field_name, field_value)].add(category)
+
+    out: list[dict[str, object]] = []
+    for sug in suggestions:
+        rule = sug.get("suggested_rule")
+        non_discriminating = False
+        conflicting: list[str] = []
+        if isinstance(rule, dict):
+            field_name = rule.get("field_name")
+            field_value = rule.get("field_value")
+            source = rule.get("source")
+            if isinstance(field_name, str) and isinstance(field_value, str) and isinstance(source, str):
+                key = (source, field_name, field_value)
+                cats = groups.get(key, set())
+                if len(cats) > 1:
+                    non_discriminating = True
+                    conflicting = sorted(cats)
+        if non_discriminating and not include_non_discriminating:
+            continue
+        if non_discriminating:
+            out.append({**sug, "non_discriminating": True, "conflicting_categories": conflicting})
+        else:
+            out.append(sug)
+    return out

@@ -1121,3 +1121,36 @@ contract to allow writes scoped to categorization metadata only.
 - Fix simulates the engine: `[*existing, candidate]` is sorted `priority ASC, id ASC` (candidate's missing id sentinels to last in ties — matches the post-create id ordering) and `categorize_transaction` / `_resolve_type_winner` runs per matched tx. New `shadowed_by_higher` bucket lists tx the candidate matches but loses to a higher-precedence existing rule. `changed` and `unchanged` now reflect the real post-priority effect.
 - Schema delta: `shadowed_by_higher: [{tx_id, current_category|current_type, winning_rule_id, winning_priority, winning_category|winning_type}]`.
 - Files: `src/pfm/analytics/rule_dryrun.py`, `tests/test_rule_dryrun.py` (+6 tests), `src/pfm/mcp_server.py` (docstring update only — no signature change), and skill hard-rule wording in `../lurii-portfolio`.
+
+---
+
+## ADR-029: Opt-in raw_sample + non-discriminating suggestion filter
+
+**Date:** 2026-04-25
+
+**Status:** Accepted
+
+See `adr-029-categorization-payload-and-suggestion-filter.md`. Two
+payload-level fixes after the first real curation session:
+
+- **Opt-in `raw_sample` on `list_uncategorized_transactions`** —
+  default response keeps `raw_keys` only and drops `raw_sample`. Pass
+  `include_raw_sample=True` for pattern discovery. Cuts ~10× off the
+  survey-pass payload (84 KB → ~8 KB on 100-tx pages); discovery pass
+  opts in with a narrowed `limit`.
+- **Filter non-discriminating rule suggestions in
+  `get_category_suggestions`** — group by
+  `(source, field_name, field_value)`; if a group has more than one
+  distinct `result_category`, the field is non-predictive and all
+  members are dropped. New `include_non_discriminating=True` flag
+  surfaces them flagged with `non_discriminating: true` and
+  `conflicting_categories: [...]` for audit. Removes the ~20/32 noise
+  ratio observed in the first curation pass.
+- Skill `categorization-curator` updated in lockstep: Step 1 drops
+  the manual filter advice (server suppresses now), Step 2 notes that
+  raw_sample is opt-in and used only on the discovery pass.
+- Files: `src/pfm/db/metadata_store.py` (helper
+  `_annotate_non_discriminating`), `src/pfm/mcp_server.py`
+  (`_uncategorized_item_dict` + tool signatures),
+  `tests/test_metadata_store_helpers.py` (+3 tests),
+  `tests/test_mcp_server.py` (split test into default vs opt-in).
