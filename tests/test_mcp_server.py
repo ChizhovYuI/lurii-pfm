@@ -585,6 +585,43 @@ class TestCategorizationTools:
             assert parsed["transaction"]["tx_id"] == "s1"
             assert parsed["raw_json"] == {"description": "FX 1"}
             assert parsed["winning_rule_id"] == rule.id
+            assert parsed["winning_category_rule"]["id"] == rule.id
+            assert parsed["winning_category_rule"]["result_category"] == "fx"
+            assert parsed["winning_type_rule"] is None
+
+    @pytest.mark.asyncio
+    async def test_get_transaction_detail_surfaces_winning_type_rule(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.models import TransactionType
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import get_transaction_detail
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+
+            await repo.save_transactions(
+                [
+                    _make_tx(
+                        tx_id="u1",
+                        tx_type=TransactionType.UNKNOWN,
+                        raw_json=json.dumps({"kind": "purchase"}),
+                    ),
+                ],
+            )
+            txs = await repo.get_transactions()
+            tid = txs[0].id
+            assert tid is not None
+            type_rule = await store.create_type_rule(
+                "spend",
+                field_name="kind",
+                field_operator="eq",
+                field_value="purchase",
+            )
+
+            parsed = json.loads(await get_transaction_detail(ctx, transaction_id=tid))
+            assert parsed["winning_type_rule"]["id"] == type_rule.id
+            assert parsed["winning_type_rule"]["result_type"] == "spend"
 
     @pytest.mark.asyncio
     async def test_get_transaction_detail_not_found(self, tmp_path):

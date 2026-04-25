@@ -255,6 +255,28 @@ per matched tx. Output schema gains `shadowed_by_higher`:
 production effect. `matched` count is unchanged (it remains the
 isolation-match count — useful for sanity-checking pattern correctness).
 
+### Phase 6.1 — surface winning type rule on `get_transaction_detail`
+
+The Phase 4 wiring of `get_transaction_detail` returned only
+`winning_rule_id` (the category-rule winner). Skill consumers asking
+"why is this tx mapped to type X" had no first-class answer — they had
+to iterate through type rules manually.
+
+Fix: `get_transaction_detail` now returns two rule snapshots —
+`winning_category_rule` (id, priority, field_name, field_value,
+result_category) and `winning_type_rule` (id, priority, field_name,
+field_value, result_type). Each is `null` when no rule applies
+(e.g. `winning_type_rule` is `null` when the source already supplies
+a concrete `tx_type` and no rule needs to fire). The legacy
+`winning_rule_id` field is kept as a back-compat alias for
+`winning_category_rule.id`.
+
+Implementation: promoted `_resolve_type_winner` from `rule_dryrun.py`
+to a public `resolve_type_winner` in `pfm.analytics.type_resolver`;
+both `rule_dryrun` and `mcp_server` import it. Tests in
+`tests/test_mcp_server.py::TestCategorizationTools` now assert the
+two new fields.
+
 ### Schema impact
 
 None. `field_operator` is plain `TEXT` — `"regex"` is a new accepted

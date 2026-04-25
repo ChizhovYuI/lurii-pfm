@@ -13,7 +13,7 @@ from pfm.analytics.categorizer import (
     _resolve_field,
     categorize_transaction,
 )
-from pfm.analytics.type_resolver import _resolve_raw_field, match_type_rule
+from pfm.analytics.type_resolver import _resolve_raw_field, match_type_rule, resolve_type_winner
 from pfm.db.metadata_store import _validate_regex_value
 from pfm.db.models import CategoryRule, TypeRule, effective_type
 
@@ -140,19 +140,6 @@ async def dry_run_category_rule(  # noqa: PLR0913, C901
     }
 
 
-def _resolve_type_winner(
-    rules: list[TypeRule],
-    tx: Transaction,
-) -> TypeRule | None:
-    """Mirror `resolve_type` but return the winning rule (not its enum)."""
-    for r in rules:
-        if r.deleted:
-            continue
-        if match_type_rule(tx, r):
-            return r
-    return None
-
-
 async def dry_run_type_rule(  # noqa: PLR0913, C901, PLR0912
     repo: Repository,
     store: MetadataStore,
@@ -199,7 +186,7 @@ async def dry_run_type_rule(  # noqa: PLR0913, C901, PLR0912
     for tx, meta in matched:
         current_override = meta.type_override if meta else None
         current_type = effective_type(tx, meta)
-        winner = _resolve_type_winner(combined, tx)
+        winner = resolve_type_winner(tx, combined)
         candidate_won = winner is not None and winner.id is None
         if candidate_won:
             entry: dict[str, object] = {

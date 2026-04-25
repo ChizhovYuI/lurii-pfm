@@ -551,6 +551,30 @@ def _type_rule_dict(rule: TypeRule) -> dict[str, object]:
     }
 
 
+def _winning_category_rule_dict(rule: CategoryRule | None) -> dict[str, object] | None:
+    if rule is None:
+        return None
+    return {
+        "id": rule.id,
+        "priority": rule.priority,
+        "field_name": rule.field_name,
+        "field_value": rule.field_value,
+        "result_category": rule.result_category,
+    }
+
+
+def _winning_type_rule_dict(rule: TypeRule | None) -> dict[str, object] | None:
+    if rule is None:
+        return None
+    return {
+        "id": rule.id,
+        "priority": rule.priority,
+        "field_name": rule.field_name,
+        "field_value": rule.field_value,
+        "result_type": rule.result_type,
+    }
+
+
 def _metadata_dict(meta: TransactionMetadata | None) -> dict[str, object] | None:
     if meta is None:
         return None
@@ -713,17 +737,31 @@ async def get_transaction_detail(
     ctx: Context[ServerSession, AppContext],
     transaction_id: int,
 ) -> str:
-    """Full transaction + metadata + parsed raw_json + currently-winning rule_id."""
+    """Full transaction + metadata + parsed raw_json + winning category & type rules.
+
+    ``winning_category_rule`` is the rule producing the current category
+    (or null when categorized via fallback / not categorized at all).
+    ``winning_type_rule`` is the type rule that maps the raw tx to its
+    effective type — null when ``tx_type`` came in directly from the
+    source (no rule needed) or no rule matched. Each value is a small
+    rule snapshot (``id``, ``priority``, ``field_name``, ``field_value``,
+    ``result_*``) — enough to answer "why is this tx X" without a second
+    listing call. ``winning_rule_id`` is kept as a back-compat alias for
+    ``winning_category_rule.id``.
+    """
     from pfm.analytics.categorizer import categorize_transaction
+    from pfm.analytics.type_resolver import resolve_type_winner
 
     store = _ctx_store(ctx)
     pair = await store.get_transaction_by_id(transaction_id)
     if pair is None:
         return _json({"error": "not found", "transaction_id": transaction_id})
     tx, meta = pair
-    rules = await store.get_category_rules()
-    winner = categorize_transaction(tx, rules, meta)
-    winning_rule_id = winner.rule_id if winner else None
+    cat_rules = await store.get_category_rules()
+    type_rules = await store.get_type_rules()
+    cat_winner = categorize_transaction(tx, cat_rules, meta)
+    type_winner = resolve_type_winner(tx, type_rules)
+    cat_rule_obj = next((r for r in cat_rules if r.id == cat_winner.rule_id), None) if cat_winner is not None else None
     return _json(
         {
             "transaction": {
@@ -742,7 +780,9 @@ async def get_transaction_detail(
             },
             "metadata": _metadata_dict(meta),
             "raw_json": _parse_raw_dict(tx.raw_json),
-            "winning_rule_id": winning_rule_id,
+            "winning_category_rule": _winning_category_rule_dict(cat_rule_obj),
+            "winning_type_rule": _winning_type_rule_dict(type_winner),
+            "winning_rule_id": cat_rule_obj.id if cat_rule_obj is not None else None,
         }
     )
 

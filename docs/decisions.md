@@ -1122,6 +1122,12 @@ contract to allow writes scoped to categorization metadata only.
 - Schema delta: `shadowed_by_higher: [{tx_id, current_category|current_type, winning_rule_id, winning_priority, winning_category|winning_type}]`.
 - Files: `src/pfm/analytics/rule_dryrun.py`, `tests/test_rule_dryrun.py` (+6 tests), `src/pfm/mcp_server.py` (docstring update only — no signature change), and skill hard-rule wording in `../lurii-portfolio`.
 
+**Phase 6.1 (done) — surface winning type rule on `get_transaction_detail`:**
+- Tool returned only `winning_rule_id` (category-rule winner). Skill couldn't answer "why is this tx mapped to type X" without iterating through type rules manually.
+- Now returns two rule snapshots: `winning_category_rule` (id, priority, field_name, field_value, result_category) and `winning_type_rule` (id, priority, field_name, field_value, result_type). Each is `null` when no rule applies. Legacy `winning_rule_id` kept as alias for `winning_category_rule.id`.
+- `_resolve_type_winner` promoted from private `rule_dryrun.py` helper to public `pfm.analytics.type_resolver.resolve_type_winner` — shared by both call sites.
+- Files: `src/pfm/analytics/type_resolver.py`, `src/pfm/analytics/rule_dryrun.py`, `src/pfm/mcp_server.py`, `tests/test_mcp_server.py` (+1 test, +3 assertions).
+
 ---
 
 ## ADR-029: Opt-in raw_sample + non-discriminating suggestion filter

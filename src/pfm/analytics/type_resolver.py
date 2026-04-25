@@ -28,6 +28,20 @@ def resolve_type(tx: Transaction, rules: list[TypeRule]) -> TransactionType | No
     return None
 
 
+def resolve_type_winner(tx: Transaction, rules: list[TypeRule]) -> TypeRule | None:
+    """Mirror :func:`resolve_type` but return the winning rule (not its enum).
+
+    Useful when callers need to surface the rule that produced a tx's
+    type — e.g. dry-run shadow detection or transaction inspection.
+    """
+    for rule in rules:
+        if rule.deleted:
+            continue
+        if match_type_rule(tx, rule):
+            return rule
+    return None
+
+
 def resolve_type_batch(
     txs: list[Transaction],
     rules: list[TypeRule],
