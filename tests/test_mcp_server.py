@@ -392,3 +392,391 @@ def test_memory_payload_shape():
         "normalized": True,
         "max_chars": 4000,
     }
+
+
+# ── ADR-028 categorization tools ─────────────────────────────────────────
+
+
+def _make_tx(
+    *,
+    source_name: str = "kbank",
+    tx_type=None,
+    tx_id: str = "",
+    raw_json: str = "",
+    asset: str = "USD",
+    d: date = date(2026, 3, 1),
+):
+    from pfm.db.models import Transaction, TransactionType
+
+    return Transaction(
+        date=d,
+        source=source_name,
+        source_name=source_name,
+        tx_type=tx_type or TransactionType.SPEND,
+        asset=asset,
+        amount=Decimal(10),
+        usd_value=Decimal(10),
+        tx_id=tx_id,
+        raw_json=raw_json,
+    )
+
+
+def _make_ctx(repo, store, db_path):
+    from unittest.mock import MagicMock
+
+    from pfm.mcp_server import AppContext
+
+    ctx = MagicMock()
+    ctx.request_context.lifespan_context = AppContext(repo=repo, db_path=db_path, metadata_store=store)
+    return ctx
+
+
+class TestCategorizationTools:
+    @pytest.mark.asyncio
+    async def test_list_category_rules_includes_new_rule(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import list_category_rules
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+
+            rule = await store.create_category_rule(
+                "spend",
+                "fx",
+                field_name="description",
+                field_operator="contains",
+                field_value="FX",
+            )
+            parsed = json.loads(await list_category_rules(ctx))
+            ids = [r["id"] for r in parsed["rules"]]
+            assert rule.id in ids
+            row = next(r for r in parsed["rules"] if r["id"] == rule.id)
+            assert row["result_category"] == "fx"
+            assert row["field_value"] == "FX"
+
+    @pytest.mark.asyncio
+    async def test_list_type_rules_returns_data(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import list_type_rules
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+
+            rule = await store.create_type_rule(
+                "spend",
+                field_name="kind",
+                field_operator="eq",
+                field_value="purchase",
+            )
+            parsed = json.loads(await list_type_rules(ctx))
+            assert any(r["id"] == rule.id and r["result_type"] == "spend" for r in parsed["rules"])
+
+    @pytest.mark.asyncio
+    async def test_list_categories_filters_by_type(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import list_categories
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+
+            parsed = json.loads(await list_categories(ctx, tx_type="spend"))
+            assert parsed["count"] >= 1
+            assert all(c["tx_type"] == "spend" for c in parsed["categories"])
+
+    @pytest.mark.asyncio
+    async def test_categorization_summary_counts_per_source(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.models import TransactionType
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import categorization_summary
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+
+            await repo.save_transactions(
+                [
+                    _make_tx(source_name="kbank", tx_type=TransactionType.UNKNOWN, tx_id="k1"),
+                    _make_tx(source_name="kbank", tx_id="k2"),
+                ]
+            )
+            parsed = json.loads(await categorization_summary(ctx, source="kbank"))
+            assert len(parsed["sources"]) == 1
+            row = parsed["sources"][0]
+            assert row["source_name"] == "kbank"
+            assert row["total"] == 2
+            assert row["unknown_type"] == 1
+            assert row["no_category"] == 2
+
+    @pytest.mark.asyncio
+    async def test_list_uncategorized_transactions_with_raw_preview(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import list_uncategorized_transactions
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+
+            await repo.save_transactions(
+                [_make_tx(tx_id="s1", raw_json=json.dumps({"description": "FX 100", "kind": "purchase"}))]
+            )
+            parsed = json.loads(await list_uncategorized_transactions(ctx, missing_category=True))
+            assert parsed["total"] == 1
+            item = parsed["items"][0]
+            assert item["tx_id"] == "s1"
+            assert item["id"] is not None
+            assert sorted(item["raw_keys"]) == ["description", "kind"]
+            assert item["raw_sample"]["description"] == "FX 100"
+
+    @pytest.mark.asyncio
+    async def test_get_transaction_detail_returns_full_data(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import get_transaction_detail
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+
+            await repo.save_transactions([_make_tx(tx_id="s1", raw_json=json.dumps({"description": "FX 1"}))])
+            txs = await repo.get_transactions()
+            tid = txs[0].id
+            assert tid is not None
+            rule = await store.create_category_rule(
+                "spend",
+                "fx",
+                field_name="description",
+                field_operator="contains",
+                field_value="FX",
+            )
+
+            parsed = json.loads(await get_transaction_detail(ctx, transaction_id=tid))
+            assert parsed["transaction"]["tx_id"] == "s1"
+            assert parsed["raw_json"] == {"description": "FX 1"}
+            assert parsed["winning_rule_id"] == rule.id
+
+    @pytest.mark.asyncio
+    async def test_get_transaction_detail_not_found(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import get_transaction_detail
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+
+            parsed = json.loads(await get_transaction_detail(ctx, transaction_id=99999))
+            assert parsed["error"] == "not found"
+            assert parsed["transaction_id"] == 99999
+
+    @pytest.mark.asyncio
+    async def test_create_category_rule_happy_path(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import create_category_rule
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+
+            parsed = json.loads(
+                await create_category_rule(
+                    ctx,
+                    type_match="spend",
+                    result_category="fx",
+                    field_name="description",
+                    field_operator="contains",
+                    field_value="FX",
+                )
+            )
+            assert parsed["rule"]["result_category"] == "fx"
+            assert parsed["rule"]["builtin"] is False
+            saved = await store.get_category_rules()
+            assert any(r.id == parsed["rule"]["id"] for r in saved)
+
+    @pytest.mark.asyncio
+    async def test_create_category_rule_invalid_regex_raises(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import create_category_rule
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+
+            with pytest.raises(ValueError, match="invalid regex"):
+                await create_category_rule(
+                    ctx,
+                    type_match="spend",
+                    result_category="fx",
+                    field_name="description",
+                    field_operator="regex",
+                    field_value="(",
+                )
+
+    @pytest.mark.asyncio
+    async def test_delete_category_rule_returns_status(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import delete_category_rule
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+
+            rule = await store.create_category_rule("spend", "fx")
+            assert rule.id is not None
+            ok = json.loads(await delete_category_rule(ctx, rule_id=rule.id))
+            assert ok == {"deleted": True, "rule_id": rule.id}
+            missing = json.loads(await delete_category_rule(ctx, rule_id=999999))
+            assert missing == {"deleted": False, "rule_id": 999999}
+
+    @pytest.mark.asyncio
+    async def test_create_and_delete_type_rule_smoke(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import create_type_rule, delete_type_rule
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+
+            created = json.loads(
+                await create_type_rule(
+                    ctx,
+                    result_type="spend",
+                    field_name="kind",
+                    field_operator="eq",
+                    field_value="purchase",
+                )
+            )
+            rid = created["rule"]["id"]
+            deleted = json.loads(await delete_type_rule(ctx, rule_id=rid))
+            assert deleted == {"deleted": True, "rule_id": rid}
+
+    @pytest.mark.asyncio
+    async def test_set_transaction_category_writes_metadata_and_records_choice(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import set_transaction_category
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+
+            await repo.save_transactions([_make_tx(tx_id="s1", raw_json='{"description":"X"}')])
+            tid = (await repo.get_transactions())[0].id
+            assert tid is not None
+            parsed = json.loads(await set_transaction_category(ctx, transaction_id=tid, category="dining"))
+            assert parsed["metadata"]["category"] == "dining"
+            assert parsed["metadata"]["category_source"] == "manual"
+
+            cursor = await repo.connection.execute(
+                "SELECT chosen_category, previous_category FROM user_category_choices WHERE transaction_id = ?",
+                (tid,),
+            )
+            row = await cursor.fetchone()
+            assert row is not None
+            assert row[0] == "dining"
+
+    @pytest.mark.asyncio
+    async def test_link_and_unlink_transfer_round_trip(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import link_transfer, unlink_transfer
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+
+            await repo.save_transactions([_make_tx(tx_id="a"), _make_tx(tx_id="b")])
+            txs = await repo.get_transactions()
+            a_id, b_id = txs[0].id, txs[1].id
+            assert a_id is not None
+            assert b_id is not None
+
+            linked = json.loads(await link_transfer(ctx, tx_id_a=a_id, tx_id_b=b_id))
+            assert linked["ok"] is True
+            meta_a = await store.get_metadata(a_id)
+            assert meta_a is not None
+            assert meta_a.is_internal_transfer is True
+            assert meta_a.transfer_pair_id == b_id
+
+            unlinked = json.loads(await unlink_transfer(ctx, transaction_id=a_id))
+            assert unlinked["ok"] is True
+            meta_a_after = await store.get_metadata(a_id)
+            assert meta_a_after is not None
+            assert meta_a_after.is_internal_transfer is False
+
+    @pytest.mark.asyncio
+    async def test_dry_run_category_rule_wires(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import dry_run_category_rule
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+
+            await repo.save_transactions([_make_tx(tx_id="s1", raw_json='{"description":"FX 1"}')])
+            parsed = json.loads(
+                await dry_run_category_rule(
+                    ctx,
+                    type_match="spend",
+                    result_category="fx",
+                    field_name="description",
+                    field_operator="contains",
+                    field_value="FX",
+                )
+            )
+            assert parsed["matched"] == 1
+            assert parsed["changed"][0]["tx_id"] == "s1"
+
+    @pytest.mark.asyncio
+    async def test_dry_run_type_rule_wires(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.models import TransactionType
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import dry_run_type_rule
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+
+            await repo.save_transactions(
+                [_make_tx(tx_id="u1", tx_type=TransactionType.UNKNOWN, raw_json='{"kind":"purchase"}')]
+            )
+            parsed = json.loads(
+                await dry_run_type_rule(
+                    ctx,
+                    result_type="spend",
+                    field_name="kind",
+                    field_operator="eq",
+                    field_value="purchase",
+                )
+            )
+            assert parsed["matched"] == 1
+            assert parsed["changed"][0]["proposed_type"] == "spend"
+
+    @pytest.mark.asyncio
+    async def test_apply_categorization_returns_counts(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import apply_categorization
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+
+            parsed = json.loads(await apply_categorization(ctx))
+            assert "total" in parsed
+            assert "type_resolved" in parsed
+            assert "transfers" in parsed
+            assert "categorized" in parsed

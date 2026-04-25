@@ -1075,7 +1075,7 @@ writes).
 
 **Date:** 2026-04-25
 
-**Status:** In progress (Phases 1–3 accepted, Phases 4–6 proposed)
+**Status:** In progress (Phases 1–5 accepted, Phase 6 proposed)
 
 See `adr-028-categorization-mcp-tools.md`. Adds a `regex` operator to
 the rule engine and a categorization tool surface (rule CRUD, dry-run,
@@ -1101,4 +1101,14 @@ contract to allow writes scoped to categorization metadata only.
 - Pre-validates regex (`field_operator="regex"`) before any DB read.
 - Files: `src/pfm/analytics/rule_dryrun.py`, `tests/test_rule_dryrun.py` (12 new tests).
 
-**Phases 4–6 (proposed):** MCP tool surface (`AppContext.metadata_store`, tool registrations), smoke tests, Claude Code skill in `../lurii-portfolio`.
+**Phase 4 (done):**
+- `AppContext` extended with `metadata_store: MetadataStore`, built once per lifespan from the shared `aiosqlite.Connection`. `_ctx_store` helper added next to `_ctx_repo` / `_ctx_db_path`.
+- 16 categorization tools registered in `src/pfm/mcp_server.py`: inspection (`list_category_rules`, `list_type_rules`, `list_categories`, `categorization_summary`, `get_rule_suggestions`), discovery (`list_uncategorized_transactions`, `get_transaction_detail`), mutation (`create_category_rule`, `delete_category_rule`, `create_type_rule`, `delete_type_rule`, `set_transaction_category`, `link_transfer`, `unlink_transfer`), dry-run (`dry_run_category_rule`, `dry_run_type_rule` wiring `rule_dryrun`), and `apply_categorization` wrapping `run_categorization`.
+- All tools return JSON via `_json`. Boolean args are keyword-only (FBT discipline). Mutation tools accept integer row ids; listing tools expose both `id` and `tx_id` so the skill can round-trip ids.
+- Files: `src/pfm/mcp_server.py`.
+
+**Phase 5 (done):**
+- `tests/test_mcp_server.py` extended with `TestCategorizationTools` (16 tests) using a real `Repository` + `MetadataStore` over `tmp_path` SQLite. Covers happy paths, regex validation, not-found envelope, link/unlink round-trip, `set_transaction_category` recording a `user_category_choices` row, and dry-run wiring. Smokes `apply_categorization` returning the counts dict.
+- Files: `tests/test_mcp_server.py`.
+
+**Phase 6 (proposed):** Claude Code skill in `../lurii-portfolio`.

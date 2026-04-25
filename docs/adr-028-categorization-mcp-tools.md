@@ -1,6 +1,6 @@
 # ADR-028: Categorization Tools in MCP Server
 
-**Status:** In progress (Phases 1–3 accepted, Phases 4–6 proposed)
+**Status:** In progress (Phases 1–5 accepted, Phase 6 proposed)
 **Date:** 2026-04-25
 
 ## Context
@@ -199,8 +199,24 @@ the conservative default.
    overlapping_rules, raw_field_samples}` per the schema above. Samples
    capped at 5 entries, deduped, truncated to 200 chars. Tests in
    `tests/test_rule_dryrun.py` (12 cases).
-4. **MCP wiring.** `AppContext.metadata_store`, tool registrations.
-5. **MCP smoke tests.** Extend `tests/test_mcp_server.py`.
+4. ✅ **MCP wiring.** `AppContext` extended with `metadata_store: MetadataStore`
+   built once per lifespan from `repo.connection`. New `_ctx_store` helper.
+   16 categorization tools registered in `src/pfm/mcp_server.py`:
+   inspection (`list_category_rules`, `list_type_rules`, `list_categories`,
+   `categorization_summary`, `get_rule_suggestions`), discovery
+   (`list_uncategorized_transactions`, `get_transaction_detail`), mutation
+   (`create_category_rule`, `delete_category_rule`, `create_type_rule`,
+   `delete_type_rule`, `set_transaction_category`, `link_transfer`,
+   `unlink_transfer`), dry-run (`dry_run_category_rule`,
+   `dry_run_type_rule`) wiring `rule_dryrun`, and `apply_categorization`
+   wrapping `run_categorization`. All return JSON via `_json`. Boolean args
+   are keyword-only (FBT discipline). Mutation tools accept integer row
+   ids; listing tools expose both `id` and `tx_id`.
+5. ✅ **MCP smoke tests.** `tests/test_mcp_server.py` extended with
+   `TestCategorizationTools` (16 tests) using a real `Repository` +
+   `MetadataStore` over `tmp_path` SQLite. Covers happy paths, regex
+   validation, not-found envelope, link/unlink round-trip, and dry-run
+   wiring.
 6. **Skill.** Lives in `../lurii-portfolio` (separate repo). Out of
    scope here.
 

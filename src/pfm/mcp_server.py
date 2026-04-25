@@ -12,6 +12,8 @@ from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.session import ServerSession
 
 from pfm.db.ai_report_memory_store import AI_REPORT_MEMORY_MAX_CHARS, AIReportMemoryStore, normalize_ai_report_memory
+from pfm.db.metadata_store import MetadataStore
+from pfm.db.models import CategoryRule, TransactionMetadata, TypeRule
 from pfm.db.repository import Repository
 
 # ---------------------------------------------------------------------------
@@ -28,6 +30,7 @@ class AppContext:
 
     repo: Repository
     db_path: Path
+    metadata_store: MetadataStore
 
 
 @asynccontextmanager
@@ -37,7 +40,8 @@ async def _lifespan(_server: FastMCP) -> AsyncIterator[AppContext]:
 
     db_path = get_db_path()
     async with Repository(db_path) as repo:
-        yield AppContext(repo=repo, db_path=db_path)
+        store = MetadataStore(repo.connection)
+        yield AppContext(repo=repo, db_path=db_path, metadata_store=store)
 
 
 mcp = FastMCP(
@@ -65,6 +69,11 @@ def _ctx_repo(ctx: Context[ServerSession, AppContext]) -> Repository:
 def _ctx_db_path(ctx: Context[ServerSession, AppContext]) -> Path:
     lc: AppContext = ctx.request_context.lifespan_context
     return lc.db_path
+
+
+def _ctx_store(ctx: Context[ServerSession, AppContext]) -> MetadataStore:
+    lc: AppContext = ctx.request_context.lifespan_context
+    return lc.metadata_store
 
 
 def _today() -> date:
@@ -505,6 +514,416 @@ async def clear_ai_report_memory(
     store = AIReportMemoryStore(_ctx_db_path(ctx))
     await store.set("")
     return _json({"updated": True, "cleared": True, **_memory_payload("")})
+
+
+# ---------------------------------------------------------------------------
+# Categorization tools (ADR-028)
+# ---------------------------------------------------------------------------
+
+
+def _category_rule_dict(rule: CategoryRule) -> dict[str, object]:
+    return {
+        "id": rule.id,
+        "type_match": rule.type_match,
+        "type_operator": rule.type_operator,
+        "result_category": rule.result_category,
+        "source": rule.source,
+        "field_name": rule.field_name,
+        "field_operator": rule.field_operator,
+        "field_value": rule.field_value,
+        "priority": rule.priority,
+        "builtin": rule.builtin,
+        "deleted": rule.deleted,
+    }
+
+
+def _type_rule_dict(rule: TypeRule) -> dict[str, object]:
+    return {
+        "id": rule.id,
+        "result_type": rule.result_type,
+        "source": rule.source,
+        "field_name": rule.field_name,
+        "field_operator": rule.field_operator,
+        "field_value": rule.field_value,
+        "priority": rule.priority,
+        "builtin": rule.builtin,
+        "deleted": rule.deleted,
+    }
+
+
+def _metadata_dict(meta: TransactionMetadata | None) -> dict[str, object] | None:
+    if meta is None:
+        return None
+    return {
+        "transaction_id": meta.transaction_id,
+        "category": meta.category,
+        "category_source": meta.category_source,
+        "category_confidence": meta.category_confidence,
+        "type_override": meta.type_override,
+        "is_internal_transfer": meta.is_internal_transfer,
+        "transfer_pair_id": meta.transfer_pair_id,
+        "transfer_detected_by": meta.transfer_detected_by,
+        "reviewed": meta.reviewed,
+        "notes": meta.notes,
+    }
+
+
+def _parse_raw_dict(raw_json: str) -> dict[str, object]:
+    if not raw_json:
+        return {}
+    try:
+        parsed = json.loads(raw_json)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _uncategorized_item_dict(tx: object, meta: TransactionMetadata | None) -> dict[str, object]:
+    raw = _parse_raw_dict(tx.raw_json)  # type: ignore[attr-defined]
+    return {
+        "id": tx.id,  # type: ignore[attr-defined]
+        "tx_id": tx.tx_id,  # type: ignore[attr-defined]
+        "source_name": tx.source_name or tx.source,  # type: ignore[attr-defined]
+        "date": tx.date.isoformat(),  # type: ignore[attr-defined]
+        "tx_type": tx.tx_type.value,  # type: ignore[attr-defined]
+        "asset": tx.asset,  # type: ignore[attr-defined]
+        "amount": _dec2(tx.amount),  # type: ignore[attr-defined]
+        "usd_value": _dec2(tx.usd_value),  # type: ignore[attr-defined]
+        "category": meta.category if meta else None,
+        "type_override": meta.type_override if meta else None,
+        "raw_keys": list(raw.keys()),
+        "raw_sample": {k: str(v)[:200] for k, v in raw.items()},
+    }
+
+
+@mcp.tool()
+async def list_category_rules(
+    ctx: Context[ServerSession, AppContext],
+    source: str | None = None,
+    *,
+    include_deleted: bool = False,
+) -> str:
+    """List category rules ordered by priority."""
+    store = _ctx_store(ctx)
+    rules = await store.get_category_rules(source=source, include_deleted=include_deleted)
+    return _json({"count": len(rules), "rules": [_category_rule_dict(r) for r in rules]})
+
+
+@mcp.tool()
+async def list_type_rules(
+    ctx: Context[ServerSession, AppContext],
+    source: str | None = None,
+    *,
+    include_deleted: bool = False,
+) -> str:
+    """List type rules ordered by priority."""
+    store = _ctx_store(ctx)
+    rules = await store.get_type_rules(source=source, include_deleted=include_deleted)
+    return _json({"count": len(rules), "rules": [_type_rule_dict(r) for r in rules]})
+
+
+@mcp.tool()
+async def list_categories(
+    ctx: Context[ServerSession, AppContext],
+    tx_type: str | None = None,
+) -> str:
+    """List valid categories, optionally filtered by tx_type."""
+    store = _ctx_store(ctx)
+    cats = await store.get_categories(tx_type=tx_type)
+    data = [
+        {"tx_type": c.tx_type, "category": c.category, "display_name": c.display_name, "sort_order": c.sort_order}
+        for c in cats
+    ]
+    return _json({"count": len(data), "categories": data})
+
+
+@mcp.tool()
+async def categorization_summary(
+    ctx: Context[ServerSession, AppContext],
+    source: str | None = None,
+) -> str:
+    """Per-source categorization counts: total, unknown_type, no_category, internal_transfer."""
+    store = _ctx_store(ctx)
+    rows = await store.get_categorization_summary(source_name=source)
+    return _json({"sources": rows})
+
+
+@mcp.tool()
+async def get_rule_suggestions(
+    ctx: Context[ServerSession, AppContext],
+    min_evidence: int = 2,
+) -> str:
+    """Suggest new category rules learned from manual category choices."""
+    store = _ctx_store(ctx)
+    suggestions = await store.get_category_suggestions(min_evidence=min_evidence)
+    return _json({"count": len(suggestions), "suggestions": suggestions})
+
+
+@mcp.tool()
+async def list_uncategorized_transactions(  # noqa: PLR0913
+    ctx: Context[ServerSession, AppContext],
+    source: str | None = None,
+    *,
+    missing_type: bool = False,
+    missing_category: bool = False,
+    limit: int = 100,
+    offset: int = 0,
+) -> str:
+    """List uncategorized transactions with raw_json preview for rule authoring."""
+    store = _ctx_store(ctx)
+    items, total = await store.get_uncategorized_transactions(
+        source_name=source,
+        missing_type=missing_type,
+        missing_category=missing_category,
+        limit=limit,
+        offset=offset,
+    )
+    data = [_uncategorized_item_dict(tx, meta) for tx, meta in items]
+    return _json({"count": len(data), "total": total, "items": data})
+
+
+@mcp.tool()
+async def get_transaction_detail(
+    ctx: Context[ServerSession, AppContext],
+    transaction_id: int,
+) -> str:
+    """Full transaction + metadata + parsed raw_json + currently-winning rule_id."""
+    from pfm.analytics.categorizer import categorize_transaction
+
+    store = _ctx_store(ctx)
+    pair = await store.get_transaction_by_id(transaction_id)
+    if pair is None:
+        return _json({"error": "not found", "transaction_id": transaction_id})
+    tx, meta = pair
+    rules = await store.get_category_rules()
+    winner = categorize_transaction(tx, rules, meta)
+    winning_rule_id = winner.rule_id if winner else None
+    return _json(
+        {
+            "transaction": {
+                "id": tx.id,
+                "tx_id": tx.tx_id,
+                "source": tx.source,
+                "source_name": tx.source_name or tx.source,
+                "date": tx.date.isoformat(),
+                "tx_type": tx.tx_type.value,
+                "asset": tx.asset,
+                "amount": _dec2(tx.amount),
+                "usd_value": _dec2(tx.usd_value),
+                "counterparty_asset": tx.counterparty_asset or None,
+                "counterparty_amount": _dec2(tx.counterparty_amount) if tx.counterparty_amount else None,
+                "trade_side": tx.trade_side or None,
+            },
+            "metadata": _metadata_dict(meta),
+            "raw_json": _parse_raw_dict(tx.raw_json),
+            "winning_rule_id": winning_rule_id,
+        }
+    )
+
+
+@mcp.tool()
+async def create_category_rule(  # noqa: PLR0913
+    ctx: Context[ServerSession, AppContext],
+    type_match: str,
+    result_category: str,
+    type_operator: str = "eq",
+    field_name: str = "",
+    field_operator: str = "",
+    field_value: str = "",
+    source: str = "*",
+    priority: int | None = None,
+) -> str:
+    """Create a category rule. Validates regex; auto-computes priority if omitted."""
+    store = _ctx_store(ctx)
+    rule = await store.create_category_rule(
+        type_match,
+        result_category,
+        type_operator=type_operator,
+        field_name=field_name,
+        field_operator=field_operator,
+        field_value=field_value,
+        source=source,
+        priority=priority,
+    )
+    return _json({"rule": _category_rule_dict(rule)})
+
+
+@mcp.tool()
+async def delete_category_rule(
+    ctx: Context[ServerSession, AppContext],
+    rule_id: int,
+) -> str:
+    """Delete a category rule. Builtin rules are soft-deleted."""
+    store = _ctx_store(ctx)
+    deleted = await store.delete_category_rule(rule_id)
+    return _json({"deleted": deleted, "rule_id": rule_id})
+
+
+@mcp.tool()
+async def create_type_rule(  # noqa: PLR0913
+    ctx: Context[ServerSession, AppContext],
+    result_type: str,
+    source: str = "*",
+    field_name: str = "",
+    field_operator: str = "eq",
+    field_value: str = "",
+    priority: int | None = None,
+) -> str:
+    """Create a type rule. Validates regex; auto-computes priority if omitted."""
+    store = _ctx_store(ctx)
+    rule = await store.create_type_rule(
+        result_type,
+        source=source,
+        field_name=field_name,
+        field_operator=field_operator,
+        field_value=field_value,
+        priority=priority,
+    )
+    return _json({"rule": _type_rule_dict(rule)})
+
+
+@mcp.tool()
+async def delete_type_rule(
+    ctx: Context[ServerSession, AppContext],
+    rule_id: int,
+) -> str:
+    """Delete a type rule. Builtin rules are soft-deleted."""
+    store = _ctx_store(ctx)
+    deleted = await store.delete_type_rule(rule_id)
+    return _json({"deleted": deleted, "rule_id": rule_id})
+
+
+@mcp.tool()
+async def set_transaction_category(
+    ctx: Context[ServerSession, AppContext],
+    transaction_id: int,
+    category: str,
+) -> str:
+    """Manually set the category for a transaction; recorded for rule learning."""
+    from pfm.db.models import effective_type
+
+    store = _ctx_store(ctx)
+    pair = await store.get_transaction_by_id(transaction_id)
+    if pair is None:
+        return _json({"error": "not found", "transaction_id": transaction_id})
+    tx, prev_meta = pair
+    previous_category = prev_meta.category if prev_meta else ""
+    meta = await store.upsert_metadata(transaction_id, category=category, category_source="manual")
+    await store.record_category_choice(
+        transaction_id,
+        tx.source,
+        effective_type(tx, prev_meta),
+        category,
+        field_snapshot=tx.raw_json,
+        previous_category=previous_category or "",
+    )
+    return _json({"metadata": _metadata_dict(meta)})
+
+
+@mcp.tool()
+async def link_transfer(
+    ctx: Context[ServerSession, AppContext],
+    tx_id_a: int,
+    tx_id_b: int,
+) -> str:
+    """Link two transactions as an internal transfer pair."""
+    store = _ctx_store(ctx)
+    await store.link_transfer(tx_id_a, tx_id_b)
+    return _json({"ok": True, "tx_id_a": tx_id_a, "tx_id_b": tx_id_b})
+
+
+@mcp.tool()
+async def unlink_transfer(
+    ctx: Context[ServerSession, AppContext],
+    transaction_id: int,
+) -> str:
+    """Unlink a transaction from its transfer pair (clears both sides)."""
+    store = _ctx_store(ctx)
+    await store.unlink_transfer(transaction_id)
+    return _json({"ok": True, "transaction_id": transaction_id})
+
+
+@mcp.tool()
+async def dry_run_category_rule(  # noqa: PLR0913
+    ctx: Context[ServerSession, AppContext],
+    type_match: str,
+    result_category: str,
+    type_operator: str = "eq",
+    field_name: str = "",
+    field_operator: str = "",
+    field_value: str = "",
+    source: str = "*",
+    priority: int | None = None,
+    scope_source: str | None = None,
+    limit: int = 200,
+) -> str:
+    """Simulate applying a category rule without saving. Reveals overlap with existing rules."""
+    from pfm.analytics.rule_dryrun import dry_run_category_rule as _impl
+
+    repo = _ctx_repo(ctx)
+    store = _ctx_store(ctx)
+    result = await _impl(
+        repo,
+        store,
+        type_match=type_match,
+        result_category=result_category,
+        type_operator=type_operator,
+        field_name=field_name,
+        field_operator=field_operator,
+        field_value=field_value,
+        source=source,
+        priority=priority,
+        scope_source=scope_source,
+        limit=limit,
+    )
+    return _json(result)
+
+
+@mcp.tool()
+async def dry_run_type_rule(  # noqa: PLR0913
+    ctx: Context[ServerSession, AppContext],
+    result_type: str,
+    source: str = "*",
+    field_name: str = "",
+    field_operator: str = "eq",
+    field_value: str = "",
+    priority: int | None = None,
+    scope_source: str | None = None,
+    limit: int = 200,
+) -> str:
+    """Simulate applying a type rule without saving. Reveals overlap with existing rules."""
+    from pfm.analytics.rule_dryrun import dry_run_type_rule as _impl
+
+    repo = _ctx_repo(ctx)
+    store = _ctx_store(ctx)
+    result = await _impl(
+        repo,
+        store,
+        result_type=result_type,
+        source=source,
+        field_name=field_name,
+        field_operator=field_operator,
+        field_value=field_value,
+        priority=priority,
+        scope_source=scope_source,
+        limit=limit,
+    )
+    return _json(result)
+
+
+@mcp.tool()
+async def apply_categorization(
+    ctx: Context[ServerSession, AppContext],
+    *,
+    force: bool = False,
+) -> str:
+    """Run the categorization pipeline (types -> transfers -> categories). Returns counts."""
+    from pfm.analytics.categorization_runner import run_categorization
+
+    repo = _ctx_repo(ctx)
+    store = _ctx_store(ctx)
+    result = await run_categorization(repo, store, force=force)
+    return _json(result)
 
 
 # ---------------------------------------------------------------------------
