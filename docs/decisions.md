@@ -1189,3 +1189,46 @@ payload-level fixes after the first real curation session:
   (`_uncategorized_item_dict` + tool signatures),
   `tests/test_metadata_store_helpers.py` (+3 tests),
   `tests/test_mcp_server.py` (split test into default vs opt-in).
+
+## ADR-030: Source identity normalization (source_id FK)
+
+**Date:** 2026-04-25
+
+**Status:** Stage 1 accepted. Stages 2–3 deferred.
+
+See `adr-030-source-identity-normalization.md`. `transactions` and
+`snapshots` carried two denormalized text columns (`source`,
+`source_name`) with no FK to `sources`. Three pains: parallel
+identifiers per physical source (coinex 22+21 split), rule matching
+ORs both columns (cannot distinguish two accounts of the same type),
+renames touch every data table.
+
+**Decision:** integer FK `source_id` on data and rule tables,
+shipped in three stages.
+
+- **Stage 1 (this commit):** two additive Alembic migrations
+  (`h8i9j0k1l2m3` adds nullable `source_id` columns + indexes;
+  `i9j0k1l2m3n4` backfills via exact-match-then-fallback). Production
+  read paths unchanged. New `Repository.rename_source` helper updates
+  `sources.name` and the cached text columns in one transaction.
+  `Repository._resolve_source_id` caches `(name → id)` for inserts.
+- **Stage 2 (deferred):** read path migration, `list_sources()` MCP
+  tool, FK-based cascade delete.
+- **Stage 3 (deferred):** destructive — drop `source_name`, rename
+  `source` → `source_type`, swap dedup index, rule tables get
+  `source_type`+`source_id` (XOR), 6-tier auto-priority,
+  categorizer/type_resolver rewrite, MCP tool surface rename, skill
+  rewrite, PRAGMA foreign_keys=ON.
+
+**Why staged:** ~150 read sites of `tx.source_name`, plus a
+coordinated rename in the sibling `categorization-curator` skill
+repo. Splitting reduces blast radius and lets the stage-1 backfill
+soak in production.
+
+- Files: `src/pfm/db/migrations/versions/h8i9j0k1l2m3_add_source_id_columns.py`,
+  `src/pfm/db/migrations/versions/i9j0k1l2m3n4_backfill_source_id.py`,
+  `src/pfm/db/models.py` (Snapshot/Transaction `source_id` field),
+  `src/pfm/db/repository.py` (`_resolve_source_id`,
+  `rename_source`, populate on insert, hydrate on read),
+  `tests/test_db.py` (+5 tests — head bump, source_id populate,
+  missing-source NULL, rename, backfill on legacy rows).

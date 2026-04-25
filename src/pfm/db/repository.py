@@ -30,6 +30,7 @@ class Repository:
         self._db_path = db_path
         self._key_hex = key_hex
         self._conn: aiosqlite.Connection | None = None
+        self._source_id_cache: dict[str, int] = {}
 
     async def __aenter__(self) -> Self:
         from pfm.db.encryption import connect_db
@@ -63,6 +64,49 @@ class Repository:
             raise RuntimeError(msg)
         return self._conn
 
+    async def _resolve_source_id(self, source_name: str) -> int | None:
+        """Resolve sources.id by sources.name. Cached per Repository instance."""
+        if not source_name:
+            return None
+        cached = self._source_id_cache.get(source_name)
+        if cached is not None:
+            return cached
+        cursor = await self._db.execute(
+            "SELECT id FROM sources WHERE name = ? LIMIT 1",
+            (source_name,),
+        )
+        row = await cursor.fetchone()
+        if row is None or row[0] is None:
+            return None
+        sid = int(row[0])
+        self._source_id_cache[source_name] = sid
+        return sid
+
+    async def rename_source(self, old_name: str, new_name: str) -> None:
+        """Rename a configured source and refresh denormalized text columns.
+
+        Stage 1: source_id FK is invariant under rename, but transactions /
+        snapshots still carry source_name as a denormalized cache, so we
+        update both. Stage 3 will drop source_name and this becomes a single
+        UPDATE on sources.
+        """
+        if not old_name or not new_name or old_name == new_name:
+            return
+        await self._db.execute(
+            "UPDATE sources SET name = ? WHERE name = ?",
+            (new_name, old_name),
+        )
+        await self._db.execute(
+            "UPDATE transactions SET source_name = ? WHERE source_name = ?",
+            (new_name, old_name),
+        )
+        await self._db.execute(
+            "UPDATE snapshots SET source_name = ? WHERE source_name = ?",
+            (new_name, old_name),
+        )
+        self._source_id_cache.pop(old_name, None)
+        await self._db.commit()
+
     # ── Snapshots ─────────────────────────────────────────────────────
 
     async def save_snapshot(self, snapshot: Snapshot) -> None:
@@ -79,6 +123,24 @@ class Repository:
             source_name = snap.source_name or snap.source
             normalized.append(snap if snap.source_name == source_name else replace(snap, source_name=source_name))
 
+        rows: list[tuple[str, str, str, int | None, str, str, str, str, str, str]] = []
+        for s in normalized:
+            sid = s.source_id if s.source_id is not None else await self._resolve_source_id(s.source_name)
+            rows.append(
+                (
+                    str(s.date),
+                    s.source,
+                    s.source_name,
+                    sid,
+                    s.asset,
+                    str(s.amount),
+                    str(s.usd_value),
+                    str(s.price),
+                    str(s.apy),
+                    s.raw_json,
+                )
+            )
+
         source_dates = {(str(s.date), s.source, s.source_name) for s in normalized}
         for snapshot_date, source, source_name in source_dates:
             await self._db.execute(
@@ -87,22 +149,10 @@ class Repository:
             )
 
         await self._db.executemany(
-            "INSERT INTO snapshots (date, source, source_name, asset, amount, usd_value, price, apy, raw_json)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [
-                (
-                    str(s.date),
-                    s.source,
-                    s.source_name,
-                    s.asset,
-                    str(s.amount),
-                    str(s.usd_value),
-                    str(s.price),
-                    str(s.apy),
-                    s.raw_json,
-                )
-                for s in normalized
-            ],
+            "INSERT INTO snapshots "
+            "(date, source, source_name, source_id, asset, amount, usd_value, price, apy, raw_json)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            rows,
         )
         await self._db.commit()
 
@@ -167,11 +217,13 @@ class Repository:
         source_name = row["source_name"] if "source_name" in columns else row["source"]
         if not source_name:
             source_name = row["source"]
+        source_id_raw = row["source_id"] if "source_id" in columns else None
         return Snapshot(
             id=row["id"],
             date=date.fromisoformat(row["date"]),
             source=row["source"],
             source_name=source_name,
+            source_id=int(source_id_raw) if source_id_raw is not None else None,
             asset=row["asset"],
             amount=Decimal(row["amount"]),
             usd_value=Decimal(row["usd_value"]),
@@ -287,17 +339,18 @@ class Repository:
 
     _TX_INSERT_SQL = (
         "INSERT OR IGNORE INTO transactions "
-        "(date, source, source_name, tx_type, asset, amount, usd_value, "
+        "(date, source, source_name, source_id, tx_type, asset, amount, usd_value, "
         "counterparty_asset, counterparty_amount, trade_side, tx_id, raw_json) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
 
     @staticmethod
-    def _tx_to_row(tx: Transaction) -> tuple[str, ...]:
+    def _tx_to_row(tx: Transaction, source_id: int | None) -> tuple[object, ...]:
         return (
             str(tx.date),
             tx.source,
             tx.source_name or tx.source,
+            source_id,
             tx.tx_type.value,
             tx.asset,
             str(tx.amount),
@@ -312,16 +365,22 @@ class Repository:
     async def save_transaction(self, tx: Transaction) -> None:
         """Save a single transaction."""
         normalized = tx if tx.source_name else replace(tx, source_name=tx.source)
-        await self._db.execute(self._TX_INSERT_SQL, self._tx_to_row(normalized))
+        sid = (
+            normalized.source_id
+            if normalized.source_id is not None
+            else await self._resolve_source_id(normalized.source_name)
+        )
+        await self._db.execute(self._TX_INSERT_SQL, self._tx_to_row(normalized, sid))
         await self._db.commit()
 
     async def save_transactions(self, txs: list[Transaction]) -> None:
         """Save multiple transactions atomically."""
         normalized = [tx if tx.source_name else replace(tx, source_name=tx.source) for tx in txs]
-        await self._db.executemany(
-            self._TX_INSERT_SQL,
-            [self._tx_to_row(tx) for tx in normalized],
-        )
+        rows: list[tuple[object, ...]] = []
+        for tx in normalized:
+            sid = tx.source_id if tx.source_id is not None else await self._resolve_source_id(tx.source_name)
+            rows.append(self._tx_to_row(tx, sid))
+        await self._db.executemany(self._TX_INSERT_SQL, rows)
         await self._db.commit()
 
     async def get_transactions(
@@ -367,11 +426,13 @@ class Repository:
     @staticmethod
     def row_to_transaction(row: aiosqlite.Row) -> Transaction:
         columns = row.keys()
+        source_id_raw = row["source_id"] if "source_id" in columns else None
         return Transaction(
             id=row["id"],
             date=date.fromisoformat(row["date"]),
             source=row["source"],
             source_name=row["source_name"] if "source_name" in columns and row["source_name"] else row["source"],
+            source_id=int(source_id_raw) if source_id_raw is not None else None,
             tx_type=TransactionType(row["tx_type"]),
             asset=row["asset"],
             amount=Decimal(row["amount"]),

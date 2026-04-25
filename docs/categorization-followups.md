@@ -9,37 +9,34 @@ not yet been validated against real usage.
 
 ## Open
 
-### MCP #10 — source naming canonicalization
+### Source identity normalization — Stages 2 & 3
 
-**Symptom:** the database holds parallel source identifiers
-(`kbank` / `kbank-main`, `coinex` / `coinex-main`,
-`bitget_wallet` / `bitget-wallet-live`). Rules use exact-equality
-matching against either `tx.source` or `tx.source_name`, so the
-same conceptual source under two identifiers needs duplicate rules.
-Skill cleanup passes look like dedup but really chase aliases.
+ADR-030 ships in stages. Stage 1 (additive `source_id` FK + backfill
++ rename helper) is in. Stages 2 and 3 are deferred until the
+foundation has soaked.
 
-**Options under consideration:**
+**Stage 2** — read path migration: hydrate `source_name` via JOIN
+on `sources`; add `list_sources()` MCP tool; switch
+`delete_source_cascade` to FK-based; surface `source_id` on
+`categorization_summary` / `list_uncategorized_transactions` /
+`get_transaction_detail`.
 
-1. New `list_sources()` MCP tool exposing canonical names plus a
-   list of known aliases per source. Read-only; no schema change.
-   Skill could surface aliases during the survey/discover passes.
-2. Write-time normalization — store a canonical `source` on every
-   transaction during ingest, derived from the configured source
-   account. Requires a migration plus careful handling for sources
-   already in the database.
-3. Document aliases per integration in `docs/data-sources.md` and
-   leave the database as-is. Cheapest; relies on the operator to
-   know which identifiers are co-conspirators.
+**Stage 3** — destructive: tx_id collision pre-flight on the coinex
+merge (22+21 split), drop `source_name`, rename `source` →
+`source_type`, swap dedup index, rule tables get
+`source_type`+`source_id` (XOR), 6-tier auto-priority,
+categorizer/type_resolver rewrite, MCP tool surface rename with
+deprecation alias, skill rewrite, `PRAGMA foreign_keys=ON`.
 
-**Why deferred:** option (2) is a schema change (ADR-grade
-decision). Option (1) is a small tool but only useful if option (2)
-is not happening. Option (3) is what the skill already does
-informally. Need a real second curation session to learn whether
-the alias confusion is structural or one-off.
+**Why staged:** ~150 read sites of `tx.source_name` across src+tests,
+plus a coordinated rename in the sibling `categorization-curator`
+skill repo. Splitting reduces risk and lets the stage-1 backfill soak
+in production for a real curation session before destructive
+migrations land.
 
-**See also:** ADR-028 "Source filter semantics" addendum
-documents the matching rule unambiguously, which removes the
-ambiguity at runtime even if naming stays inconsistent.
+**See also:** `docs/adr-030-source-identity-normalization.md` —
+detailed design + stage breakdown. ADR-028 "Source filter
+semantics" addendum stays load-bearing only until stage 3 lands.
 
 ## Closed (reference)
 
@@ -58,6 +55,7 @@ listed here so the next session has a one-stop map of what was done.
 | Source filter & priority semantics docs | ADR-028 (clarifications) |
 | Opt-in `raw_sample` on `list_uncategorized_transactions` | ADR-029 |
 | Filter non-discriminating rule suggestions | ADR-029 |
+| Source identity normalization Stage 1 (`source_id` FK foundation) | ADR-030 Stage 1 |
 
 ## How to use this file
 

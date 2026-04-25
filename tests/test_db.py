@@ -28,7 +28,7 @@ async def test_init_db(tmp_path):
     async with aiosqlite.connect(str(db_path)) as db:
         version_row = await (await db.execute("SELECT version_num FROM alembic_version")).fetchone()
     assert version_row is not None
-    assert version_row[0] == "g7h8i9j0k1l2"
+    assert version_row[0] == "i9j0k1l2m3n4"
 
 
 def test_runner_uses_package_relative_migration_path(tmp_path):
@@ -271,7 +271,7 @@ async def test_init_db_deduplicates_kbank_rows_with_empty_tx_id(tmp_path):
         rows = await cursor.fetchall()
 
     assert version_row is not None
-    assert version_row[0] == "g7h8i9j0k1l2"
+    assert version_row[0] == "i9j0k1l2m3n4"
     # Migration drops all transactions (stale data incompatible with new type rules).
     assert rows == []
 
@@ -927,3 +927,184 @@ async def test_init_db_migrates_legacy_snapshots_with_source_name(tmp_path):
     assert rows[0].source == "wise"
     assert rows[0].source_name == "wise"
     assert stored_row == ("",)
+
+
+async def test_save_transaction_populates_source_id_from_sources_table(tmp_path):
+    db_path = tmp_path / "src_id_tx.db"
+    async with Repository(db_path) as repo:
+        async with aiosqlite.connect(str(db_path)) as db:
+            await db.execute(
+                "INSERT INTO sources (name, type, credentials, enabled) VALUES (?, ?, ?, ?)",
+                ("kbank-main", "kbank", "{}", 1),
+            )
+            await db.commit()
+        await repo.save_transaction(
+            Transaction(
+                date=date(2024, 5, 1),
+                source="kbank",
+                source_name="kbank-main",
+                tx_type=TransactionType.SPEND,
+                asset="THB",
+                amount=Decimal(-100),
+                usd_value=Decimal(-3),
+                tx_id="tx-1",
+            )
+        )
+        rows = await repo.get_transactions(source="kbank")
+    async with aiosqlite.connect(str(db_path)) as db:
+        sid_row = await (await db.execute("SELECT source_id FROM transactions WHERE tx_id = ?", ("tx-1",))).fetchone()
+        sources_row = await (await db.execute("SELECT id FROM sources WHERE name = 'kbank-main'")).fetchone()
+
+    assert sid_row is not None
+    assert sources_row is not None
+    assert sid_row[0] == sources_row[0]
+    assert rows[0].source_id == sources_row[0]
+
+
+async def test_save_snapshot_populates_source_id(tmp_path):
+    db_path = tmp_path / "src_id_snap.db"
+    async with Repository(db_path) as repo:
+        async with aiosqlite.connect(str(db_path)) as db:
+            await db.execute(
+                "INSERT INTO sources (name, type, credentials, enabled) VALUES (?, ?, ?, ?)",
+                ("wise-main", "wise", "{}", 1),
+            )
+            await db.commit()
+        await repo.save_snapshot(
+            Snapshot(
+                date=date(2024, 5, 1),
+                source="wise",
+                source_name="wise-main",
+                asset="USD",
+                amount=Decimal(100),
+                usd_value=Decimal(100),
+            )
+        )
+        rows = await repo.get_snapshots_by_date(date(2024, 5, 1))
+    async with aiosqlite.connect(str(db_path)) as db:
+        sources_row = await (await db.execute("SELECT id FROM sources WHERE name = 'wise-main'")).fetchone()
+
+    assert sources_row is not None
+    assert rows[0].source_id == sources_row[0]
+
+
+async def test_save_transaction_leaves_source_id_null_when_source_missing(tmp_path):
+    """Stage 1: source_id is best-effort. No sources row → NULL, no error."""
+    db_path = tmp_path / "src_id_missing.db"
+    async with Repository(db_path) as repo:
+        await repo.save_transaction(
+            Transaction(
+                date=date(2024, 5, 1),
+                source="orphan",
+                source_name="orphan",
+                tx_type=TransactionType.SPEND,
+                asset="USD",
+                amount=Decimal(-1),
+                usd_value=Decimal(-1),
+                tx_id="orphan-1",
+            )
+        )
+        rows = await repo.get_transactions(source="orphan")
+    assert rows[0].source_id is None
+
+
+async def test_rename_source_updates_sources_and_denormalized_columns(tmp_path):
+    db_path = tmp_path / "rename.db"
+    async with Repository(db_path) as repo:
+        async with aiosqlite.connect(str(db_path)) as db:
+            await db.execute(
+                "INSERT INTO sources (name, type, credentials, enabled) VALUES (?, ?, ?, ?)",
+                ("kbank-main", "kbank", "{}", 1),
+            )
+            await db.commit()
+        await repo.save_transaction(
+            Transaction(
+                date=date(2024, 5, 1),
+                source="kbank",
+                source_name="kbank-main",
+                tx_type=TransactionType.SPEND,
+                asset="THB",
+                amount=Decimal(-1),
+                usd_value=Decimal(-1),
+                tx_id="rename-tx",
+            )
+        )
+        await repo.save_snapshot(
+            Snapshot(
+                date=date(2024, 5, 1),
+                source="kbank",
+                source_name="kbank-main",
+                asset="THB",
+                amount=Decimal(100),
+                usd_value=Decimal(3),
+            )
+        )
+
+        await repo.rename_source("kbank-main", "kbank-personal")
+
+        renamed_txs = await repo.get_transactions(source_name="kbank-personal")
+        renamed_snaps = await repo.get_snapshots_by_date(date(2024, 5, 1))
+
+    async with aiosqlite.connect(str(db_path)) as db:
+        sources_row = await (await db.execute("SELECT id, name FROM sources WHERE name = 'kbank-personal'")).fetchone()
+        old_rows = await (
+            await db.execute("SELECT COUNT(*) FROM transactions WHERE source_name = 'kbank-main'")
+        ).fetchone()
+
+    assert sources_row is not None
+    assert len(renamed_txs) == 1
+    assert renamed_txs[0].source_name == "kbank-personal"
+    assert renamed_txs[0].source_id == sources_row[0]
+    assert renamed_snaps[0].source_name == "kbank-personal"
+    assert old_rows is not None
+    assert old_rows[0] == 0
+
+
+async def test_backfill_migration_populates_source_id_for_existing_rows(tmp_path):
+    """Migration i9j0k1l2m3n4 backfills source_id from existing source/source_name."""
+    db_path = tmp_path / "backfill.db"
+
+    async with aiosqlite.connect(str(db_path)) as db:
+        # Bring DB up to migration h8i9j0k1l2m3 (the additive one).
+        pass
+
+    await init_db(db_path)  # full chain incl. backfill
+
+    async with aiosqlite.connect(str(db_path)) as db:
+        await db.execute(
+            "INSERT INTO sources (name, type, credentials, enabled) VALUES (?, ?, ?, ?)",
+            ("kbank-main", "kbank", "{}", 1),
+        )
+        await db.execute(
+            "INSERT INTO sources (name, type, credentials, enabled) VALUES (?, ?, ?, ?)",
+            ("rabby", "rabby", "{}", 1),
+        )
+        await db.execute(
+            "INSERT INTO transactions (date, source, source_name, tx_type, asset, amount, usd_value, tx_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("2024-05-01", "kbank", "kbank-main", "spend", "THB", "-1", "-1", "old-tx-1"),
+        )
+        await db.execute(
+            "INSERT INTO transactions (date, source, source_name, tx_type, asset, amount, usd_value, tx_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("2024-05-01", "rabby", "rabby", "spend", "ETH", "-1", "-1", "old-tx-2"),
+        )
+        await db.execute("UPDATE transactions SET source_id = NULL")
+        await db.execute("DELETE FROM alembic_version")
+        await db.execute("INSERT INTO alembic_version VALUES ('h8i9j0k1l2m3')")
+        await db.commit()
+
+    await init_db(db_path)
+
+    async with aiosqlite.connect(str(db_path)) as db:
+        kbank_row = await (await db.execute("SELECT source_id FROM transactions WHERE tx_id = 'old-tx-1'")).fetchone()
+        rabby_row = await (await db.execute("SELECT source_id FROM transactions WHERE tx_id = 'old-tx-2'")).fetchone()
+        kbank_src = await (await db.execute("SELECT id FROM sources WHERE name = 'kbank-main'")).fetchone()
+        rabby_src = await (await db.execute("SELECT id FROM sources WHERE name = 'rabby'")).fetchone()
+
+    assert kbank_row is not None
+    assert kbank_src is not None
+    assert kbank_row[0] == kbank_src[0]
+    assert rabby_row is not None
+    assert rabby_src is not None
+    assert rabby_row[0] == rabby_src[0]

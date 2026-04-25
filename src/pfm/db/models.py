@@ -57,6 +57,7 @@ class Snapshot:
     apy: Decimal = Decimal(0)
     raw_json: str = ""
     source_name: str = ""
+    source_id: int | None = None
     id: int | None = None
     created_at: datetime | None = None
 
@@ -77,6 +78,7 @@ class Transaction:
     raw_json: str = ""
     source_name: str = ""
     trade_side: str = ""
+    source_id: int | None = None
     id: int | None = None
     created_at: datetime | None = None
 
