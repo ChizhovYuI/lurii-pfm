@@ -833,6 +833,28 @@ async def delete_category_rule(
 
 
 @mcp.tool()
+async def bulk_delete_category_rules(
+    ctx: Context[ServerSession, AppContext],
+    rule_ids: list[int],
+) -> str:
+    """Delete several category rules in one call. Builtin rules are soft-deleted.
+
+    Returns ``{"deleted": [...], "not_found": [...]}`` — same set semantics
+    as iterating ``delete_category_rule`` but in one round-trip. Order of
+    ``rule_ids`` is preserved within each bucket.
+    """
+    store = _ctx_store(ctx)
+    deleted: list[int] = []
+    not_found: list[int] = []
+    for rid in rule_ids:
+        if await store.delete_category_rule(rid):
+            deleted.append(rid)
+        else:
+            not_found.append(rid)
+    return _json({"deleted": deleted, "not_found": not_found})
+
+
+@mcp.tool()
 async def create_type_rule(  # noqa: PLR0913
     ctx: Context[ServerSession, AppContext],
     result_type: str,
@@ -871,6 +893,28 @@ async def delete_type_rule(
     store = _ctx_store(ctx)
     deleted = await store.delete_type_rule(rule_id)
     return _json({"deleted": deleted, "rule_id": rule_id})
+
+
+@mcp.tool()
+async def bulk_delete_type_rules(
+    ctx: Context[ServerSession, AppContext],
+    rule_ids: list[int],
+) -> str:
+    """Delete several type rules in one call. Builtin rules are soft-deleted.
+
+    Returns ``{"deleted": [...], "not_found": [...]}`` — same set semantics
+    as iterating ``delete_type_rule`` but in one round-trip. Order of
+    ``rule_ids`` is preserved within each bucket.
+    """
+    store = _ctx_store(ctx)
+    deleted: list[int] = []
+    not_found: list[int] = []
+    for rid in rule_ids:
+        if await store.delete_type_rule(rid):
+            deleted.append(rid)
+        else:
+            not_found.append(rid)
+    return _json({"deleted": deleted, "not_found": not_found})
 
 
 @mcp.tool()

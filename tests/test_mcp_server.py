@@ -774,6 +774,49 @@ class TestCategorizationTools:
             assert missing == {"deleted": False, "rule_id": 999999}
 
     @pytest.mark.asyncio
+    async def test_bulk_delete_category_rules(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import bulk_delete_category_rules
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+
+            r1 = await store.create_category_rule("spend", "fx")
+            r2 = await store.create_category_rule("spend", "groceries")
+            assert r1.id is not None
+            assert r2.id is not None
+            parsed = json.loads(
+                await bulk_delete_category_rules(ctx, rule_ids=[r1.id, r2.id, 999999]),
+            )
+            assert parsed["deleted"] == [r1.id, r2.id]
+            assert parsed["not_found"] == [999999]
+            remaining_ids = {r.id for r in await store.get_category_rules()}
+            assert r1.id not in remaining_ids
+            assert r2.id not in remaining_ids
+
+    @pytest.mark.asyncio
+    async def test_bulk_delete_type_rules(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import bulk_delete_type_rules
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+
+            r1 = await store.create_type_rule("spend", field_name="kind", field_value="purchase")
+            r2 = await store.create_type_rule("income", field_name="kind", field_value="salary")
+            assert r1.id is not None
+            assert r2.id is not None
+            parsed = json.loads(
+                await bulk_delete_type_rules(ctx, rule_ids=[r1.id, 999999, r2.id]),
+            )
+            assert parsed["deleted"] == [r1.id, r2.id]
+            assert parsed["not_found"] == [999999]
+
+    @pytest.mark.asyncio
     async def test_create_and_delete_type_rule_smoke(self, tmp_path):
         from pfm.db.metadata_store import MetadataStore
         from pfm.db.repository import Repository

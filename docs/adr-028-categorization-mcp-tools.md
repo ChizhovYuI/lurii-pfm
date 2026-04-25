@@ -297,6 +297,24 @@ Schema-wise: callers that relied on the old `ValueError` path must
 switch to checking `parsed.get("error") == "validation"`. Soft break —
 only known caller is the skill, updated in lockstep.
 
+### Phase 6.3 — bulk_delete_*_rules + skill batch-confirm
+
+Cleanup pass with 14 deletes meant 14 tool round-trips and 14 user
+confirmations. Two changes:
+
+- New `bulk_delete_category_rules(rule_ids)` and
+  `bulk_delete_type_rules(rule_ids)` MCP tools. Each accepts a list
+  and returns `{"deleted": [...], "not_found": [...]}`. Iteration is
+  per-id under the hood — `delete_*_rule` already commits its own
+  transaction, atomic batching is deferred (premature for sub-100
+  rule passes).
+- Skill cleanup pass updated: collect *all* delete candidates first
+  into a numbered list with each rule's args (recovery path), then
+  ask for one batch confirmation ("all", "1, 3, 5", "none"), then
+  call the bulk tool. Hard rule #2 reworded to allow batch
+  confirmation; tiebreak advice for duplicate rules neutralized to
+  "either rule, criterion is clarity".
+
 ### Schema impact
 
 None. `field_operator` is plain `TEXT` — `"regex"` is a new accepted

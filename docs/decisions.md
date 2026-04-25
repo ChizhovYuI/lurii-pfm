@@ -1134,6 +1134,12 @@ contract to allow writes scoped to categorization metadata only.
 - New `validate_rule_args(field_operator, field_value)` MCP tool — cheap pre-check that compiles regex without DB scan. Returns `{"valid": true}` or `{"valid": false, "error": "validation", "message": ...}`. Skill calls before `dry_run_*_rule` when authoring a regex rule.
 - Files: `src/pfm/mcp_server.py`, `tests/test_mcp_server.py` (+5 tests, replaces the raises-ValueError test).
 
+**Phase 6.3 (done) — bulk_delete_*_rules tools + skill batch-confirm pattern:**
+- Cleanup pass with 14 deletes was 14 round-trips and 14 user "yes" confirmations — friction-prone.
+- New `bulk_delete_category_rules(rule_ids)` and `bulk_delete_type_rules(rule_ids)` tools accept a list and return `{"deleted": [...], "not_found": [...]}`. Same set semantics as iterating `delete_*_rule`. Iteration is per-id under the hood (each `delete_*_rule` already commits its own transaction; atomic batching deferred — premature for sub-100 rule passes).
+- Skill `categorization-curator` updated: cleanup pass step 5 collects all delete candidates into a numbered list with their args, asks for one batch confirmation ("all", "1, 3, 5", "none"), then calls the bulk tool. Hard rule #2 reworded to allow batch confirmation. Cleanup tiebreak advice neutralized — "either rule, criterion is clarity" instead of "lower-priority/older-id".
+- Files: `src/pfm/mcp_server.py`, `tests/test_mcp_server.py` (+2 tests), and skill updates in `../lurii-portfolio`.
+
 ---
 
 ## ADR-029: Opt-in raw_sample + non-discriminating suggestion filter
