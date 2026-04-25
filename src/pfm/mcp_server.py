@@ -1035,6 +1035,28 @@ async def validate_rule_args(
     return _json({"valid": True})
 
 
+_DRY_RUN_SUMMARY_TOP_N = 5
+
+
+def _summarize_dry_run(result: dict[str, object]) -> dict[str, object]:
+    """Trim dry_run output to counts + top-N samples per bucket.
+
+    Used when ``summary_only=True``. Keeps ``matched`` (already a count),
+    ``overlapping_rules`` (typically small), and ``raw_field_samples``
+    (already capped at 5). Replaces ``unchanged``, ``changed``, and
+    ``shadowed_by_higher`` lists with ``{count, sample}`` objects.
+    """
+    summary = dict(result)
+    for bucket in ("unchanged", "changed", "shadowed_by_higher"):
+        items = summary.get(bucket)
+        if isinstance(items, list):
+            summary[bucket] = {
+                "count": len(items),
+                "sample": items[:_DRY_RUN_SUMMARY_TOP_N],
+            }
+    return summary
+
+
 @mcp.tool()
 async def dry_run_category_rule(  # noqa: PLR0913
     ctx: Context[ServerSession, AppContext],
@@ -1048,6 +1070,8 @@ async def dry_run_category_rule(  # noqa: PLR0913
     priority: int | None = None,
     scope_source: str | None = None,
     limit: int = 200,
+    *,
+    summary_only: bool = False,
 ) -> str:
     """Simulate applying a category rule without saving.
 
@@ -1056,6 +1080,13 @@ async def dry_run_category_rule(  # noqa: PLR0913
     real effect; `shadowed_by_higher` lists tx the candidate matches but loses to
     a higher-precedence existing rule (lower priority value, or same priority
     with lower id).
+
+    When ``summary_only=True``, the three list buckets (``unchanged``,
+    ``changed``, ``shadowed_by_higher``) are replaced with
+    ``{count, sample}`` objects (sample is first 5). Use for catch-all
+    rules with hundreds of matches that would otherwise blow the context
+    budget. ``matched``, ``overlapping_rules``, and ``raw_field_samples``
+    are kept as-is.
     """
     from pfm.analytics.rule_dryrun import dry_run_category_rule as _impl
 
@@ -1078,6 +1109,8 @@ async def dry_run_category_rule(  # noqa: PLR0913
         )
     except ValueError as exc:
         return _json({"error": "validation", "message": str(exc)})
+    if summary_only:
+        result = _summarize_dry_run(result)
     return _json(result)
 
 
@@ -1092,6 +1125,8 @@ async def dry_run_type_rule(  # noqa: PLR0913
     priority: int | None = None,
     scope_source: str | None = None,
     limit: int = 200,
+    *,
+    summary_only: bool = False,
 ) -> str:
     """Simulate applying a type rule without saving.
 
@@ -1100,6 +1135,13 @@ async def dry_run_type_rule(  # noqa: PLR0913
     real effect; `shadowed_by_higher` lists tx the candidate matches but loses to
     a higher-precedence existing rule (lower priority value, or same priority
     with lower id).
+
+    When ``summary_only=True``, the three list buckets (``unchanged``,
+    ``changed``, ``shadowed_by_higher``) are replaced with
+    ``{count, sample}`` objects (sample is first 5). Use for catch-all
+    rules with hundreds of matches that would otherwise blow the context
+    budget. ``matched``, ``overlapping_rules``, and ``raw_field_samples``
+    are kept as-is.
     """
     from pfm.analytics.rule_dryrun import dry_run_type_rule as _impl
 
@@ -1120,6 +1162,8 @@ async def dry_run_type_rule(  # noqa: PLR0913
         )
     except ValueError as exc:
         return _json({"error": "validation", "message": str(exc)})
+    if summary_only:
+        result = _summarize_dry_run(result)
     return _json(result)
 
 

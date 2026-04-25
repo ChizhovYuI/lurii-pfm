@@ -1011,6 +1011,38 @@ class TestCategorizationTools:
             assert parsed["changed"][0]["tx_id"] == "s1"
 
     @pytest.mark.asyncio
+    async def test_dry_run_category_rule_summary_only(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import dry_run_category_rule
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+
+            await repo.save_transactions(
+                [_make_tx(tx_id=f"s{i}", raw_json='{"description":"FX 1"}') for i in range(8)],
+            )
+            parsed = json.loads(
+                await dry_run_category_rule(
+                    ctx,
+                    type_match="spend",
+                    result_category="fx",
+                    field_name="description",
+                    field_operator="contains",
+                    field_value="FX",
+                    summary_only=True,
+                ),
+            )
+            assert parsed["matched"] == 8
+            assert parsed["changed"]["count"] == 8
+            assert len(parsed["changed"]["sample"]) == 5
+            assert isinstance(parsed["unchanged"], dict)
+            assert isinstance(parsed["shadowed_by_higher"], dict)
+            assert isinstance(parsed["overlapping_rules"], list)
+            assert isinstance(parsed["raw_field_samples"], list)
+
+    @pytest.mark.asyncio
     async def test_dry_run_type_rule_wires(self, tmp_path):
         from pfm.db.metadata_store import MetadataStore
         from pfm.db.models import TransactionType

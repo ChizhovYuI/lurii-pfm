@@ -297,6 +297,22 @@ Schema-wise: callers that relied on the old `ValueError` path must
 switch to checking `parsed.get("error") == "validation"`. Soft break —
 only known caller is the skill, updated in lockstep.
 
+### Phase 6.5 — dry_run summary_only flag
+
+Catch-all `dry_run_*_rule` calls returning hundreds of `changed` /
+`shadowed_by_higher` entries blew the context budget. Both tools now
+accept keyword-only `summary_only: bool = False`. When True, the
+three list buckets (`unchanged`, `changed`, `shadowed_by_higher`)
+are replaced with `{count, sample}` objects (sample = first 5).
+`matched`, `overlapping_rules`, and `raw_field_samples` keep full
+shape — `overlapping_rules` is typically small, `raw_field_samples`
+already capped at 5.
+
+Trim happens at the MCP wrapper layer (`_summarize_dry_run`) — the
+impl returns full output, slicing the list is cheap. Skill calls
+with `summary_only=true` for wide-net rules expected to flip >50
+rows.
+
 ### Phase 6.4 — audit_rules + dead-rule sub-flow
 
 Finding dead rules (`matched_count == 0` on current data) used to

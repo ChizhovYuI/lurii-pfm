@@ -1146,6 +1146,12 @@ contract to allow writes scoped to categorization metadata only.
 - Skill `categorization-curator` cleanup pass updated: step 1 calls audit before manual dedup; step 2 surfaces `dead` first since they're 100% safe to delete. Closes Skill #3 (dead-rule sub-flow).
 - New module `src/pfm/analytics/rule_audit.py` (mirrors `rule_dryrun.py` pattern). Files: `src/pfm/analytics/rule_audit.py`, `src/pfm/mcp_server.py`, `tests/test_mcp_server.py` (+2 tests), and skill updates in `../lurii-portfolio`.
 
+**Phase 6.5 (done) — dry_run summary_only flag:**
+- Catch-all dry-runs (e.g. 178 matches → 165 `changed` entries) blew the context budget on a single tool call.
+- New keyword-only `summary_only: bool = False` on both `dry_run_category_rule` and `dry_run_type_rule`. When True, list buckets (`unchanged`, `changed`, `shadowed_by_higher`) are replaced with `{count, sample}` objects (sample = first 5). `matched`, `overlapping_rules`, and `raw_field_samples` keep full shape. Trim happens at the MCP wrapper layer via `_summarize_dry_run` — impl returns full output, slicing is cheap.
+- Skill Step 3 updated to suggest `summary_only=true` for wide-net rules likely to produce >50 entries.
+- Files: `src/pfm/mcp_server.py`, `tests/test_mcp_server.py` (+1 test), and skill update in `../lurii-portfolio`.
+
 ---
 
 ## ADR-029: Opt-in raw_sample + non-discriminating suggestion filter
