@@ -1,6 +1,6 @@
 # ADR-028: Categorization Tools in MCP Server
 
-**Status:** In progress (Phases 1–2 accepted, Phases 3–6 proposed)
+**Status:** In progress (Phases 1–3 accepted, Phases 4–6 proposed)
 **Date:** 2026-04-25
 
 ## Context
@@ -191,7 +191,14 @@ the conservative default.
    `tests/test_metadata_store_helpers.py`. Default (both flags False)
    is OR-logic; both True is AND. Skill consumes the summary for the
    per-source dashboard and the paginated list for discovery passes.
-3. **Dry-run module.** `src/pfm/analytics/rule_dryrun.py` with tests.
+3. ✅ **Dry-run module.** `src/pfm/analytics/rule_dryrun.py` exposes
+   `dry_run_category_rule(...)` and `dry_run_type_rule(...)`. Both
+   accept `scope_source` and `limit` (default 200), reuse
+   `_match_category_rule` / `match_type_rule` and `_validate_regex_value`
+   without DB writes, and return `{matched, unchanged, changed,
+   overlapping_rules, raw_field_samples}` per the schema above. Samples
+   capped at 5 entries, deduped, truncated to 200 chars. Tests in
+   `tests/test_rule_dryrun.py` (12 cases).
 4. **MCP wiring.** `AppContext.metadata_store`, tool registrations.
 5. **MCP smoke tests.** Extend `tests/test_mcp_server.py`.
 6. **Skill.** Lives in `../lurii-portfolio` (separate repo). Out of

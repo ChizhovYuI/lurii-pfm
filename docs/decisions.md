@@ -1075,7 +1075,7 @@ writes).
 
 **Date:** 2026-04-25
 
-**Status:** In progress (Phases 1–2 accepted, Phases 3–6 proposed)
+**Status:** In progress (Phases 1–3 accepted, Phases 4–6 proposed)
 
 See `adr-028-categorization-mcp-tools.md`. Adds a `regex` operator to
 the rule engine and a categorization tool surface (rule CRUD, dry-run,
@@ -1094,4 +1094,11 @@ contract to allow writes scoped to categorization metadata only.
 - `MetadataStore.get_uncategorized_transactions(source_name?, missing_type, missing_category, limit, offset)` — paginated `(Transaction, TransactionMetadata|None)`. Default (both flags False) is OR-logic; both True is AND.
 - Files: `src/pfm/db/metadata_store.py`, `tests/test_metadata_store_helpers.py` (11 new tests).
 
-**Phases 3–6 (proposed):** `rule_dryrun` module with `overlapping_rules` reporting, MCP tool surface, smoke tests, Claude Code skill in `../lurii-portfolio`.
+**Phase 3 (done):**
+- `src/pfm/analytics/rule_dryrun.py` — `dry_run_category_rule(...)` and `dry_run_type_rule(...)`. Mirrors the corresponding `MetadataStore.create_*_rule` signatures plus `scope_source` / `limit=200`. No DB writes.
+- Output schema: `{matched, unchanged, changed, overlapping_rules, raw_field_samples}`. `overlapping_rules` lists existing non-deleted rules already winning for matched txs. `raw_field_samples` is ≤5 deduped values, each ≤200 chars.
+- Reuses `_match_category_rule`, `_resolve_field`, `categorize_transaction` (categorizer), `match_type_rule`, `_resolve_raw_field` (type_resolver), and `_validate_regex_value` (metadata_store) — no logic duplication.
+- Pre-validates regex (`field_operator="regex"`) before any DB read.
+- Files: `src/pfm/analytics/rule_dryrun.py`, `tests/test_rule_dryrun.py` (12 new tests).
+
+**Phases 4–6 (proposed):** MCP tool surface (`AppContext.metadata_store`, tool registrations), smoke tests, Claude Code skill in `../lurii-portfolio`.
