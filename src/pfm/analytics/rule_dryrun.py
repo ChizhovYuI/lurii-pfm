@@ -25,9 +25,15 @@ if TYPE_CHECKING:
 
 _SAMPLE_LIMIT = 5
 _SAMPLE_TRUNCATE = 200
+_TIE_LAST = float("inf")
 
 
-async def dry_run_category_rule(  # noqa: PLR0913
+def _rule_sort_key(rule: CategoryRule | TypeRule) -> tuple[int, float]:
+    """Sort rules like the engine: priority ASC, id ASC. Candidate (id is None) ties last."""
+    return (rule.priority, float(rule.id) if rule.id is not None else _TIE_LAST)
+
+
+async def dry_run_category_rule(  # noqa: PLR0913, C901
     repo: Repository,
     store: MetadataStore,
     *,
@@ -69,17 +75,40 @@ async def dry_run_category_rule(  # noqa: PLR0913
         if _match_category_rule(etype, tx, candidate):
             matched.append((tx, meta))
 
+    combined = sorted([*existing, candidate], key=_rule_sort_key)
+
     unchanged: list[dict[str, object]] = []
     changed: list[dict[str, object]] = []
+    shadowed: list[dict[str, object]] = []
+    overlapping_ids: dict[int, CategoryRule] = {}
     for tx, meta in matched:
         current = meta.category if meta else None
-        bucket = unchanged if current == result_category else changed
-        entry: dict[str, object] = {"tx_id": tx.tx_id, "current_category": current}
-        if bucket is changed:
-            entry["proposed_category"] = result_category
-        bucket.append(entry)
+        winner = categorize_transaction(tx, combined, meta)
+        candidate_won = winner is not None and winner.rule_id is None
+        if candidate_won:
+            entry: dict[str, object] = {"tx_id": tx.tx_id, "current_category": current}
+            if current == result_category:
+                unchanged.append(entry)
+            else:
+                entry["proposed_category"] = result_category
+                changed.append(entry)
+        else:
+            wr = next(
+                (r for r in existing if winner is not None and r.id == winner.rule_id),
+                None,
+            )
+            shadowed.append(
+                {
+                    "tx_id": tx.tx_id,
+                    "current_category": current,
+                    "winning_rule_id": wr.id if wr is not None else None,
+                    "winning_priority": wr.priority if wr is not None else None,
+                    "winning_category": wr.result_category if wr is not None else None,
+                },
+            )
+            if wr is not None and wr.id is not None:
+                overlapping_ids.setdefault(wr.id, wr)
 
-    overlapping_ids: dict[int, CategoryRule] = {}
     for tx, meta in matched:
         winner = categorize_transaction(tx, existing, meta)
         if winner is None or winner.rule_id is None:
@@ -105,12 +134,26 @@ async def dry_run_category_rule(  # noqa: PLR0913
         "matched": len(matched),
         "unchanged": unchanged,
         "changed": changed,
+        "shadowed_by_higher": shadowed,
         "overlapping_rules": overlapping_rules,
         "raw_field_samples": raw_field_samples,
     }
 
 
-async def dry_run_type_rule(  # noqa: PLR0913
+def _resolve_type_winner(
+    rules: list[TypeRule],
+    tx: Transaction,
+) -> TypeRule | None:
+    """Mirror `resolve_type` but return the winning rule (not its enum)."""
+    for r in rules:
+        if r.deleted:
+            continue
+        if match_type_rule(tx, r):
+            return r
+    return None
+
+
+async def dry_run_type_rule(  # noqa: PLR0913, C901, PLR0912
     repo: Repository,
     store: MetadataStore,
     *,
@@ -147,22 +190,42 @@ async def dry_run_type_rule(  # noqa: PLR0913
         if match_type_rule(tx, candidate):
             matched.append((tx, meta))
 
+    combined = sorted([*existing, candidate], key=_rule_sort_key)
+
     unchanged: list[dict[str, object]] = []
     changed: list[dict[str, object]] = []
+    shadowed: list[dict[str, object]] = []
+    overlapping_ids: dict[int, TypeRule] = {}
     for tx, meta in matched:
         current_override = meta.type_override if meta else None
         current_type = effective_type(tx, meta)
-        bucket = unchanged if current_type == result_type else changed
-        entry: dict[str, object] = {
-            "tx_id": tx.tx_id,
-            "current_type": current_type,
-            "current_type_override": current_override,
-        }
-        if bucket is changed:
-            entry["proposed_type"] = result_type
-        bucket.append(entry)
+        winner = _resolve_type_winner(combined, tx)
+        candidate_won = winner is not None and winner.id is None
+        if candidate_won:
+            entry: dict[str, object] = {
+                "tx_id": tx.tx_id,
+                "current_type": current_type,
+                "current_type_override": current_override,
+            }
+            if current_type == result_type:
+                unchanged.append(entry)
+            else:
+                entry["proposed_type"] = result_type
+                changed.append(entry)
+        else:
+            shadowed.append(
+                {
+                    "tx_id": tx.tx_id,
+                    "current_type": current_type,
+                    "current_type_override": current_override,
+                    "winning_rule_id": winner.id if winner is not None else None,
+                    "winning_priority": winner.priority if winner is not None else None,
+                    "winning_type": winner.result_type if winner is not None else None,
+                },
+            )
+            if winner is not None and winner.id is not None:
+                overlapping_ids.setdefault(winner.id, winner)
 
-    overlapping_ids: dict[int, TypeRule] = {}
     for tx, _ in matched:
         for rule in existing:
             if match_type_rule(tx, rule):
@@ -187,6 +250,7 @@ async def dry_run_type_rule(  # noqa: PLR0913
         "matched": len(matched),
         "unchanged": unchanged,
         "changed": changed,
+        "shadowed_by_higher": shadowed,
         "overlapping_rules": overlapping_rules,
         "raw_field_samples": raw_field_samples,
     }

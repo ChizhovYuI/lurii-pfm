@@ -1,6 +1,6 @@
 # ADR-028: Categorization Tools in MCP Server
 
-**Status:** In progress (Phases 1–5 accepted, Phase 6 proposed)
+**Status:** Accepted (Phases 1–6 done, including Phase 3.1 priority-aware dry-run fix)
 **Date:** 2026-04-25
 
 ## Context
@@ -191,7 +191,8 @@ the conservative default.
    `tests/test_metadata_store_helpers.py`. Default (both flags False)
    is OR-logic; both True is AND. Skill consumes the summary for the
    per-source dashboard and the paginated list for discovery passes.
-3. ✅ **Dry-run module.** `src/pfm/analytics/rule_dryrun.py` exposes
+3. ✅ **Dry-run module** (priority-aware as of Phase 3.1).
+   `src/pfm/analytics/rule_dryrun.py` exposes
    `dry_run_category_rule(...)` and `dry_run_type_rule(...)`. Both
    accept `scope_source` and `limit` (default 200), reuse
    `_match_category_rule` / `match_type_rule` and `_validate_regex_value`
@@ -217,8 +218,42 @@ the conservative default.
    `MetadataStore` over `tmp_path` SQLite. Covers happy paths, regex
    validation, not-found envelope, link/unlink round-trip, and dry-run
    wiring.
-6. **Skill.** Lives in `../lurii-portfolio` (separate repo). Out of
-   scope here.
+6. ✅ **Skill.** `categorization-curator` skill in `../lurii-portfolio`
+   (sibling repo) drives the workflow end-to-end via MCP. Allow-list
+   updated for the 17 new categorization tools.
+
+### Phase 3.1 — priority-aware dry-run (post-Phase-6 fix)
+
+Initial dry-run evaluated the candidate in isolation — `changed` listed
+every match regardless of whether an existing higher-precedence rule
+already wins for that tx. Concretely: a candidate with `priority=300`
+(catch-all) matching 165 rows would appear to flip all 165, but real
+apply only writes the subset that no higher-precedence existing rule
+already covers.
+
+Fix: simulate the engine. Sort `[*existing, candidate]` by
+`priority ASC, id ASC` (candidate's missing id sentinels to last in
+ties — matches reality, since the new rule gets the highest id at
+create time). Run `categorize_transaction` / `_resolve_type_winner`
+per matched tx. Output schema gains `shadowed_by_higher`:
+
+```json
+{
+  "shadowed_by_higher": [
+    {
+      "tx_id": 7,
+      "current_category": "fx",
+      "winning_rule_id": 12,
+      "winning_priority": 100,
+      "winning_category": "fx"
+    }
+  ]
+}
+```
+
+`changed` and `unchanged` now reflect the candidate's post-priority
+production effect. `matched` count is unchanged (it remains the
+isolation-match count — useful for sanity-checking pattern correctness).
 
 ### Schema impact
 

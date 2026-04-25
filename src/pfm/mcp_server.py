@@ -857,7 +857,14 @@ async def dry_run_category_rule(  # noqa: PLR0913
     scope_source: str | None = None,
     limit: int = 200,
 ) -> str:
-    """Simulate applying a category rule without saving. Reveals overlap with existing rules."""
+    """Simulate applying a category rule without saving.
+
+    Returns matched/unchanged/changed/shadowed_by_higher buckets plus
+    overlapping_rules and raw_field_samples. `changed` reflects the post-priority
+    real effect; `shadowed_by_higher` lists tx the candidate matches but loses to
+    a higher-precedence existing rule (lower priority value, or same priority
+    with lower id).
+    """
     from pfm.analytics.rule_dryrun import dry_run_category_rule as _impl
 
     repo = _ctx_repo(ctx)
@@ -891,7 +898,14 @@ async def dry_run_type_rule(  # noqa: PLR0913
     scope_source: str | None = None,
     limit: int = 200,
 ) -> str:
-    """Simulate applying a type rule without saving. Reveals overlap with existing rules."""
+    """Simulate applying a type rule without saving.
+
+    Returns matched/unchanged/changed/shadowed_by_higher buckets plus
+    overlapping_rules and raw_field_samples. `changed` reflects the post-priority
+    real effect; `shadowed_by_higher` lists tx the candidate matches but loses to
+    a higher-precedence existing rule (lower priority value, or same priority
+    with lower id).
+    """
     from pfm.analytics.rule_dryrun import dry_run_type_rule as _impl
 
     repo = _ctx_repo(ctx)

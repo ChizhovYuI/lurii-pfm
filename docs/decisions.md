@@ -1075,7 +1075,7 @@ writes).
 
 **Date:** 2026-04-25
 
-**Status:** In progress (Phases 1–5 accepted, Phase 6 proposed)
+**Status:** Accepted (Phases 1–6 done, including Phase 3.1 priority-aware dry-run fix)
 
 See `adr-028-categorization-mcp-tools.md`. Adds a `regex` operator to
 the rule engine and a categorization tool surface (rule CRUD, dry-run,
@@ -1111,4 +1111,13 @@ contract to allow writes scoped to categorization metadata only.
 - `tests/test_mcp_server.py` extended with `TestCategorizationTools` (16 tests) using a real `Repository` + `MetadataStore` over `tmp_path` SQLite. Covers happy paths, regex validation, not-found envelope, link/unlink round-trip, `set_transaction_category` recording a `user_category_choices` row, and dry-run wiring. Smokes `apply_categorization` returning the counts dict.
 - Files: `tests/test_mcp_server.py`.
 
-**Phase 6 (proposed):** Claude Code skill in `../lurii-portfolio`.
+**Phase 6 (done):**
+- `categorization-curator` skill in `../lurii-portfolio` drives the workflow end-to-end via MCP: survey → discover → dry-run → confirm → create → batch apply, with sub-flows for manual override, transfer linking, and rule cleanup.
+- `.claude/settings.json` allow-list extended with the 17 new `mcp__lurii-finance__*` categorization tools.
+- Files (sibling repo): `.claude/skills/categorization-curator/SKILL.md`, `.claude/settings.json`, `README.md`.
+
+**Phase 3.1 (done) — priority-aware dry-run:**
+- Initial dry-run output's `changed` bucket evaluated the candidate in isolation. With existing higher-precedence rules in play, real apply touched only the subset that no higher-precedence rule already covered. Skill consumers seeing a 165-row `changed` would write ~30 rows on apply, undermining the dry-run contract.
+- Fix simulates the engine: `[*existing, candidate]` is sorted `priority ASC, id ASC` (candidate's missing id sentinels to last in ties — matches the post-create id ordering) and `categorize_transaction` / `_resolve_type_winner` runs per matched tx. New `shadowed_by_higher` bucket lists tx the candidate matches but loses to a higher-precedence existing rule. `changed` and `unchanged` now reflect the real post-priority effect.
+- Schema delta: `shadowed_by_higher: [{tx_id, current_category|current_type, winning_rule_id, winning_priority, winning_category|winning_type}]`.
+- Files: `src/pfm/analytics/rule_dryrun.py`, `tests/test_rule_dryrun.py` (+6 tests), `src/pfm/mcp_server.py` (docstring update only — no signature change), and skill hard-rule wording in `../lurii-portfolio`.
