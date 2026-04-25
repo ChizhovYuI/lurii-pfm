@@ -1096,8 +1096,7 @@ async def test_ibkr_request_statement(pricing):
     collector = IbkrCollector(pricing, flex_token="tok", flex_query_id="qid")
     resp = MagicMock(spec=httpx.Response)
     resp.text = (
-        "<FlexStatementResponse><Status>Success</Status>"
-        "<ReferenceCode>REF123</ReferenceCode></FlexStatementResponse>"
+        "<FlexStatementResponse><Status>Success</Status><ReferenceCode>REF123</ReferenceCode></FlexStatementResponse>"
     )
     resp.raise_for_status = MagicMock()
     collector._client.get = AsyncMock(return_value=resp)
@@ -1110,8 +1109,7 @@ async def test_ibkr_request_statement_failure(pricing):
     collector = IbkrCollector(pricing, flex_token="tok", flex_query_id="qid")
     resp = MagicMock(spec=httpx.Response)
     resp.text = (
-        "<FlexStatementResponse><Status>Fail</Status>"
-        "<ErrorMessage>Invalid token</ErrorMessage></FlexStatementResponse>"
+        "<FlexStatementResponse><Status>Fail</Status><ErrorMessage>Invalid token</ErrorMessage></FlexStatementResponse>"
     )
     resp.raise_for_status = MagicMock()
     collector._client.get = AsyncMock(return_value=resp)
@@ -1164,7 +1162,7 @@ async def test_ibkr_fetch_balances(pricing):
 
     request_resp = MagicMock(spec=httpx.Response)
     request_resp.text = (
-        "<FlexStatementResponse><Status>Success</Status>" "<ReferenceCode>REF1</ReferenceCode></FlexStatementResponse>"
+        "<FlexStatementResponse><Status>Success</Status><ReferenceCode>REF1</ReferenceCode></FlexStatementResponse>"
     )
     request_resp.raise_for_status = MagicMock()
 
@@ -1202,7 +1200,7 @@ async def test_ibkr_fetch_balances_aggregates_duplicate_cash_rows(pricing):
 
     request_resp = MagicMock(spec=httpx.Response)
     request_resp.text = (
-        "<FlexStatementResponse><Status>Success</Status>" "<ReferenceCode>REF1</ReferenceCode></FlexStatementResponse>"
+        "<FlexStatementResponse><Status>Success</Status><ReferenceCode>REF1</ReferenceCode></FlexStatementResponse>"
     )
     request_resp.raise_for_status = MagicMock()
 
@@ -1236,7 +1234,7 @@ async def test_ibkr_reuses_statement_between_balances_and_transactions(pricing):
 
     request_resp = MagicMock(spec=httpx.Response)
     request_resp.text = (
-        "<FlexStatementResponse><Status>Success</Status>" "<ReferenceCode>REF1</ReferenceCode></FlexStatementResponse>"
+        "<FlexStatementResponse><Status>Success</Status><ReferenceCode>REF1</ReferenceCode></FlexStatementResponse>"
     )
     request_resp.raise_for_status = MagicMock()
 

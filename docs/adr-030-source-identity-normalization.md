@@ -1,6 +1,6 @@
 # ADR-030 — Source identity normalization (source_id FK)
 
-**Status:** Stages 1–2 shipped. Stage 3 deferred.
+**Status:** Stages 1–3 shipped.
 **Date:** 2026-04-25
 **Supersedes parts of:** ADR-028 "Source filter semantics" addendum
 (documents the matching rule unambiguously; this ADR replaces the
@@ -133,33 +133,103 @@ shape and the `source_id` surfacing on summary/list/detail.
 **Out of stage 2:** rules rewrite, drop of `source_name`,
 `PRAGMA foreign_keys=ON` (all stage 3).
 
-### Stage 3 — Rules + cleanup (deferred)
+### Stage 3 — Rules + cleanup (this commit)
 
-- Pre-flight: tx_id collision check on the coinex source merge (mirror
-  the `f2c7e6a9d1b4` KBank empties pattern).
-- Migration 3 (destructive): tighten `source_id NOT NULL`, drop
-  `source_name`, rename `source` → `source_type`, swap dedup index
-  `(source_name, tx_id) → (source_id, tx_id)`, drop rule `source` text
-  column.
-- Rules: `source_type` + `source_id` columns with XOR check.
-- Auto-priority becomes 6-tier:
-  - field + account = 80
-  - field + type    = 100
-  - field only      = 150
-  - account only    = 180
-  - type only       = 200
-  - catch-all       = 300
-- Categorizer / type_resolver simplify to `if rule.source_id is not
-  None and rule.source_id != tx.source_id: return False; if
-  rule.source_type is not None and rule.source_type !=
-  tx.source_type: return False`.
-- MCP `create_*_rule`, `dry_run_*_rule`, `list_*_rules` accept
-  `source_id` and `source_type`; legacy `source` arg becomes a
-  deprecation alias.
-- `categorization-curator` skill (`../lurii-portfolio`) ships in lock
-  step — drops the source-aliasing footnote, replaces with
-  account-vs-type guidance.
-- PRAGMA foreign_keys=ON enabled in Repository.__aenter__.
+Migration `j0k1l2m3n4o5_stage3_source_id_normalize` runs the destructive
+schema rewrite as a single transaction:
+
+1. **Pre-flight: orphan check.** Aborts when any data row still has
+   `source_id IS NULL` after Stage 1's two-pass backfill. Operator
+   either deletes the orphans or adds the missing `sources` row, then
+   re-runs.
+2. **Pre-flight: duplicate-type tx_id collision.** When two `sources`
+   rows share a `type` (live: coinex 22+21 split), aborts if any
+   `tx_id` collides between them — mirrors the `f2c7e6a9d1b4` KBank
+   empties pattern. Resolve duplicates manually, then re-run.
+3. **Source merge.** For each duplicate-type group, pick the canonical
+   row (prefers `<type>-main`, else lowest id), repoint
+   `transactions` / `snapshots` / `user_category_choices` / rule
+   tables, delete the others.
+4. **Rule rewrite.** Map every `category_rules.source` /
+   `type_rules.source` text value into the new pair:
+   - `"*"` → both NULL (catch-all)
+   - matches `sources.name` → `source_id` populated
+   - else → `source_type` populated (covers `sources.type` plus
+     pre-source historical strings such as `"revolut"` / `"trading212"`)
+5. **Drop `source_name`** from `transactions` and `snapshots`.
+6. **Tighten `source_id` NOT NULL** on data tables.
+7. **Swap dedup index** — `idx_transactions_source_name_tx_id_unique`
+   (`source_name`, `tx_id`) → `idx_transactions_source_id_tx_id_unique`
+   (`source_id`, `tx_id`).
+8. **Drop the rule `source` text column** + add `CHECK (NOT
+   (source_type IS NOT NULL AND source_id IS NOT NULL))` so the new
+   pair stays mutually exclusive.
+
+**Auto-priority** becomes 6-tier (`MetadataStore._auto_priority`):
+
+| filter shape          | priority |
+|-----------------------|----------|
+| field + `source_id`   | 80       |
+| field + `source_type` | 100      |
+| field only            | 150      |
+| `source_id` only      | 180      |
+| `source_type` only    | 200      |
+| catch-all             | 300      |
+
+**Engine** (`categorizer._match_category_rule` /
+`type_resolver.match_type_rule`) collapses to:
+
+```python
+if rule.source_id is not None and rule.source_id != tx.source_id:
+    return False
+if rule.source_type is not None and rule.source_type != tx.source:
+    return False
+```
+
+**MCP surface** — `create_*_rule`, `dry_run_*_rule`, `list_*_rules`,
+`audit_*_rules` all accept `source_type: str | None` and
+`source_id: int | None` (XOR — passing both → validation envelope).
+Legacy `source: str | None` stays as a kw-only deprecation alias —
+`_resolve_legacy_source` rewrites a `sources.name` to `source_id` and
+anything else to `source_type`. `list_sources` already shipped in
+Stage 2.
+
+**Repository** (`Repository`):
+
+- `_ensure_source(type, name)` — auto-create a sources row if missing.
+  Keeps tests / CLI stable now that `source_id NOT NULL` is enforced.
+- `save_transactions` / `save_snapshots` resolve `source_id` via
+  `_ensure_source`, drop the `source_name` column from the insert
+  tuple, and (snapshots only) replace by `(date, source_id)` instead
+  of `(date, source, source_name)`.
+- `rename_source` collapses to a single `UPDATE sources` — data tables
+  hydrate `source_name` from the JOIN.
+- `delete_snapshots_by_source_names` / `get_snapshots_*` /
+  `get_transactions` / `get_latest_transaction_date` / `_row_to_*` all
+  switched to FK-resolved JOINs that project
+  `s.name AS canonical_source_name`. The dataclass `source_name` is a
+  read-only hydration field; nothing writes it.
+- `__aenter__` enables `PRAGMA foreign_keys = ON`.
+
+**Column-rename deferral.** ADR originally also called for renaming
+`transactions.source` / `snapshots.source` columns to `source_type`.
+This is purely cosmetic — the column already stores the source type
+string — and would have churned ~150 read sites for no semantic gain,
+so the rename was deferred. Python `Transaction.source` / `Snapshot.source`
+keep their existing names; the matcher reads `tx.source` directly.
+
+**Sibling skill** (`../lurii-portfolio/.claude/skills/categorization-curator/SKILL.md`)
+ships in lock-step — drops the source-aliasing footnote, adds Step 1
+`list_sources` parallel call and Step 2 account-vs-type guidance, and
+hard-rule #1 now mentions the `source_type` / `source_id` pair.
+
+**Coverage.** Two new tests in `tests/test_db.py` lock the Stage 3
+migration: `test_init_db_reaches_stage3_head_and_drops_source_name`
+(schema smoke check) and `test_stage3_merges_duplicate_type_sources`
+(coinex-shaped duplicate-type merge with FK repoint). The full Stage
+1+2 test set was rewritten against the new schema (canonical-name
+hydration via JOIN, no `source_name` column, `_ensure_source` covers
+the missing-source path). 976 tests pass.
 
 ## Risks / unknowns
 

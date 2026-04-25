@@ -28,7 +28,7 @@ async def test_init_db(tmp_path):
     async with aiosqlite.connect(str(db_path)) as db:
         version_row = await (await db.execute("SELECT version_num FROM alembic_version")).fetchone()
     assert version_row is not None
-    assert version_row[0] == "i9j0k1l2m3n4"
+    assert version_row[0] == "j0k1l2m3n4o5"
 
 
 def test_runner_uses_package_relative_migration_path(tmp_path):
@@ -117,13 +117,15 @@ async def test_init_db_migrates_legacy_transactions_schema(tmp_path):
     async with aiosqlite.connect(str(db_path)) as db:
         cursor = await db.execute("PRAGMA table_info(transactions)")
         columns = {row[1] for row in await cursor.fetchall()}
-        assert "source_name" in columns
+        # Stage 3 (ADR-030): source_name column dropped; source_id is the FK.
+        assert "source_name" not in columns
+        assert "source_id" in columns
         assert "trade_side" in columns
 
         index_row = await (
             await db.execute(
                 "SELECT sql FROM sqlite_master WHERE type = 'index' "
-                "AND name = 'idx_transactions_source_name_tx_id_unique'"
+                "AND name = 'idx_transactions_source_id_tx_id_unique'"
             )
         ).fetchone()
         # Migration drops all transactions (stale data incompatible with new type rules).
@@ -132,7 +134,7 @@ async def test_init_db_migrates_legacy_transactions_schema(tmp_path):
 
     assert count == 0
     assert index_row is not None
-    assert "source_name != ''" in str(index_row[0])
+    assert "tx_id != ''" in str(index_row[0])
 
 
 async def test_init_db_keeps_existing_transaction_source_name_rows_without_backfill(tmp_path):
@@ -221,7 +223,7 @@ async def test_init_db_keeps_existing_transaction_source_name_rows_without_backf
         index_row = await (
             await db.execute(
                 "SELECT sql FROM sqlite_master WHERE type = 'index' "
-                "AND name = 'idx_transactions_source_name_tx_id_unique'"
+                "AND name = 'idx_transactions_source_id_tx_id_unique'"
             )
         ).fetchone()
         # Migration drops all transactions (stale data incompatible with new type rules).
@@ -230,50 +232,29 @@ async def test_init_db_keeps_existing_transaction_source_name_rows_without_backf
 
     assert count == 0
     assert index_row is not None
-    assert "source_name != ''" in str(index_row[0])
+    assert "tx_id != ''" in str(index_row[0])
 
 
-async def test_init_db_deduplicates_kbank_rows_with_empty_tx_id(tmp_path):
-    db_path = tmp_path / "kbank-empty-txid.db"
-    await init_db(db_path)
+async def test_init_db_reaches_stage3_head_and_drops_source_name(tmp_path):
+    """Smoke check: full migration chain lands at Stage 3 head with source_name dropped.
 
-    duplicate_payload = '{"description":"QRyment","balance":"45457.78"}'
-    async with aiosqlite.connect(str(db_path)) as db:
-        await db.executemany(
-            (
-                "INSERT INTO transactions "
-                "(date, source, source_name, tx_type, asset, amount, usd_value, tx_id, raw_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-            ),
-            [
-                ("2026-03-10", "kbank", "kbank-main", "deposit", "THB", "45000.00", "0", "", duplicate_payload),
-                ("2026-03-10", "kbank", "kbank-main", "deposit", "THB", "45000.00", "0", "", duplicate_payload),
-                ("2026-03-10", "kbank", "kbank-main", "deposit", "THB", "45000.00", "0", "", duplicate_payload),
-                ("2026-03-10", "wise", "wise-main", "deposit", "THB", "45000.00", "0", "", duplicate_payload),
-                ("2026-03-10", "wise", "wise-main", "deposit", "THB", "45000.00", "0", "", duplicate_payload),
-            ],
-        )
-        await db.execute("DELETE FROM alembic_version")
-        await db.execute("INSERT INTO alembic_version (version_num) VALUES (?)", ("e7b9c1d4a5f0",))
-        await db.commit()
-
+    Replaces the legacy empty-tx_id dedup test — the post-Stage-3 schema no
+    longer has ``source_name``, so the original setup (insert empty-tx_id rows
+    with ``source_name``) cannot be staged; the dedup migration (``f2c7e6a9d1b4``)
+    still runs in-chain at fresh init.
+    """
+    db_path = tmp_path / "stage3-head.db"
     await init_db(db_path)
 
     async with aiosqlite.connect(str(db_path)) as db:
         version_row = await (await db.execute("SELECT version_num FROM alembic_version")).fetchone()
-        cursor = await db.execute(
-            "SELECT source, source_name, COUNT(*) "
-            "FROM transactions "
-            "WHERE tx_id = '' "
-            "GROUP BY source, source_name "
-            "ORDER BY source, source_name"
-        )
-        rows = await cursor.fetchall()
+        cursor = await db.execute("PRAGMA table_info(transactions)")
+        cols = {r[1] for r in await cursor.fetchall()}
 
     assert version_row is not None
-    assert version_row[0] == "i9j0k1l2m3n4"
-    # Migration drops all transactions (stale data incompatible with new type rules).
-    assert rows == []
+    assert version_row[0] == "j0k1l2m3n4o5"
+    assert "source_name" not in cols
+    assert "source_id" in cols
 
 
 async def test_save_and_get_snapshot(repo):
@@ -922,11 +903,13 @@ async def test_init_db_migrates_legacy_snapshots_with_source_name(tmp_path):
     async with Repository(db_path) as migrated_repo:
         rows = await migrated_repo.get_snapshots_by_date(date(2024, 1, 15))
     async with aiosqlite.connect(db_path) as db:
-        stored_row = await (await db.execute("SELECT source_name FROM snapshots")).fetchone()
+        # Stage 3 dropped source_name; the row hydrates source_name via JOIN on sources.
+        cursor = await db.execute("PRAGMA table_info(snapshots)")
+        cols = {row[1] for row in await cursor.fetchall()}
+    assert "source_name" not in cols
     assert len(rows) == 1
     assert rows[0].source == "wise"
-    assert rows[0].source_name == "wise"
-    assert stored_row == ("",)
+    assert rows[0].source_name == "wise-main"
 
 
 async def test_save_transaction_populates_source_id_from_sources_table(tmp_path):
@@ -988,8 +971,8 @@ async def test_save_snapshot_populates_source_id(tmp_path):
     assert rows[0].source_id == sources_row[0]
 
 
-async def test_save_transaction_leaves_source_id_null_when_source_missing(tmp_path):
-    """Stage 1: source_id is best-effort. No sources row → NULL, no error."""
+async def test_save_transaction_auto_creates_source_when_missing(tmp_path):
+    """Stage 3 (ADR-030): source_id is NOT NULL. Missing source row is auto-created."""
     db_path = tmp_path / "src_id_missing.db"
     async with Repository(db_path) as repo:
         await repo.save_transaction(
@@ -1005,10 +988,13 @@ async def test_save_transaction_leaves_source_id_null_when_source_missing(tmp_pa
             )
         )
         rows = await repo.get_transactions(source="orphan")
-    assert rows[0].source_id is None
+        sources = await repo.list_sources_with_counts()
+    assert rows[0].source_id is not None
+    assert any(s["name"] == "orphan" and s["type"] == "orphan" for s in sources)
 
 
-async def test_rename_source_updates_sources_and_denormalized_columns(tmp_path):
+async def test_rename_source_updates_sources_row(tmp_path):
+    """Stage 3 (ADR-030): rename touches only ``sources``; data tables hydrate via JOIN."""
     db_path = tmp_path / "rename.db"
     async with Repository(db_path) as repo:
         async with aiosqlite.connect(str(db_path)) as db:
@@ -1047,67 +1033,71 @@ async def test_rename_source_updates_sources_and_denormalized_columns(tmp_path):
 
     async with aiosqlite.connect(str(db_path)) as db:
         sources_row = await (await db.execute("SELECT id, name FROM sources WHERE name = 'kbank-personal'")).fetchone()
-        old_rows = await (
-            await db.execute("SELECT COUNT(*) FROM transactions WHERE source_name = 'kbank-main'")
-        ).fetchone()
 
     assert sources_row is not None
     assert len(renamed_txs) == 1
     assert renamed_txs[0].source_name == "kbank-personal"
     assert renamed_txs[0].source_id == sources_row[0]
     assert renamed_snaps[0].source_name == "kbank-personal"
-    assert old_rows is not None
-    assert old_rows[0] == 0
 
 
-async def test_backfill_migration_populates_source_id_for_existing_rows(tmp_path):
-    """Migration i9j0k1l2m3n4 backfills source_id from existing source/source_name."""
-    db_path = tmp_path / "backfill.db"
+async def test_stage3_merges_duplicate_type_sources(tmp_path):
+    """Stage 3 (j0k1l2m3n4o5) merges sources sharing a ``type`` into the canonical row.
 
+    Mirrors the live coinex 22+21 split: two sources rows with type=coinex
+    (one named ``coinex-main`` per the project convention, one named ``coinex``).
+    Stage 3 picks ``coinex-main`` as canonical, repoints data, and deletes the other.
+    """
+    db_path = tmp_path / "stage3-merge.db"
+
+    # Build fresh DB up to Stage 1+2 (one revision before Stage 3).
+    await init_db(db_path)
     async with aiosqlite.connect(str(db_path)) as db:
-        # Bring DB up to migration h8i9j0k1l2m3 (the additive one).
-        pass
-
-    await init_db(db_path)  # full chain incl. backfill
-
-    async with aiosqlite.connect(str(db_path)) as db:
-        await db.execute(
-            "INSERT INTO sources (name, type, credentials, enabled) VALUES (?, ?, ?, ?)",
-            ("kbank-main", "kbank", "{}", 1),
-        )
-        await db.execute(
-            "INSERT INTO sources (name, type, credentials, enabled) VALUES (?, ?, ?, ?)",
-            ("rabby", "rabby", "{}", 1),
-        )
-        await db.execute(
-            "INSERT INTO transactions (date, source, source_name, tx_type, asset, amount, usd_value, tx_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            ("2024-05-01", "kbank", "kbank-main", "spend", "THB", "-1", "-1", "old-tx-1"),
-        )
-        await db.execute(
-            "INSERT INTO transactions (date, source, source_name, tx_type, asset, amount, usd_value, tx_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            ("2024-05-01", "rabby", "rabby", "spend", "ETH", "-1", "-1", "old-tx-2"),
-        )
-        await db.execute("UPDATE transactions SET source_id = NULL")
         await db.execute("DELETE FROM alembic_version")
-        await db.execute("INSERT INTO alembic_version VALUES ('h8i9j0k1l2m3')")
+        await db.execute("INSERT INTO alembic_version VALUES ('i9j0k1l2m3n4')")
+        # Re-add source_name briefly so we can exercise the Stage 3 drop.
+        import contextlib
+
+        with contextlib.suppress(aiosqlite.OperationalError):
+            await db.execute("ALTER TABLE transactions ADD COLUMN source_name TEXT NOT NULL DEFAULT ''")
+        with contextlib.suppress(aiosqlite.OperationalError):
+            await db.execute("ALTER TABLE snapshots ADD COLUMN source_name TEXT NOT NULL DEFAULT ''")
+        await db.execute(
+            "INSERT INTO sources (name, type, credentials, enabled) VALUES (?, ?, ?, ?)",
+            ("coinex-main", "coinex", "{}", 1),
+        )
+        await db.execute(
+            "INSERT INTO sources (name, type, credentials, enabled) VALUES (?, ?, ?, ?)",
+            ("coinex", "coinex", "{}", 1),
+        )
+        coinex_main_id = (await (await db.execute("SELECT id FROM sources WHERE name = 'coinex-main'")).fetchone())[0]
+        coinex_dup_id = (await (await db.execute("SELECT id FROM sources WHERE name = 'coinex'")).fetchone())[0]
+        await db.execute(
+            "INSERT INTO transactions (date, source, source_name, source_id, tx_type, asset, amount, usd_value, tx_id)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("2026-04-01", "coinex", "coinex", coinex_dup_id, "trade", "BTC", "1", "60000", "tx-A"),
+        )
+        await db.execute(
+            "INSERT INTO transactions (date, source, source_name, source_id, tx_type, asset, amount, usd_value, tx_id)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("2026-04-02", "coinex", "coinex-main", coinex_main_id, "trade", "BTC", "1", "61000", "tx-B"),
+        )
         await db.commit()
 
+    # Run Stage 3.
     await init_db(db_path)
 
     async with aiosqlite.connect(str(db_path)) as db:
-        kbank_row = await (await db.execute("SELECT source_id FROM transactions WHERE tx_id = 'old-tx-1'")).fetchone()
-        rabby_row = await (await db.execute("SELECT source_id FROM transactions WHERE tx_id = 'old-tx-2'")).fetchone()
-        kbank_src = await (await db.execute("SELECT id FROM sources WHERE name = 'kbank-main'")).fetchone()
-        rabby_src = await (await db.execute("SELECT id FROM sources WHERE name = 'rabby'")).fetchone()
+        sources = await (await db.execute("SELECT name FROM sources WHERE type = 'coinex'")).fetchall()
+        ids = await (
+            await db.execute("SELECT DISTINCT source_id FROM transactions WHERE tx_id IN ('tx-A','tx-B')")
+        ).fetchall()
+        canonical = await (await db.execute("SELECT id FROM sources WHERE name = 'coinex-main'")).fetchone()
 
-    assert kbank_row is not None
-    assert kbank_src is not None
-    assert kbank_row[0] == kbank_src[0]
-    assert rabby_row is not None
-    assert rabby_src is not None
-    assert rabby_row[0] == rabby_src[0]
+    # Only the canonical row survives; both transactions point at it.
+    assert [r[0] for r in sources] == ["coinex-main"]
+    assert canonical is not None
+    assert {r[0] for r in ids} == {canonical[0]}
 
 
 # ── ADR-030 Stage 2 ──────────────────────────────────────────────────
@@ -1188,8 +1178,8 @@ async def test_list_sources_with_counts_includes_tx_and_snap_counts(repo):
     assert by_name["kbank-main"]["snap_count"] == 0
 
 
-async def test_delete_source_cascade_uses_source_id_after_drift(repo):
-    """ADR-030 Stage 2: cascade purges by source_id, not denormalized name."""
+async def test_delete_source_cascade_uses_source_id_purges_data(repo):
+    """ADR-030 Stage 3: cascade purges via source_id FK."""
     await repo._db.execute(
         "INSERT INTO sources (name, type, credentials, enabled) VALUES (?, ?, ?, ?)",
         ("wise-main", "wise", "{}", 1),
@@ -1211,10 +1201,6 @@ async def test_delete_source_cascade_uses_source_id_after_drift(repo):
         ]
     )
 
-    # Drift the cached source_name without updating sources.name. FK source_id stays linked.
-    await repo._db.execute("UPDATE transactions SET source_name = 'stale-name' WHERE tx_id = 'wise-fk-1'")
-    await repo._db.commit()
-
     result = await repo.delete_source_cascade("wise-main")
     assert result.transactions == 1
 
@@ -1223,6 +1209,7 @@ async def test_delete_source_cascade_uses_source_id_after_drift(repo):
 
 
 async def test_get_transaction_by_id_surfaces_canonical_source_name(repo):
+    """ADR-030 Stage 3: source_name on the dataclass is hydrated from the JOIN."""
     from pfm.db.metadata_store import MetadataStore
 
     store = MetadataStore(repo.connection)
@@ -1251,12 +1238,14 @@ async def test_get_transaction_by_id_surfaces_canonical_source_name(repo):
     assert txs[0].id is not None
     target_id = txs[0].id
 
-    # Drift the cached source_name; canonical via JOIN should win.
-    await repo._db.execute("UPDATE transactions SET source_name = 'stale-name' WHERE id = ?", (target_id,))
-    await repo._db.commit()
-
     pair = await store.get_transaction_by_id(target_id)
     assert pair is not None
     tx, _ = pair
     assert tx.source_name == "wise-main"
     assert tx.source_id is not None
+
+    # Renaming the source ripples through the JOIN immediately.
+    await repo.rename_source("wise-main", "wise-renamed")
+    pair_again = await store.get_transaction_by_id(target_id)
+    assert pair_again is not None
+    assert pair_again[0].source_name == "wise-renamed"

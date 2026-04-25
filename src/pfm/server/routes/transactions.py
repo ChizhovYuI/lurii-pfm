@@ -381,7 +381,8 @@ def _serialize_category_rule(rule: CategoryRule) -> dict[str, object]:
         "field_name": rule.field_name or None,
         "field_operator": rule.field_operator or None,
         "field_value": rule.field_value or None,
-        "source": rule.source,
+        "source_type": rule.source_type,
+        "source_id": rule.source_id,
         "result_category": rule.result_category,
         "priority": rule.priority,
         "builtin": rule.builtin,
@@ -392,7 +393,8 @@ def _serialize_category_rule(rule: CategoryRule) -> dict[str, object]:
 def _serialize_type_rule(rule: TypeRule) -> dict[str, object]:
     return {
         "id": rule.id,
-        "source": rule.source,
+        "source_type": rule.source_type,
+        "source_id": rule.source_id,
         "field_name": rule.field_name or None,
         "field_operator": rule.field_operator or None,
         "field_value": rule.field_value or None,
@@ -1079,13 +1081,51 @@ async def create_category(request: web.Request) -> web.Response:
 # ── Category rules CRUD ───────────────────────────────────────────────
 
 
+async def _resolve_legacy_source(
+    repo: object,
+    legacy: str | None,
+) -> tuple[str | None, int | None]:
+    """Map a legacy ``source`` arg into ``(source_type, source_id)`` (ADR-030 Stage 3)."""
+    from pfm.db.repository import Repository
+
+    if legacy is None or legacy in {"", "*"}:
+        return None, None
+    if not isinstance(repo, Repository):
+        return legacy, None
+    sources = await repo.list_sources_with_counts()
+    by_name: dict[str, int] = {}
+    for s in sources:
+        name = s.get("name")
+        sid = s.get("id")
+        if isinstance(name, str) and isinstance(sid, int):
+            by_name[name] = sid
+    if legacy in by_name:
+        return None, by_name[legacy]
+    return legacy, None
+
+
+def _split_rule_source_args(body: dict[str, object]) -> tuple[str | None, int | None, str | None]:
+    """Pull source_type / source_id / legacy source from a request body."""
+    source_type = body.get("source_type")
+    source_id_val = body.get("source_id")
+    legacy = body.get("source")
+    return (
+        str(source_type) if isinstance(source_type, str) and source_type else None,
+        int(source_id_val) if isinstance(source_id_val, int) else None,
+        str(legacy) if isinstance(legacy, str) and legacy else None,
+    )
+
+
 @routes.get("/api/v1/category-rules")
 async def list_category_rules(request: web.Request) -> web.Response:
     """List all category rules."""
+    repo = get_repo(request.app)
     store = _get_metadata_store(request.app)
-    source = request.query.get("source")
+    source_type, source_id = await _resolve_legacy_source(repo, request.query.get("source"))
     include_deleted = request.query.get("include_deleted", "false").lower() == "true"
-    rules = await store.get_category_rules(source=source, include_deleted=include_deleted)
+    rules = await store.get_category_rules(
+        source_type=source_type, source_id=source_id, include_deleted=include_deleted
+    )
     return web.json_response([_serialize_category_rule(r) for r in rules])
 
 
@@ -1110,6 +1150,10 @@ async def create_category_rule(request: web.Request) -> web.Response:
         field_value = json.dumps(field_value)
 
     store = _get_metadata_store(request.app)
+    repo = get_repo(request.app)
+    source_type, source_id, legacy = _split_rule_source_args(body)
+    if legacy is not None and source_type is None and source_id is None:
+        source_type, source_id = await _resolve_legacy_source(repo, legacy)
     rule = await store.create_category_rule(
         type_match=body["type_match"],
         result_category=body["result_category"],
@@ -1117,12 +1161,12 @@ async def create_category_rule(request: web.Request) -> web.Response:
         field_name=body.get("field_name", ""),
         field_operator=field_op,
         field_value=field_value,
-        source=body.get("source", "*"),
+        source_type=source_type,
+        source_id=source_id,
         priority=body.get("priority", 50),
     )
 
     # Apply new rule to uncategorized transactions.
-    repo = get_repo(request.app)
     await _run_categorization(repo, store, force=True)
 
     return web.json_response(_serialize_category_rule(rule), status=201)
@@ -1204,6 +1248,11 @@ async def preview_category_rule(request: web.Request) -> web.Response:
     if isinstance(field_value, list):
         field_value = json.dumps(field_value)
 
+    repo = get_repo(request.app)
+    store = _get_metadata_store(request.app)
+    source_type, source_id, legacy = _split_rule_source_args(body)
+    if legacy is not None and source_type is None and source_id is None:
+        source_type, source_id = await _resolve_legacy_source(repo, legacy)
     preview_rule = CategoryRule(
         type_match=body["type_match"],
         result_category=body["result_category"],
@@ -1211,11 +1260,9 @@ async def preview_category_rule(request: web.Request) -> web.Response:
         field_name=body.get("field_name", ""),
         field_operator=body.get("field_operator", ""),
         field_value=field_value,
-        source=body.get("source", "*"),
+        source_type=source_type,
+        source_id=source_id,
     )
-
-    repo = get_repo(request.app)
-    store = _get_metadata_store(request.app)
     all_txs = await repo.get_transactions()
     tx_ids = [tx.id for tx in all_txs if tx.id is not None]
     meta_map = await store.get_metadata_batch(tx_ids)
@@ -1257,12 +1304,16 @@ async def category_rule_suggestions(request: web.Request) -> web.Response:
 
 @routes.post("/api/v1/category-rules/reset")
 async def reset_category_rules(request: web.Request) -> web.Response:
-    """Reset rules: soft-delete custom, restore builtins."""
+    """Reset rules: soft-delete custom, restore builtins.
+
+    Legacy ``source`` is treated as ``source_type`` (the reset endpoint only
+    scopes to a type, never a specific source instance).
+    """
     body = await request.json()
-    source = body.get("source")
+    source_type = body.get("source_type") or body.get("source")
     store = _get_metadata_store(request.app)
-    await store.reset_category_rules(source=source)
-    return web.json_response({"reset": True, "source": source})
+    await store.reset_category_rules(source_type=source_type if isinstance(source_type, str) else None)
+    return web.json_response({"reset": True, "source_type": source_type})
 
 
 # ── Categorization trigger ─────────────────────────────────────────────
@@ -1289,10 +1340,11 @@ async def run_categorize(request: web.Request) -> web.Response:
 @routes.get("/api/v1/type-rules")
 async def list_type_rules(request: web.Request) -> web.Response:
     """List all type rules."""
+    repo = get_repo(request.app)
     store = _get_metadata_store(request.app)
-    source = request.query.get("source")
+    source_type, source_id = await _resolve_legacy_source(repo, request.query.get("source"))
     include_deleted = request.query.get("include_deleted", "false").lower() == "true"
-    rules = await store.get_type_rules(source=source, include_deleted=include_deleted)
+    rules = await store.get_type_rules(source_type=source_type, source_id=source_id, include_deleted=include_deleted)
     return web.json_response([_serialize_type_rule(r) for r in rules])
 
 
@@ -1321,9 +1373,14 @@ async def create_type_rule(request: web.Request) -> web.Response:
         field_value = json.dumps(field_value)
 
     store = _get_metadata_store(request.app)
+    repo = get_repo(request.app)
+    source_type, source_id, legacy = _split_rule_source_args(body)
+    if legacy is not None and source_type is None and source_id is None:
+        source_type, source_id = await _resolve_legacy_source(repo, legacy)
     rule = await store.create_type_rule(
         result_type=result_type,
-        source=body.get("source", "*"),
+        source_type=source_type,
+        source_id=source_id,
         field_name=body.get("field_name", ""),
         field_operator=field_op,
         field_value=field_value,
@@ -1331,7 +1388,6 @@ async def create_type_rule(request: web.Request) -> web.Response:
     )
 
     # Apply new rule to all non-transfer transactions.
-    repo = get_repo(request.app)
     await _apply_type_rule(repo, store, rule)
     await _run_categorization(repo, store, force=True)
 
@@ -1367,15 +1423,18 @@ async def preview_type_rule(request: web.Request) -> web.Response:
     if isinstance(field_value, list):
         field_value = json.dumps(field_value)
 
+    repo = get_repo(request.app)
+    source_type, source_id, legacy = _split_rule_source_args(body)
+    if legacy is not None and source_type is None and source_id is None:
+        source_type, source_id = await _resolve_legacy_source(repo, legacy)
     preview_rule = TypeRuleModel(
-        source=body.get("source", "*"),
+        source_type=source_type,
+        source_id=source_id,
         field_name=body.get("field_name", ""),
         field_operator=body.get("field_operator", "eq"),
         field_value=field_value,
         result_type=result_type,
     )
-
-    repo = get_repo(request.app)
     all_txs = await repo.get_transactions()
 
     affected: list[dict[str, object]] = []
@@ -1405,7 +1464,7 @@ async def preview_type_rule(request: web.Request) -> web.Response:
 async def reset_type_rules(request: web.Request) -> web.Response:
     """Reset type rules: soft-delete custom, restore builtins."""
     body = await request.json()
-    source = body.get("source")
+    source_type = body.get("source_type") or body.get("source")
     store = _get_metadata_store(request.app)
-    await store.reset_type_rules(source=source)
-    return web.json_response({"reset": True, "source": source})
+    await store.reset_type_rules(source_type=source_type if isinstance(source_type, str) else None)
+    return web.json_response({"reset": True, "source_type": source_type})

@@ -285,18 +285,33 @@ class MetadataStore:
     async def get_category_rules(
         self,
         *,
-        source: str | None = None,
+        source_type: str | None = None,
+        source_id: int | None = None,
         include_deleted: bool = False,
     ) -> list[CategoryRule]:
-        """List category rules ordered by priority."""
+        """List category rules ordered by priority.
+
+        With ``source_type`` set, returns rules applicable to a transaction of that
+        type — exact ``source_type`` match plus catch-alls (both filter columns NULL).
+
+        With ``source_id`` set (and optionally ``source_type``), additionally
+        includes rules pinned to that specific source instance.
+        """
         query = "SELECT * FROM category_rules"
         conditions: list[str] = []
         params: list[str | int] = []
         if not include_deleted:
             conditions.append("deleted = 0")
-        if source is not None:
-            conditions.append("(source = ? OR source = '*')")
-            params.append(source)
+        scope_clauses: list[str] = []
+        if source_id is not None:
+            scope_clauses.append("source_id = ?")
+            params.append(source_id)
+        if source_type is not None:
+            scope_clauses.append("source_type = ?")
+            params.append(source_type)
+        if source_id is not None or source_type is not None:
+            scope_clauses.append("(source_type IS NULL AND source_id IS NULL)")
+            conditions.append("(" + " OR ".join(scope_clauses) + ")")
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
         query += " ORDER BY priority ASC, id ASC"
@@ -313,26 +328,35 @@ class MetadataStore:
         field_name: str = "",
         field_operator: str = "",
         field_value: str = "",
-        source: str = "*",
+        source_type: str | None = None,
+        source_id: int | None = None,
         priority: int | None = None,
     ) -> CategoryRule:
-        """Create a category rule. Priority is auto-computed if not specified."""
+        """Create a category rule. Priority is auto-computed if not specified.
+
+        ``source_type`` and ``source_id`` are mutually exclusive — passing both
+        raises ``ValueError``. Both ``None`` makes a catch-all rule.
+        """
+        if source_type is not None and source_id is not None:
+            msg = "source_type and source_id are mutually exclusive"
+            raise ValueError(msg)
         if field_operator == "regex" and field_value:
             _validate_regex_value(field_value)
         if priority is None:
-            priority = _auto_priority(field_name=field_name, source=source)
+            priority = _auto_priority(field_name=field_name, source_type=source_type, source_id=source_id)
         cursor = await self._db.execute(
             "INSERT INTO category_rules"
             " (type_match, type_operator, field_name, field_operator, field_value,"
-            "  source, result_category, priority, builtin)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)",
+            "  source_type, source_id, result_category, priority, builtin)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
             (
                 type_match,
                 type_operator,
                 field_name or None,
                 field_operator or None,
                 field_value or None,
-                source,
+                source_type,
+                source_id,
                 result_category,
                 priority,
             ),
@@ -360,16 +384,21 @@ class MetadataStore:
         await self._db.commit()
         return True
 
-    async def reset_category_rules(self, source: str | None = None) -> None:
-        """Reset rules: soft-delete custom rules, restore builtin rules."""
-        if source:
+    async def reset_category_rules(self, source_type: str | None = None) -> None:
+        """Reset rules: soft-delete custom rules, restore builtin rules.
+
+        With ``source_type`` set, scopes the reset to rules pinned to that type
+        (or catch-all builtins applicable to it).
+        """
+        if source_type is not None:
             await self._db.execute(
-                "UPDATE category_rules SET deleted = 1 WHERE builtin = 0 AND source = ?",
-                (source,),
+                "UPDATE category_rules SET deleted = 1 WHERE builtin = 0 AND source_type = ?",
+                (source_type,),
             )
             await self._db.execute(
-                "UPDATE category_rules SET deleted = 0 WHERE builtin = 1 AND (source = ? OR source = '*')",
-                (source,),
+                "UPDATE category_rules SET deleted = 0 WHERE builtin = 1 AND"
+                " (source_type = ? OR (source_type IS NULL AND source_id IS NULL))",
+                (source_type,),
             )
         else:
             await self._db.execute("UPDATE category_rules SET deleted = 1 WHERE builtin = 0")
@@ -385,7 +414,8 @@ class MetadataStore:
             field_name=row["field_name"] or "",
             field_operator=row["field_operator"] or "",
             field_value=row["field_value"] or "",
-            source=row["source"],
+            source_type=row["source_type"],
+            source_id=int(row["source_id"]) if row["source_id"] is not None else None,
             result_category=row["result_category"],
             priority=row["priority"],
             builtin=bool(row["builtin"]),
@@ -423,7 +453,9 @@ class MetadataStore:
         if not rows:
             return []
 
-        # Group by (source, type, category) and collect field snapshots.
+        # Group by (source_type, type, category) and collect field snapshots.
+        # ``user_category_choices.source`` carries the source type string
+        # (collected as ``tx.source`` at choice time).
         groups: dict[tuple[str, str, str], list[dict[str, str]]] = {}
         for row in rows:
             key = (row["source"], row["effective_type"], row["chosen_category"])
@@ -435,16 +467,17 @@ class MetadataStore:
                     snapshot = json.loads(row["field_snapshot"])
             groups.setdefault(key, []).append(snapshot)
 
-        # Check existing rules to avoid duplicates.
+        # Check existing rules to avoid duplicates — match against source_type
+        # (ignoring source_id-pinned rules since suggestions are type-scoped).
         existing_rules = await self.get_category_rules()
         existing_keys = {
-            (r.source, r.type_match, r.result_category, r.field_name, r.field_value)
+            (r.source_type or "", r.type_match, r.result_category, r.field_name, r.field_value)
             for r in existing_rules
-            if not r.deleted
+            if not r.deleted and r.source_id is None
         }
 
         suggestions: list[dict[str, object]] = []
-        for (source, etype, category), snapshots in groups.items():
+        for (source_type, etype, category), snapshots in groups.items():
             if len(snapshots) < min_evidence:
                 continue
 
@@ -452,14 +485,14 @@ class MetadataStore:
             best_field, best_value = _find_common_field(snapshots)
 
             # Skip if a matching rule already exists.
-            rule_key = (source, etype, category, best_field or "", best_value or "")
+            rule_key = (source_type, etype, category, best_field or "", best_value or "")
             if rule_key in existing_keys:
                 continue
 
             suggested_rule: dict[str, object] = {
                 "type_match": etype,
                 "result_category": category,
-                "source": source,
+                "source_type": source_type,
             }
             if best_field and best_value:
                 suggested_rule["field_name"] = best_field
@@ -494,14 +527,27 @@ class MetadataStore:
         *,
         field_snapshot: str = "",
         previous_category: str = "",
+        source_id: int | None = None,
     ) -> None:
-        """Record a manual category selection for learning."""
+        """Record a manual category selection for learning.
+
+        ``source`` is the source type string at choice time (legacy snapshot label).
+        ``source_id`` pins the choice to a specific source instance for FK joins.
+        """
         await self._db.execute(
             "INSERT INTO user_category_choices"
             " (transaction_id, source, effective_type, field_snapshot,"
-            "  chosen_category, previous_category)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
-            (transaction_id, source, effective_type, field_snapshot, chosen_category, previous_category),
+            "  chosen_category, previous_category, source_id)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                transaction_id,
+                source,
+                effective_type,
+                field_snapshot,
+                chosen_category,
+                previous_category,
+                source_id,
+            ),
         )
         await self._db.commit()
 
@@ -510,18 +556,26 @@ class MetadataStore:
     async def get_type_rules(
         self,
         *,
-        source: str | None = None,
+        source_type: str | None = None,
+        source_id: int | None = None,
         include_deleted: bool = False,
     ) -> list[TypeRule]:
-        """List type rules ordered by priority."""
+        """List type rules ordered by priority. See :meth:`get_category_rules`."""
         query = "SELECT * FROM type_rules"
         conditions: list[str] = []
         params: list[str | int] = []
         if not include_deleted:
             conditions.append("deleted = 0")
-        if source is not None:
-            conditions.append("(source = ? OR source = '*')")
-            params.append(source)
+        scope_clauses: list[str] = []
+        if source_id is not None:
+            scope_clauses.append("source_id = ?")
+            params.append(source_id)
+        if source_type is not None:
+            scope_clauses.append("source_type = ?")
+            params.append(source_type)
+        if source_id is not None or source_type is not None:
+            scope_clauses.append("(source_type IS NULL AND source_id IS NULL)")
+            conditions.append("(" + " OR ".join(scope_clauses) + ")")
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
         query += " ORDER BY priority ASC, id ASC"
@@ -533,24 +587,29 @@ class MetadataStore:
         self,
         result_type: str,
         *,
-        source: str = "*",
+        source_type: str | None = None,
+        source_id: int | None = None,
         field_name: str = "",
         field_operator: str = "eq",
         field_value: str = "",
         priority: int | None = None,
     ) -> TypeRule:
-        """Create a type rule. Priority is auto-computed if not specified."""
+        """Create a type rule. ``source_type`` and ``source_id`` are mutually exclusive."""
+        if source_type is not None and source_id is not None:
+            msg = "source_type and source_id are mutually exclusive"
+            raise ValueError(msg)
         if field_operator == "regex" and field_value:
             _validate_regex_value(field_value)
         if priority is None:
-            priority = _auto_priority(field_name=field_name, source=source)
+            priority = _auto_priority(field_name=field_name, source_type=source_type, source_id=source_id)
         cursor = await self._db.execute(
             "INSERT INTO type_rules"
-            " (source, field_name, field_operator, field_value,"
+            " (source_type, source_id, field_name, field_operator, field_value,"
             "  result_type, priority, builtin)"
-            " VALUES (?, ?, ?, ?, ?, ?, 0)",
+            " VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
             (
-                source,
+                source_type,
+                source_id,
                 field_name or None,
                 field_operator,
                 field_value or None,
@@ -578,16 +637,17 @@ class MetadataStore:
         await self._db.commit()
         return True
 
-    async def reset_type_rules(self, source: str | None = None) -> None:
+    async def reset_type_rules(self, source_type: str | None = None) -> None:
         """Reset rules: soft-delete custom rules, restore builtin rules."""
-        if source:
+        if source_type is not None:
             await self._db.execute(
-                "UPDATE type_rules SET deleted = 1 WHERE builtin = 0 AND source = ?",
-                (source,),
+                "UPDATE type_rules SET deleted = 1 WHERE builtin = 0 AND source_type = ?",
+                (source_type,),
             )
             await self._db.execute(
-                "UPDATE type_rules SET deleted = 0 WHERE builtin = 1 AND (source = ? OR source = '*')",
-                (source,),
+                "UPDATE type_rules SET deleted = 0 WHERE builtin = 1 AND"
+                " (source_type = ? OR (source_type IS NULL AND source_id IS NULL))",
+                (source_type,),
             )
         else:
             await self._db.execute("UPDATE type_rules SET deleted = 1 WHERE builtin = 0")
@@ -598,7 +658,8 @@ class MetadataStore:
     def _row_to_type_rule(row: aiosqlite.Row) -> TypeRule:
         return TypeRule(
             id=row["id"],
-            source=row["source"],
+            source_type=row["source_type"],
+            source_id=int(row["source_id"]) if row["source_id"] is not None else None,
             field_name=row["field_name"] or "",
             field_operator=row["field_operator"],
             field_value=row["field_value"] or "",
@@ -632,7 +693,7 @@ class MetadataStore:
         params: list[str | int] = []
 
         if source_name is not None:
-            where_clauses.append("t.source_name = ?")
+            where_clauses.append("s.name = ?")
             params.append(source_name)
         if tx_type is not None:
             where_clauses.append("t.tx_type = ?")
@@ -649,7 +710,7 @@ class MetadataStore:
         if search:
             escaped = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             where_clauses.append(
-                "(t.asset LIKE ? ESCAPE '\\' OR t.source_name LIKE ? ESCAPE '\\' OR t.tx_id LIKE ? ESCAPE '\\')"
+                "(t.asset LIKE ? ESCAPE '\\' OR s.name LIKE ? ESCAPE '\\' OR t.tx_id LIKE ? ESCAPE '\\')"
             )
             pattern = f"%{escaped}%"
             params.extend([pattern, pattern, pattern])
@@ -660,6 +721,7 @@ class MetadataStore:
         count_cursor = await self._db.execute(
             f"SELECT COUNT(*) FROM transactions t"  # noqa: S608
             f" LEFT JOIN transaction_metadata m ON t.id = m.transaction_id"
+            f" LEFT JOIN sources s ON t.source_id = s.id"
             f"{where_sql}",
             params,
         )
@@ -669,6 +731,7 @@ class MetadataStore:
         # Data query.
         cursor = await self._db.execute(
             f"SELECT t.*,"  # noqa: S608
+            f" s.name AS canonical_source_name,"
             f" m.category AS m_category, m.category_source AS m_category_source,"
             f" m.category_confidence AS m_category_confidence,"
             f" m.type_override AS m_type_override,"
@@ -678,6 +741,7 @@ class MetadataStore:
             f" m.reviewed AS m_reviewed, m.notes AS m_notes"
             f" FROM transactions t"
             f" LEFT JOIN transaction_metadata m ON t.id = m.transaction_id"
+            f" LEFT JOIN sources s ON t.source_id = s.id"
             f"{where_sql}"
             f" ORDER BY t.date DESC, t.id DESC"
             f" LIMIT ? OFFSET ?",
@@ -767,10 +831,10 @@ class MetadataStore:
         params: list[str] = []
         where_sql = ""
         if source_name is not None:
-            where_sql = " WHERE COALESCE(s.name, t.source_name) = ?"
+            where_sql = " WHERE s.name = ?"
             params.append(source_name)
         cursor = await self._db.execute(
-            "SELECT COALESCE(s.name, t.source_name) AS source_name,"  # noqa: S608
+            "SELECT s.name AS source_name,"  # noqa: S608
             "  s.id AS source_id,"
             "  COUNT(*) AS total,"
             "  SUM(CASE WHEN t.tx_type = 'unknown'"
@@ -782,7 +846,7 @@ class MetadataStore:
             " LEFT JOIN transaction_metadata m ON t.id = m.transaction_id"
             " LEFT JOIN sources s ON t.source_id = s.id"
             f"{where_sql}"
-            " GROUP BY COALESCE(s.name, t.source_name), s.id"
+            " GROUP BY s.name, s.id"
             " ORDER BY source_name",
             params,
         )
@@ -832,7 +896,7 @@ class MetadataStore:
         where_clauses: list[str] = [filter_clause]
         params: list[str | int] = []
         if source_name is not None:
-            where_clauses.append("COALESCE(s.name, t.source_name) = ?")
+            where_clauses.append("s.name = ?")
             params.append(source_name)
         where_sql = " WHERE " + " AND ".join(where_clauses)
 
@@ -906,15 +970,34 @@ def _validate_regex_value(field_value: str) -> None:
             raise ValueError(msg) from exc
 
 
-def _auto_priority(*, field_name: str, source: str) -> int:
-    """Compute priority based on rule specificity. Lower = higher priority."""
+def _auto_priority(
+    *,
+    field_name: str,
+    source_type: str | None,
+    source_id: int | None,
+) -> int:
+    """Compute rule priority from specificity. Lower = higher precedence.
+
+    Six tiers per ADR-030 Stage 3:
+    - field + account (source_id): 80
+    - field + type (source_type):  100
+    - field only:                  150
+    - account only:                180
+    - type only:                   200
+    - catch-all:                   300
+    """
     has_field = bool(field_name)
-    has_source = source != "*"
-    if has_field and has_source:
+    has_account = source_id is not None
+    has_type = source_type is not None
+    if has_field and has_account:
+        return 80
+    if has_field and has_type:
         return 100
     if has_field:
         return 150
-    if has_source:
+    if has_account:
+        return 180
+    if has_type:
         return 200
     return 300
 
@@ -968,7 +1051,7 @@ def _annotate_non_discriminating(
             continue
         field_name = rule.get("field_name")
         field_value = rule.get("field_value")
-        source = rule.get("source")
+        source = rule.get("source_type")
         category = rule.get("result_category")
         if not (
             isinstance(field_name, str)
@@ -987,7 +1070,7 @@ def _annotate_non_discriminating(
         if isinstance(rule, dict):
             field_name = rule.get("field_name")
             field_value = rule.get("field_value")
-            source = rule.get("source")
+            source = rule.get("source_type")
             if isinstance(field_name, str) and isinstance(field_value, str) and isinstance(source, str):
                 key = (source, field_name, field_value)
                 cats = groups.get(key, set())

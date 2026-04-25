@@ -105,7 +105,7 @@ def _resolve_field(tx: Transaction, field_name: str) -> str | None:
 # ── Compound rule matching ─────────────────────────────────────────────
 
 
-def _match_category_rule(
+def _match_category_rule(  # noqa: PLR0911
     etype: str,
     tx: Transaction,
     rule: CategoryRule,
@@ -118,11 +118,14 @@ def _match_category_rule(
     if not _match_values(etype, rule.type_match, rule.type_operator):
         return False
 
-    # Source filter: match against source type or configured source name.
-    if rule.source != "*":
-        rule_src = rule.source.lower()
-        if rule_src != tx.source.lower() and rule_src != (tx.source_name or tx.source).lower():
-            return False
+    # Source filter — XOR semantics:
+    # source_id set → match only that specific source instance;
+    # source_type set → match every transaction of that type;
+    # both None → catch-all.
+    if rule.source_id is not None and rule.source_id != tx.source_id:
+        return False
+    if rule.source_type is not None and rule.source_type != tx.source:
+        return False
 
     # Condition 2: field match (optional).
     if rule.field_name:

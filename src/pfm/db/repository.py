@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 from typing import TYPE_CHECKING, NoReturn, Self
@@ -39,6 +38,8 @@ class Repository:
         conn = connect_db(self._db_path, key_hex=self._key_hex)
         await conn.__aenter__()
         conn.row_factory = aiosqlite.Row
+        # ADR-030 Stage 3: enforce FK integrity (off by default in SQLite).
+        await conn.execute("PRAGMA foreign_keys = ON")
         self._conn = conn
         return self
 
@@ -82,6 +83,32 @@ class Repository:
         self._source_id_cache[source_name] = sid
         return sid
 
+    async def _ensure_source(self, source_type: str, source_name: str) -> int:
+        """Resolve or auto-create a ``sources`` row for the given (type, name).
+
+        Stage 3 (ADR-030) tightens ``source_id NOT NULL`` on data tables. Most
+        production paths flow through ``SourceStore`` first so the row exists,
+        but collectors/CLI/tests sometimes save data before the source is
+        configured. Auto-creating an unconfigured (empty credentials, enabled)
+        row keeps the FK invariant satisfied without forcing every caller to
+        run ``SourceStore.add()`` first.
+        """
+        name = source_name or source_type
+        if not name:
+            msg = "Cannot ensure source: both source and source_name are empty"
+            raise ValueError(msg)
+        sid = await self._resolve_source_id(name)
+        if sid is not None:
+            return sid
+        cursor = await self._db.execute(
+            "INSERT INTO sources (name, type, credentials, enabled) VALUES (?, ?, ?, ?)",
+            (name, source_type or name, "{}", 1),
+        )
+        await self._db.commit()
+        sid = int(cursor.lastrowid or 0)
+        self._source_id_cache[name] = sid
+        return sid
+
     async def list_sources_with_counts(self) -> list[dict[str, object]]:
         """Return all configured sources with tx/snap counts via FK join.
 
@@ -110,25 +137,16 @@ class Repository:
         ]
 
     async def rename_source(self, old_name: str, new_name: str) -> None:
-        """Rename a configured source and refresh denormalized text columns.
+        """Rename a configured source. Stage 3: single UPDATE on ``sources``.
 
-        Stage 1: source_id FK is invariant under rename, but transactions /
-        snapshots still carry source_name as a denormalized cache, so we
-        update both. Stage 3 will drop source_name and this becomes a single
-        UPDATE on sources.
+        Data tables hydrate ``source_name`` via FK JOIN at read time, so the
+        rename takes effect immediately without touching ``transactions`` or
+        ``snapshots``.
         """
         if not old_name or not new_name or old_name == new_name:
             return
         await self._db.execute(
             "UPDATE sources SET name = ? WHERE name = ?",
-            (new_name, old_name),
-        )
-        await self._db.execute(
-            "UPDATE transactions SET source_name = ? WHERE source_name = ?",
-            (new_name, old_name),
-        )
-        await self._db.execute(
-            "UPDATE snapshots SET source_name = ? WHERE source_name = ?",
             (new_name, old_name),
         )
         self._source_id_cache.pop(old_name, None)
@@ -141,23 +159,29 @@ class Repository:
         await self.save_snapshots([snapshot])
 
     async def save_snapshots(self, snapshots: list[Snapshot]) -> None:
-        """Save multiple snapshots atomically, replacing same source/source_name/date rows."""
+        """Save snapshots atomically, replacing same ``(date, source_id)`` rows.
+
+        Stage 3 (ADR-030): replace key is the FK ``source_id`` rather than
+        the dropped ``source_name`` column. Snapshots whose ``source_id``
+        cannot be resolved by the configured source name fall back to the
+        type-only resolver in ``_resolve_source_id`` — when neither lands
+        on a sources row the insert raises (FK enforcement).
+        """
         if not snapshots:
             return
 
-        normalized: list[Snapshot] = []
-        for snap in snapshots:
-            source_name = snap.source_name or snap.source
-            normalized.append(snap if snap.source_name == source_name else replace(snap, source_name=source_name))
-
-        rows: list[tuple[str, str, str, int | None, str, str, str, str, str, str]] = []
-        for s in normalized:
-            sid = s.source_id if s.source_id is not None else await self._resolve_source_id(s.source_name)
+        rows: list[tuple[str, str, int, str, str, str, str, str, str]] = []
+        resolved_pairs: set[tuple[str, int]] = set()
+        for s in snapshots:
+            sid = (
+                s.source_id
+                if s.source_id is not None
+                else await self._ensure_source(s.source, s.source_name or s.source)
+            )
             rows.append(
                 (
                     str(s.date),
                     s.source,
-                    s.source_name,
                     sid,
                     s.asset,
                     str(s.amount),
@@ -167,18 +191,18 @@ class Repository:
                     s.raw_json,
                 )
             )
+            resolved_pairs.add((str(s.date), sid))
 
-        source_dates = {(str(s.date), s.source, s.source_name) for s in normalized}
-        for snapshot_date, source, source_name in source_dates:
+        for snapshot_date, sid in resolved_pairs:
             await self._db.execute(
-                "DELETE FROM snapshots WHERE date = ? AND source = ? AND source_name = ?",
-                (snapshot_date, source, source_name),
+                "DELETE FROM snapshots WHERE date = ? AND source_id = ?",
+                (snapshot_date, sid),
             )
 
         await self._db.executemany(
             "INSERT INTO snapshots "
-            "(date, source, source_name, source_id, asset, amount, usd_value, price, apy, raw_json)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "(date, source, source_id, asset, amount, usd_value, price, apy, raw_json)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             rows,
         )
         await self._db.commit()
@@ -186,7 +210,10 @@ class Repository:
     async def get_snapshots_by_date(self, d: date) -> list[Snapshot]:
         """Get all snapshots for a specific date."""
         cursor = await self._db.execute(
-            "SELECT * FROM snapshots WHERE date = ? ORDER BY source, source_name, asset",
+            "SELECT s.*, src.name AS canonical_source_name FROM snapshots s"
+            " LEFT JOIN sources src ON s.source_id = src.id"
+            " WHERE s.date = ?"
+            " ORDER BY s.source, canonical_source_name, s.asset",
             (str(d),),
         )
         rows = await cursor.fetchall()
@@ -209,21 +236,20 @@ class Repository:
         return date.fromisoformat(str(row[0]))
 
     async def get_snapshots_resolved(self, target_date: date) -> list[Snapshot]:
-        """Get the most recent snapshots per source where date <= target_date.
+        """Get the most recent snapshots per source_id where date <= target_date.
 
-        For each source, finds MAX(date) where date <= target_date,
-        then returns all snapshot rows for those source+date combos.
-        This ensures sources with older data (e.g., KBank monthly statements)
-        are included even when other sources have fresher snapshots.
+        Sources with older data (e.g. KBank monthly statements) are still
+        included when other sources have fresher snapshots.
         """
         cursor = await self._db.execute(
-            "SELECT s.* FROM snapshots s"
+            "SELECT s.*, src.name AS canonical_source_name FROM snapshots s"
+            " LEFT JOIN sources src ON s.source_id = src.id"
             " INNER JOIN ("
-            "   SELECT source, source_name, MAX(date) AS max_date"
+            "   SELECT source_id, MAX(date) AS max_date"
             "   FROM snapshots WHERE date <= ?"
-            "   GROUP BY source, source_name"
-            " ) latest ON s.source = latest.source AND s.source_name = latest.source_name AND s.date = latest.max_date"
-            " ORDER BY s.source, s.source_name, s.asset",
+            "   GROUP BY source_id"
+            " ) latest ON s.source_id = latest.source_id AND s.date = latest.max_date"
+            " ORDER BY s.source, canonical_source_name, s.asset",
             (str(target_date),),
         )
         rows = await cursor.fetchall()
@@ -232,7 +258,10 @@ class Repository:
     async def get_snapshots_for_range(self, start: date, end: date) -> list[Snapshot]:
         """Get all snapshots between two dates (inclusive)."""
         cursor = await self._db.execute(
-            "SELECT * FROM snapshots WHERE date >= ? AND date <= ? ORDER BY date, source, source_name, asset",
+            "SELECT s.*, src.name AS canonical_source_name FROM snapshots s"
+            " LEFT JOIN sources src ON s.source_id = src.id"
+            " WHERE s.date >= ? AND s.date <= ?"
+            " ORDER BY s.date, s.source, canonical_source_name, s.asset",
             (str(start), str(end)),
         )
         rows = await cursor.fetchall()
@@ -242,8 +271,7 @@ class Repository:
     def _row_to_snapshot(row: aiosqlite.Row) -> Snapshot:
         columns = row.keys()
         canonical = row["canonical_source_name"] if "canonical_source_name" in columns else None
-        cached = row["source_name"] if "source_name" in columns else None
-        source_name = canonical or cached or row["source"]
+        source_name = canonical or row["source"]
         source_id_raw = row["source_id"] if "source_id" in columns else None
         return Snapshot(
             id=row["id"],
@@ -264,7 +292,10 @@ class Repository:
     ) -> list[Snapshot]:
         """Get snapshots for a specific source_name between two dates (inclusive)."""
         cursor = await self._db.execute(
-            "SELECT * FROM snapshots WHERE source_name = ? AND date >= ? AND date <= ? ORDER BY date, asset",
+            "SELECT s.*, src.name AS canonical_source_name FROM snapshots s"
+            " INNER JOIN sources src ON s.source_id = src.id"
+            " WHERE src.name = ? AND s.date >= ? AND s.date <= ?"
+            " ORDER BY s.date, s.asset",
             (source_name, str(start), str(end)),
         )
         rows = await cursor.fetchall()
@@ -279,12 +310,14 @@ class Repository:
         await self._db.commit()
 
     async def delete_snapshots_by_source_names(self, source_names: list[str]) -> int:
-        """Delete all snapshots for the given source_names. Returns count deleted."""
+        """Delete all snapshots for the given source names (FK-resolved)."""
         if not source_names:
             return 0
         placeholders = ",".join("?" for _ in source_names)
+        # safe — placeholders count derived from input length, no string interp.
         cursor = await self._db.execute(
-            f"DELETE FROM snapshots WHERE source_name IN ({placeholders})",  # noqa: S608
+            f"DELETE FROM snapshots WHERE source_id IN"  # noqa: S608
+            f" (SELECT id FROM sources WHERE name IN ({placeholders}))",
             source_names,
         )
         await self._db.commit()
@@ -375,17 +408,16 @@ class Repository:
 
     _TX_INSERT_SQL = (
         "INSERT OR IGNORE INTO transactions "
-        "(date, source, source_name, source_id, tx_type, asset, amount, usd_value, "
+        "(date, source, source_id, tx_type, asset, amount, usd_value, "
         "counterparty_asset, counterparty_amount, trade_side, tx_id, raw_json) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
 
     @staticmethod
-    def _tx_to_row(tx: Transaction, source_id: int | None) -> tuple[object, ...]:
+    def _tx_to_row(tx: Transaction, source_id: int) -> tuple[object, ...]:
         return (
             str(tx.date),
             tx.source,
-            tx.source_name or tx.source,
             source_id,
             tx.tx_type.value,
             tx.asset,
@@ -398,23 +430,22 @@ class Repository:
             tx.raw_json,
         )
 
+    async def _resolve_required_source_id(self, tx: Transaction) -> int:
+        if tx.source_id is not None:
+            return tx.source_id
+        return await self._ensure_source(tx.source, tx.source_name or tx.source)
+
     async def save_transaction(self, tx: Transaction) -> None:
         """Save a single transaction."""
-        normalized = tx if tx.source_name else replace(tx, source_name=tx.source)
-        sid = (
-            normalized.source_id
-            if normalized.source_id is not None
-            else await self._resolve_source_id(normalized.source_name)
-        )
-        await self._db.execute(self._TX_INSERT_SQL, self._tx_to_row(normalized, sid))
+        sid = await self._resolve_required_source_id(tx)
+        await self._db.execute(self._TX_INSERT_SQL, self._tx_to_row(tx, sid))
         await self._db.commit()
 
     async def save_transactions(self, txs: list[Transaction]) -> None:
         """Save multiple transactions atomically."""
-        normalized = [tx if tx.source_name else replace(tx, source_name=tx.source) for tx in txs]
         rows: list[tuple[object, ...]] = []
-        for tx in normalized:
-            sid = tx.source_id if tx.source_id is not None else await self._resolve_source_id(tx.source_name)
+        for tx in txs:
+            sid = await self._resolve_required_source_id(tx)
             rows.append(self._tx_to_row(tx, sid))
         await self._db.executemany(self._TX_INSERT_SQL, rows)
         await self._db.commit()
@@ -426,32 +457,40 @@ class Repository:
         start: date | None = None,
         end: date | None = None,
     ) -> list[Transaction]:
-        """Get transactions with optional filters."""
-        query = "SELECT * FROM transactions WHERE 1=1"
+        """Get transactions with optional filters.
+
+        ``source`` matches the cached ``transactions.source`` (type) column.
+        ``source_name`` matches ``sources.name`` via FK JOIN.
+        """
+        query = (
+            "SELECT t.*, s.name AS canonical_source_name FROM transactions t"
+            " LEFT JOIN sources s ON t.source_id = s.id"
+            " WHERE 1=1"
+        )
         params: list[str] = []
 
         if source is not None:
-            query += " AND source = ?"
+            query += " AND t.source = ?"
             params.append(source)
         if source_name is not None:
-            query += " AND source_name = ?"
+            query += " AND s.name = ?"
             params.append(source_name)
         if start is not None:
-            query += " AND date >= ?"
+            query += " AND t.date >= ?"
             params.append(str(start))
         if end is not None:
-            query += " AND date <= ?"
+            query += " AND t.date <= ?"
             params.append(str(end))
 
-        query += " ORDER BY date DESC, id DESC"
+        query += " ORDER BY t.date DESC, t.id DESC"
         cursor = await self._db.execute(query, params)
         rows = await cursor.fetchall()
         return [self.row_to_transaction(row) for row in rows]
 
     async def get_latest_transaction_date(self, source_name: str) -> date | None:
-        """Return the latest transaction date for a specific configured source."""
+        """Return the latest transaction date for a configured source (FK-resolved)."""
         cursor = await self._db.execute(
-            "SELECT MAX(date) FROM transactions WHERE source_name = ?",
+            "SELECT MAX(t.date) FROM transactions t INNER JOIN sources s ON t.source_id = s.id WHERE s.name = ?",
             (source_name,),
         )
         row = await cursor.fetchone()
@@ -464,8 +503,7 @@ class Repository:
         columns = row.keys()
         source_id_raw = row["source_id"] if "source_id" in columns else None
         canonical = row["canonical_source_name"] if "canonical_source_name" in columns else None
-        cached = row["source_name"] if "source_name" in columns else None
-        resolved_source_name = canonical or cached or row["source"]
+        resolved_source_name = canonical or row["source"]
         return Transaction(
             id=row["id"],
             date=date.fromisoformat(row["date"]),

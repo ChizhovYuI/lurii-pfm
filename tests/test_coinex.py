@@ -221,7 +221,7 @@ async def test_get_appends_current_public_ip_for_ip_prohibited_error(pricing):
     with pytest.raises(ValueError, match=r"current public IP: 203\.0\.113\.42") as exc_info:
         await collector._get(_SPOT_BALANCE_PATH)
     assert str(exc_info.value) == (
-        "CoinEx API error (23) on /v2/assets/spot/balance: IP Prohibited " "(current public IP: 203.0.113.42)"
+        "CoinEx API error (23) on /v2/assets/spot/balance: IP Prohibited (current public IP: 203.0.113.42)"
     )
 
 

@@ -1194,7 +1194,7 @@ payload-level fixes after the first real curation session:
 
 **Date:** 2026-04-25
 
-**Status:** Stages 1–2 accepted. Stage 3 deferred.
+**Status:** Stages 1–3 accepted.
 
 See `adr-030-source-identity-normalization.md`. `transactions` and
 `snapshots` carried two denormalized text columns (`source`,
@@ -1220,11 +1220,25 @@ shipped in three stages.
   `source_id`; signature unchanged. `categorization_summary`,
   `list_uncategorized_transactions`, and `get_transaction_detail`
   surface `source_id` (additive).
-- **Stage 3 (deferred):** destructive — drop `source_name`, rename
-  `source` → `source_type`, swap dedup index, rule tables get
-  `source_type`+`source_id` (XOR), 6-tier auto-priority,
-  categorizer/type_resolver rewrite, MCP tool surface rename, skill
-  rewrite, PRAGMA foreign_keys=ON.
+- **Stage 3 (this commit):** destructive — single migration
+  `j0k1l2m3n4o5_stage3_source_id_normalize` runs orphan + duplicate-
+  type tx_id collision pre-flights, merges duplicate-type sources
+  (live coinex 22+21), maps `rules.source` text → `source_type` /
+  `source_id` XOR pair, drops `source_name` from data tables, tightens
+  `source_id NOT NULL`, swaps dedup index to `(source_id, tx_id)`,
+  drops the rule `source` column, adds the XOR `CHECK` constraint.
+  6-tier auto-priority (80/100/150/180/200/300). Engine collapses to
+  XOR comparisons against `tx.source` / `tx.source_id`. MCP rule tools
+  (`create`, `dry_run`, `list`, `audit`) accept `source_type` +
+  `source_id`; legacy `source` stays as a kw-only deprecation alias
+  resolved against `sources`. `Repository._ensure_source` auto-creates
+  a `sources` row when missing so tests / CLI keep working under the
+  new NOT NULL invariant. `PRAGMA foreign_keys=ON` enabled. Sibling
+  `categorization-curator` skill ships in lock-step (account-vs-type
+  guidance, `list_sources` survey step, hard-rule wording).
+  Column-rename `transactions.source → source_type` was deferred — the
+  column already stores the type string, the rename was cosmetic, and
+  ~150 read-site churn outweighed the clarity win.
 
 **Why staged:** ~150 read sites of `tx.source_name`, plus a
 coordinated rename in the sibling `categorization-curator` skill
@@ -1252,3 +1266,25 @@ soak in production.
   `tests/test_mcp_server.py` (+2 tests),
   `tests/test_metadata_store_helpers.py` (summary dict expectation
   bumped with `source_id`).
+- Stage 3 files:
+  `src/pfm/db/migrations/versions/j0k1l2m3n4o5_stage3_source_id_normalize.py`
+  (single destructive migration with orphan + duplicate-type
+  pre-flights), `src/pfm/db/models.py` (rule dataclasses split
+  `source` → `source_type` + `source_id`; data dataclasses keep
+  `source` as the type string and treat `source_name` as transient
+  hydration), `src/pfm/db/repository.py` (`_ensure_source`,
+  insert/replace simplified, `rename_source` collapsed,
+  `PRAGMA foreign_keys=ON`),
+  `src/pfm/db/metadata_store.py` (rule CRUD + filter rewrite, 6-tier
+  `_auto_priority`, `record_category_choice` carries `source_id`,
+  summary queries drop the COALESCE fallback),
+  `src/pfm/analytics/categorizer.py` and
+  `src/pfm/analytics/type_resolver.py` (XOR check),
+  `src/pfm/analytics/rule_audit.py` and
+  `src/pfm/analytics/rule_dryrun.py` (new candidate shape),
+  `src/pfm/mcp_server.py` (`_resolve_legacy_source` deprecation alias
+  + new `source_type` / `source_id` params on every rule tool, dict
+  serializers updated), test files updated for the new schema and
+  rule shape (~30 test changes; 976 pass), and the sibling
+  `../lurii-portfolio/.claude/skills/categorization-curator/SKILL.md`
+  reworded.

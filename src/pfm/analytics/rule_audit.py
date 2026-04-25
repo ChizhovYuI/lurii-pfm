@@ -22,21 +22,18 @@ async def audit_category_rules(
     repo: Repository,
     store: MetadataStore,
     *,
-    source: str | None = None,
+    source_type: str | None = None,
+    source_id: int | None = None,
     scope_source: str | None = None,
 ) -> dict[str, object]:
     """Count isolation-matches and post-priority wins per category rule.
 
-    - ``source``: filter the rules under audit (passes through to
-      ``MetadataStore.get_category_rules``; ``None`` returns all).
-    - ``scope_source``: filter the transactions evaluated. Independent
-      from ``source`` — useful when auditing global rules (``source=None``)
-      against a single source's traffic.
+    - ``source_type`` / ``source_id``: filter the rules under audit.
+    - ``scope_source``: filter the transactions evaluated by ``sources.name``.
 
-    Returns ``{rules, dead, shadowed_dead}`` where ``rules`` is sorted by
-    ``matched_count`` ascending (so dead rules float to the top).
+    Returns ``{rules, dead, shadowed_dead}`` sorted by ``matched_count`` asc.
     """
-    rules = await store.get_category_rules(source=source)
+    rules = await store.get_category_rules(source_type=source_type, source_id=source_id)
     rules = [r for r in rules if not r.deleted and r.id is not None]
     txs = await repo.get_transactions(source_name=scope_source)
     meta_map = await store.get_metadata_batch([tx.id for tx in txs if tx.id is not None])
@@ -64,7 +61,8 @@ async def audit_category_rules(
         {
             "id": rule.id,
             "priority": rule.priority,
-            "source": rule.source,
+            "source_type": rule.source_type,
+            "source_id": rule.source_id,
             "type_match": rule.type_match,
             "field_name": rule.field_name,
             "field_value": rule.field_value,
@@ -89,7 +87,8 @@ async def audit_type_rules(
     repo: Repository,
     store: MetadataStore,
     *,
-    source: str | None = None,
+    source_type: str | None = None,
+    source_id: int | None = None,
     scope_source: str | None = None,
 ) -> dict[str, object]:
     """Count isolation-matches and post-priority wins per type rule.
@@ -97,7 +96,7 @@ async def audit_type_rules(
     Same shape as :func:`audit_category_rules`; ``rules`` rows carry
     ``result_type`` instead of ``result_category``.
     """
-    rules = await store.get_type_rules(source=source)
+    rules = await store.get_type_rules(source_type=source_type, source_id=source_id)
     rules = [r for r in rules if not r.deleted and r.id is not None]
     txs = await repo.get_transactions(source_name=scope_source)
 
@@ -122,7 +121,8 @@ async def audit_type_rules(
         {
             "id": rule.id,
             "priority": rule.priority,
-            "source": rule.source,
+            "source_type": rule.source_type,
+            "source_id": rule.source_id,
             "field_name": rule.field_name,
             "field_value": rule.field_value,
             "result_type": rule.result_type,

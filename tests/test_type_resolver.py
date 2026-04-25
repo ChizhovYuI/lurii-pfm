@@ -41,8 +41,11 @@ def _rule(
     priority: int = 100,
     deleted: bool = False,
 ) -> TypeRule:
+    # Stage 3 (ADR-030): rules carry source_type instead of source. Map the
+    # legacy alias ("*" = catch-all) to the new XOR-pair shape.
+    source_type = None if source in {"*", ""} else source
     return TypeRule(
-        source=source,
+        source_type=source_type,
         field_name=field_name,
         field_operator=field_operator,
         field_value=field_value,

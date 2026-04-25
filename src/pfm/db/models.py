@@ -46,7 +46,13 @@ class RawBalance:
 
 @dataclass(frozen=True, slots=True)
 class Snapshot:
-    """A point-in-time balance for a single asset from a single source."""
+    """A point-in-time balance for a single asset from a single source.
+
+    ``source`` carries the source type string (matches ``sources.type``).
+    ``source_id`` is the FK into ``sources`` (NOT NULL post-Stage-3).
+    ``source_name`` is hydrated from the ``sources`` JOIN at read time
+    when callers need the human-friendly instance name; empty otherwise.
+    """
 
     date: date
     source: str
@@ -64,7 +70,13 @@ class Snapshot:
 
 @dataclass(frozen=True, slots=True)
 class Transaction:
-    """A normalized transaction from any source."""
+    """A normalized transaction from any source.
+
+    ``source`` carries the source type string (matches ``sources.type``).
+    ``source_id`` is the FK into ``sources`` (NOT NULL post-Stage-3).
+    ``source_name`` is hydrated from the ``sources`` JOIN at read time
+    when callers need the human-friendly instance name; empty otherwise.
+    """
 
     date: date
     source: str
@@ -175,9 +187,14 @@ class TransactionMetadata:
 class CategoryRule:
     """A compound rule for auto-categorizing transactions.
 
-    Condition 1 (required): type_match — which tx_type(s) this rule applies to.
-    Condition 2 (optional): field_name + field_operator + field_value — raw_json field match.
-    Source filter (optional): source — restrict to a specific source.
+    Condition 1 (required): ``type_match`` — which tx_type(s) this rule applies to.
+    Condition 2 (optional): ``field_name`` + ``field_operator`` + ``field_value`` —
+    raw_json field match.
+
+    Source filter (optional, mutually exclusive — XOR check at the DB level):
+      - ``source_type`` set: matches every transaction whose ``source`` (type) equals it.
+      - ``source_id`` set: matches only the specific source instance.
+      - both ``None``: catch-all (matches every transaction).
     """
 
     type_match: str
@@ -186,7 +203,8 @@ class CategoryRule:
     field_name: str = ""
     field_operator: str = ""
     field_value: str = ""
-    source: str = "*"
+    source_type: str | None = None
+    source_id: int | None = None
     priority: int = 300
     builtin: bool = False
     deleted: bool = False
@@ -198,14 +216,15 @@ class CategoryRule:
 class TypeRule:
     """A rule for resolving transaction type from raw_json fields.
 
-    Mirrors CategoryRule but produces a TransactionType instead of a category.
+    Source filter follows the same XOR semantics as :class:`CategoryRule`.
     """
 
-    source: str = "*"
     field_name: str = ""
     field_operator: str = "eq"
     field_value: str = ""
     result_type: str = ""
+    source_type: str | None = None
+    source_id: int | None = None
     priority: int = 100
     builtin: bool = False
     deleted: bool = False
@@ -218,11 +237,12 @@ class UserCategoryChoice:
     """Records a manual category selection for learning."""
 
     transaction_id: int
-    source: str
+    source: str  # historical label — kept as snapshot of the source type at choice time
     effective_type: str
     chosen_category: str
     field_snapshot: str = ""
     previous_category: str = ""
+    source_id: int | None = None
     id: int | None = None
     created_at: datetime | None = None
 
@@ -248,12 +268,15 @@ def is_sync_marker_snapshot(snapshot: Snapshot) -> bool:
     return is_sync_marker_asset(snapshot.asset)
 
 
-def make_sync_marker_snapshot(*, snapshot_date: date, source: str, source_name: str) -> Snapshot:
+def make_sync_marker_snapshot(
+    *, snapshot_date: date, source: str, source_name: str = "", source_id: int | None = None
+) -> Snapshot:
     """Create a zero-value marker snapshot to record a successful sync day."""
     return Snapshot(
         date=snapshot_date,
         source=source,
         source_name=source_name or source,
+        source_id=source_id,
         asset=SYNC_MARKER_ASSET,
         amount=Decimal(0),
         usd_value=Decimal(0),

@@ -62,11 +62,11 @@ def resolve_type_batch(
 
 def match_type_rule(tx: Transaction, rule: TypeRule) -> bool:
     """Check whether a type rule matches a transaction."""
-    # Source filter: match against source type or configured source name.
-    if rule.source != "*":
-        rule_src = rule.source.lower()
-        if rule_src != tx.source.lower() and rule_src != (tx.source_name or tx.source).lower():
-            return False
+    # Source filter — XOR semantics: see :func:`_match_category_rule`.
+    if rule.source_id is not None and rule.source_id != tx.source_id:
+        return False
+    if rule.source_type is not None and rule.source_type != tx.source:
+        return False
 
     # Field match (optional — rules with no field_name are source-only fallbacks).
     if rule.field_name:

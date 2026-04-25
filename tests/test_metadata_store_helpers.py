@@ -63,22 +63,19 @@ class TestCategorizationSummary:
 
             summary = await store.get_categorization_summary()
             by_source = {row["source_name"]: row for row in summary}
-            assert by_source["kbank"] == {
-                "source_name": "kbank",
-                "source_id": None,
-                "total": 3,
-                "unknown_type": 1,
-                "no_category": 2,  # k1 (unknown, no cat), k3 (spend, no cat)
-                "internal_transfer": 1,  # k2
-            }
-            assert by_source["wise"] == {
-                "source_name": "wise",
-                "source_id": None,
-                "total": 1,
-                "unknown_type": 0,
-                "no_category": 1,
-                "internal_transfer": 0,
-            }
+            kbank_row = by_source["kbank"]
+            wise_row = by_source["wise"]
+            # source_id is now NOT NULL post Stage 3 (ADR-030); auto-created on save.
+            assert isinstance(kbank_row["source_id"], int)
+            assert isinstance(wise_row["source_id"], int)
+            assert kbank_row["total"] == 3
+            assert kbank_row["unknown_type"] == 1
+            assert kbank_row["no_category"] == 2  # k1 (unknown, no cat), k3 (spend, no cat)
+            assert kbank_row["internal_transfer"] == 1  # k2
+            assert wise_row["total"] == 1
+            assert wise_row["unknown_type"] == 0
+            assert wise_row["no_category"] == 1
+            assert wise_row["internal_transfer"] == 0
 
     async def test_source_filter(self, tmp_path) -> None:
         async with Repository(tmp_path / "x.db") as repo:

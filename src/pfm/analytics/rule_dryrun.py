@@ -33,7 +33,7 @@ def _rule_sort_key(rule: CategoryRule | TypeRule) -> tuple[int, float]:
     return (rule.priority, float(rule.id) if rule.id is not None else _TIE_LAST)
 
 
-async def dry_run_category_rule(  # noqa: PLR0913, C901
+async def dry_run_category_rule(  # noqa: PLR0913, C901, PLR0912
     repo: Repository,
     store: MetadataStore,
     *,
@@ -43,12 +43,16 @@ async def dry_run_category_rule(  # noqa: PLR0913, C901
     field_name: str = "",
     field_operator: str = "",
     field_value: str = "",
-    source: str = "*",
+    source_type: str | None = None,
+    source_id: int | None = None,
     priority: int | None = None,
     scope_source: str | None = None,
     limit: int = 200,
 ) -> dict[str, object]:
     """Simulate applying a category rule. No DB writes."""
+    if source_type is not None and source_id is not None:
+        msg = "source_type and source_id are mutually exclusive"
+        raise ValueError(msg)
     if field_operator == "regex" and field_value:
         _validate_regex_value(field_value)
 
@@ -59,7 +63,8 @@ async def dry_run_category_rule(  # noqa: PLR0913, C901
         field_name=field_name,
         field_operator=field_operator,
         field_value=field_value,
-        source=source,
+        source_type=source_type,
+        source_id=source_id,
         priority=priority if priority is not None else 300,
     )
 
@@ -145,7 +150,8 @@ async def dry_run_type_rule(  # noqa: PLR0913, C901, PLR0912
     store: MetadataStore,
     *,
     result_type: str,
-    source: str = "*",
+    source_type: str | None = None,
+    source_id: int | None = None,
     field_name: str = "",
     field_operator: str = "eq",
     field_value: str = "",
@@ -154,11 +160,15 @@ async def dry_run_type_rule(  # noqa: PLR0913, C901, PLR0912
     limit: int = 200,
 ) -> dict[str, object]:
     """Simulate applying a type rule. No DB writes."""
+    if source_type is not None and source_id is not None:
+        msg = "source_type and source_id are mutually exclusive"
+        raise ValueError(msg)
     if field_operator == "regex" and field_value:
         _validate_regex_value(field_value)
 
     candidate = TypeRule(
-        source=source,
+        source_type=source_type,
+        source_id=source_id,
         field_name=field_name,
         field_operator=field_operator,
         field_value=field_value,

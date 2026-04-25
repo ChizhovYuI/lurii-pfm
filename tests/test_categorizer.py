@@ -45,6 +45,9 @@ def _rule(
     builtin: bool = True,
     rule_id: int = 1,
 ) -> CategoryRule:
+    # Stage 3 (ADR-030): legacy ``source`` becomes ``source_type`` (or both
+    # filter columns NULL for "*").
+    source_type = None if source in {"*", ""} else source
     return CategoryRule(
         id=rule_id,
         type_match=type_match,
@@ -52,7 +55,7 @@ def _rule(
         field_name=field_name,
         field_operator=field_operator,
         field_value=field_value,
-        source=source,
+        source_type=source_type,
         result_category=result_category,
         priority=priority,
         builtin=builtin,

@@ -233,13 +233,15 @@ async def test_init_encrypted_db_migrates_legacy_transactions_schema(tmp_path):
     async with conn:
         cursor = await conn.execute("PRAGMA table_info(transactions)")
         columns = {row[1] for row in await cursor.fetchall()}
-        assert "source_name" in columns
+        # Stage 3 (ADR-030) drops source_name; source_id is the FK.
+        assert "source_name" not in columns
+        assert "source_id" in columns
         assert "trade_side" in columns
 
         index_row = await (
             await conn.execute(
                 "SELECT sql FROM sqlite_master WHERE type = 'index' "
-                "AND name = 'idx_transactions_source_name_tx_id_unique'"
+                "AND name = 'idx_transactions_source_id_tx_id_unique'"
             )
         ).fetchone()
         # Migration drops all transactions (stale data incompatible with new type rules).
@@ -248,7 +250,7 @@ async def test_init_encrypted_db_migrates_legacy_transactions_schema(tmp_path):
 
     assert count == 0
     assert index_row is not None
-    assert "source_name != ''" in str(index_row[0])
+    assert "tx_id != ''" in str(index_row[0])
 
 
 # ── migrate_to_encrypted ───────────────────────────────────────────

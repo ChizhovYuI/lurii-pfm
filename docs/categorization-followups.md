@@ -9,30 +9,7 @@ not yet been validated against real usage.
 
 ## Open
 
-### Source identity normalization — Stage 3
-
-ADR-030 ships in stages. Stages 1 (additive `source_id` FK + backfill
-+ rename helper) and 2 (read-path JOIN, `list_sources()`, FK-based
-cascade, `source_id` on categorization MCP surfaces) are in. Stage 3
-is deferred until the foundation has soaked through a real curation
-session.
-
-**Stage 3** — destructive: tx_id collision pre-flight on the coinex
-merge (22+21 split), drop `source_name`, rename `source` →
-`source_type`, swap dedup index, rule tables get
-`source_type`+`source_id` (XOR), 6-tier auto-priority,
-categorizer/type_resolver rewrite, MCP tool surface rename with
-deprecation alias, skill rewrite, `PRAGMA foreign_keys=ON`.
-
-**Why staged:** ~150 read sites of `tx.source_name` across src+tests,
-plus a coordinated rename in the sibling `categorization-curator`
-skill repo. Splitting reduces risk and lets the stage-1+2 surface
-soak in production for a real curation session before destructive
-migrations land.
-
-**See also:** `docs/adr-030-source-identity-normalization.md` —
-detailed design + stage breakdown. ADR-028 "Source filter
-semantics" addendum stays load-bearing only until stage 3 lands.
+_(none — ADR-030 is fully shipped as of Stage 3.)_
 
 ## Closed (reference)
 
@@ -53,6 +30,7 @@ listed here so the next session has a one-stop map of what was done.
 | Filter non-discriminating rule suggestions | ADR-029 |
 | Source identity normalization Stage 1 (`source_id` FK foundation) | ADR-030 Stage 1 |
 | Source identity normalization Stage 2 (read-path JOIN, `list_sources`, FK cascade, `source_id` on MCP tools) | ADR-030 Stage 2 |
+| Source identity normalization Stage 3 (coinex merge, drop `source_name`, `source_id` NOT NULL, rule `source_type`+`source_id` XOR with deprecation alias, 6-tier auto-priority, `PRAGMA foreign_keys=ON`) | ADR-030 Stage 3 |
 
 ## How to use this file
 

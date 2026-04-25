@@ -543,7 +543,8 @@ def _category_rule_dict(rule: CategoryRule) -> dict[str, object]:
         "type_match": rule.type_match,
         "type_operator": rule.type_operator,
         "result_category": rule.result_category,
-        "source": rule.source,
+        "source_type": rule.source_type,
+        "source_id": rule.source_id,
         "field_name": rule.field_name,
         "field_operator": rule.field_operator,
         "field_value": rule.field_value,
@@ -557,7 +558,8 @@ def _type_rule_dict(rule: TypeRule) -> dict[str, object]:
     return {
         "id": rule.id,
         "result_type": rule.result_type,
-        "source": rule.source,
+        "source_type": rule.source_type,
+        "source_id": rule.source_id,
         "field_name": rule.field_name,
         "field_operator": rule.field_operator,
         "field_value": rule.field_value,
@@ -618,6 +620,31 @@ def _parse_raw_dict(raw_json: str) -> dict[str, object]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+async def _resolve_legacy_source(
+    repo: Repository,
+    legacy: str | None,
+) -> tuple[str | None, int | None]:
+    """Map a legacy ``source`` arg into ``(source_type, source_id)``.
+
+    Deprecation alias for ADR-030 Stage 3 — old callers passing
+    ``source="kbank-main"`` (a sources.name) get rewritten to
+    ``source_id=9``; ``source="kbank"`` (a type) becomes
+    ``source_type="kbank"``; ``source="*"`` / None / "" → both NULL.
+    """
+    if legacy is None or legacy in {"", "*"}:
+        return None, None
+    sources = await repo.list_sources_with_counts()
+    by_name: dict[str, int] = {}
+    for s in sources:
+        name = s.get("name")
+        sid = s.get("id")
+        if isinstance(name, str) and isinstance(sid, int):
+            by_name[name] = sid
+    if legacy in by_name:
+        return None, by_name[legacy]
+    return legacy, None
+
+
 def _uncategorized_item_dict(
     tx: object,
     meta: TransactionMetadata | None,
@@ -647,26 +674,44 @@ def _uncategorized_item_dict(
 @mcp.tool()
 async def list_category_rules(
     ctx: Context[ServerSession, AppContext],
-    source: str | None = None,
+    source_type: str | None = None,
+    source_id: int | None = None,
     *,
+    source: str | None = None,
     include_deleted: bool = False,
 ) -> str:
-    """List category rules ordered by priority."""
+    """List category rules ordered by priority.
+
+    ``source_type`` filters to rules pinned to that source type plus catch-alls.
+    ``source_id`` adds rules pinned to that specific source instance.
+    ``source`` is a deprecation alias for legacy callers (ADR-030 Stage 3) —
+    a sources.name resolves to ``source_id``, anything else to ``source_type``.
+    """
+    repo = _ctx_repo(ctx)
     store = _ctx_store(ctx)
-    rules = await store.get_category_rules(source=source, include_deleted=include_deleted)
+    if source is not None and source_type is None and source_id is None:
+        source_type, source_id = await _resolve_legacy_source(repo, source)
+    rules = await store.get_category_rules(
+        source_type=source_type, source_id=source_id, include_deleted=include_deleted
+    )
     return _json({"count": len(rules), "rules": [_category_rule_dict(r) for r in rules]})
 
 
 @mcp.tool()
 async def list_type_rules(
     ctx: Context[ServerSession, AppContext],
-    source: str | None = None,
+    source_type: str | None = None,
+    source_id: int | None = None,
     *,
+    source: str | None = None,
     include_deleted: bool = False,
 ) -> str:
-    """List type rules ordered by priority."""
+    """List type rules ordered by priority. Same semantics as :func:`list_category_rules`."""
+    repo = _ctx_repo(ctx)
     store = _ctx_store(ctx)
-    rules = await store.get_type_rules(source=source, include_deleted=include_deleted)
+    if source is not None and source_type is None and source_id is None:
+        source_type, source_id = await _resolve_legacy_source(repo, source)
+    rules = await store.get_type_rules(source_type=source_type, source_id=source_id, include_deleted=include_deleted)
     return _json({"count": len(rules), "rules": [_type_rule_dict(r) for r in rules]})
 
 
@@ -814,15 +859,25 @@ async def create_category_rule(  # noqa: PLR0913
     field_name: str = "",
     field_operator: str = "",
     field_value: str = "",
-    source: str = "*",
+    source_type: str | None = None,
+    source_id: int | None = None,
     priority: int | None = None,
+    *,
+    source: str | None = None,
 ) -> str:
     """Create a category rule. Validates regex; auto-computes priority if omitted.
 
-    On validation failure (e.g. malformed regex) returns
-    ``{"error": "validation", "message": ...}`` instead of raising.
+    Source filter is XOR: pass ``source_type`` for a type-wide rule, ``source_id``
+    for an instance-pinned rule, or neither for a catch-all. ``source`` is a
+    deprecation alias (ADR-030 Stage 3) — auto-resolved against ``sources``.
+
+    On validation failure (e.g. malformed regex, both source filters set)
+    returns ``{"error": "validation", "message": ...}`` instead of raising.
     """
+    repo = _ctx_repo(ctx)
     store = _ctx_store(ctx)
+    if source is not None and source_type is None and source_id is None:
+        source_type, source_id = await _resolve_legacy_source(repo, source)
     try:
         rule = await store.create_category_rule(
             type_match,
@@ -831,7 +886,8 @@ async def create_category_rule(  # noqa: PLR0913
             field_name=field_name,
             field_operator=field_operator,
             field_value=field_value,
-            source=source,
+            source_type=source_type,
+            source_id=source_id,
             priority=priority,
         )
     except ValueError as exc:
@@ -876,22 +932,25 @@ async def bulk_delete_category_rules(
 async def create_type_rule(  # noqa: PLR0913
     ctx: Context[ServerSession, AppContext],
     result_type: str,
-    source: str = "*",
+    source_type: str | None = None,
+    source_id: int | None = None,
     field_name: str = "",
     field_operator: str = "eq",
     field_value: str = "",
     priority: int | None = None,
+    *,
+    source: str | None = None,
 ) -> str:
-    """Create a type rule. Validates regex; auto-computes priority if omitted.
-
-    On validation failure (e.g. malformed regex) returns
-    ``{"error": "validation", "message": ...}`` instead of raising.
-    """
+    """Create a type rule. Same source-filter semantics as :func:`create_category_rule`."""
+    repo = _ctx_repo(ctx)
     store = _ctx_store(ctx)
+    if source is not None and source_type is None and source_id is None:
+        source_type, source_id = await _resolve_legacy_source(repo, source)
     try:
         rule = await store.create_type_rule(
             result_type,
-            source=source,
+            source_type=source_type,
+            source_id=source_id,
             field_name=field_name,
             field_operator=field_operator,
             field_value=field_value,
@@ -988,44 +1047,60 @@ async def unlink_transfer(
 @mcp.tool()
 async def audit_category_rules(
     ctx: Context[ServerSession, AppContext],
-    source: str | None = None,
+    source_type: str | None = None,
+    source_id: int | None = None,
     scope_source: str | None = None,
+    *,
+    source: str | None = None,
 ) -> str:
     """Audit category rules — count matches and post-priority wins per rule.
 
-    Returns ``{rules, dead, shadowed_dead}``. ``rules`` is sorted by
-    ``matched_count`` ascending so dead rules float to the top. ``dead``
-    is the rule_id list with ``matched_count == 0`` (safe to delete).
-    ``shadowed_dead`` rules match in isolation but lose to higher-precedence
-    rules — they're harmless until something above them is removed.
+    Returns ``{rules, dead, shadowed_dead}`` sorted by ``matched_count`` ascending.
 
-    ``source`` filters the rules under audit; ``scope_source`` filters the
-    transactions used to evaluate them. Both default to all.
+    ``source_type`` / ``source_id`` filter the rules under audit;
+    ``scope_source`` filters the transactions used to evaluate them
+    (matches against ``sources.name``). ``source`` is a deprecation alias
+    for the rule filter (ADR-030 Stage 3).
     """
     from pfm.analytics.rule_audit import audit_category_rules as _impl
 
     repo = _ctx_repo(ctx)
     store = _ctx_store(ctx)
-    result = await _impl(repo, store, source=source, scope_source=scope_source)
+    if source is not None and source_type is None and source_id is None:
+        source_type, source_id = await _resolve_legacy_source(repo, source)
+    result = await _impl(
+        repo,
+        store,
+        source_type=source_type,
+        source_id=source_id,
+        scope_source=scope_source,
+    )
     return _json(result)
 
 
 @mcp.tool()
 async def audit_type_rules(
     ctx: Context[ServerSession, AppContext],
-    source: str | None = None,
+    source_type: str | None = None,
+    source_id: int | None = None,
     scope_source: str | None = None,
+    *,
+    source: str | None = None,
 ) -> str:
-    """Audit type rules — count matches and post-priority wins per rule.
-
-    Same shape as :func:`audit_category_rules`; rule rows carry
-    ``result_type`` instead of ``result_category``.
-    """
+    """Audit type rules — same semantics as :func:`audit_category_rules`."""
     from pfm.analytics.rule_audit import audit_type_rules as _impl
 
     repo = _ctx_repo(ctx)
     store = _ctx_store(ctx)
-    result = await _impl(repo, store, source=source, scope_source=scope_source)
+    if source is not None and source_type is None and source_id is None:
+        source_type, source_id = await _resolve_legacy_source(repo, source)
+    result = await _impl(
+        repo,
+        store,
+        source_type=source_type,
+        source_id=source_id,
+        scope_source=scope_source,
+    )
     return _json(result)
 
 
@@ -1084,32 +1159,30 @@ async def dry_run_category_rule(  # noqa: PLR0913
     field_name: str = "",
     field_operator: str = "",
     field_value: str = "",
-    source: str = "*",
+    source_type: str | None = None,
+    source_id: int | None = None,
     priority: int | None = None,
     scope_source: str | None = None,
     limit: int = 200,
     *,
+    source: str | None = None,
     summary_only: bool = False,
 ) -> str:
     """Simulate applying a category rule without saving.
 
-    Returns matched/unchanged/changed/shadowed_by_higher buckets plus
-    overlapping_rules and raw_field_samples. `changed` reflects the post-priority
-    real effect; `shadowed_by_higher` lists tx the candidate matches but loses to
-    a higher-precedence existing rule (lower priority value, or same priority
-    with lower id).
+    Source filter is XOR: ``source_type`` for type-wide, ``source_id`` for an
+    instance, or neither for catch-all. ``source`` is a deprecation alias.
 
-    When ``summary_only=True``, the three list buckets (``unchanged``,
-    ``changed``, ``shadowed_by_higher``) are replaced with
-    ``{count, sample}`` objects (sample is first 5). Use for catch-all
-    rules with hundreds of matches that would otherwise blow the context
-    budget. ``matched``, ``overlapping_rules``, and ``raw_field_samples``
-    are kept as-is.
+    Returns matched/unchanged/changed/shadowed_by_higher buckets plus
+    overlapping_rules and raw_field_samples; ``summary_only=True`` collapses
+    the lists to counts + first 5.
     """
     from pfm.analytics.rule_dryrun import dry_run_category_rule as _impl
 
     repo = _ctx_repo(ctx)
     store = _ctx_store(ctx)
+    if source is not None and source_type is None and source_id is None:
+        source_type, source_id = await _resolve_legacy_source(repo, source)
     try:
         result = await _impl(
             repo,
@@ -1120,7 +1193,8 @@ async def dry_run_category_rule(  # noqa: PLR0913
             field_name=field_name,
             field_operator=field_operator,
             field_value=field_value,
-            source=source,
+            source_type=source_type,
+            source_id=source_id,
             priority=priority,
             scope_source=scope_source,
             limit=limit,
@@ -1136,7 +1210,8 @@ async def dry_run_category_rule(  # noqa: PLR0913
 async def dry_run_type_rule(  # noqa: PLR0913
     ctx: Context[ServerSession, AppContext],
     result_type: str,
-    source: str = "*",
+    source_type: str | None = None,
+    source_id: int | None = None,
     field_name: str = "",
     field_operator: str = "eq",
     field_value: str = "",
@@ -1144,33 +1219,26 @@ async def dry_run_type_rule(  # noqa: PLR0913
     scope_source: str | None = None,
     limit: int = 200,
     *,
+    source: str | None = None,
     summary_only: bool = False,
 ) -> str:
     """Simulate applying a type rule without saving.
 
-    Returns matched/unchanged/changed/shadowed_by_higher buckets plus
-    overlapping_rules and raw_field_samples. `changed` reflects the post-priority
-    real effect; `shadowed_by_higher` lists tx the candidate matches but loses to
-    a higher-precedence existing rule (lower priority value, or same priority
-    with lower id).
-
-    When ``summary_only=True``, the three list buckets (``unchanged``,
-    ``changed``, ``shadowed_by_higher``) are replaced with
-    ``{count, sample}`` objects (sample is first 5). Use for catch-all
-    rules with hundreds of matches that would otherwise blow the context
-    budget. ``matched``, ``overlapping_rules``, and ``raw_field_samples``
-    are kept as-is.
+    Same source-filter and summary semantics as :func:`dry_run_category_rule`.
     """
     from pfm.analytics.rule_dryrun import dry_run_type_rule as _impl
 
     repo = _ctx_repo(ctx)
     store = _ctx_store(ctx)
+    if source is not None and source_type is None and source_id is None:
+        source_type, source_id = await _resolve_legacy_source(repo, source)
     try:
         result = await _impl(
             repo,
             store,
             result_type=result_type,
-            source=source,
+            source_type=source_type,
+            source_id=source_id,
             field_name=field_name,
             field_operator=field_operator,
             field_value=field_value,
