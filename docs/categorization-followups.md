@@ -9,17 +9,13 @@ not yet been validated against real usage.
 
 ## Open
 
-### Source identity normalization — Stages 2 & 3
+### Source identity normalization — Stage 3
 
-ADR-030 ships in stages. Stage 1 (additive `source_id` FK + backfill
-+ rename helper) is in. Stages 2 and 3 are deferred until the
-foundation has soaked.
-
-**Stage 2** — read path migration: hydrate `source_name` via JOIN
-on `sources`; add `list_sources()` MCP tool; switch
-`delete_source_cascade` to FK-based; surface `source_id` on
-`categorization_summary` / `list_uncategorized_transactions` /
-`get_transaction_detail`.
+ADR-030 ships in stages. Stages 1 (additive `source_id` FK + backfill
++ rename helper) and 2 (read-path JOIN, `list_sources()`, FK-based
+cascade, `source_id` on categorization MCP surfaces) are in. Stage 3
+is deferred until the foundation has soaked through a real curation
+session.
 
 **Stage 3** — destructive: tx_id collision pre-flight on the coinex
 merge (22+21 split), drop `source_name`, rename `source` →
@@ -30,8 +26,8 @@ deprecation alias, skill rewrite, `PRAGMA foreign_keys=ON`.
 
 **Why staged:** ~150 read sites of `tx.source_name` across src+tests,
 plus a coordinated rename in the sibling `categorization-curator`
-skill repo. Splitting reduces risk and lets the stage-1 backfill soak
-in production for a real curation session before destructive
+skill repo. Splitting reduces risk and lets the stage-1+2 surface
+soak in production for a real curation session before destructive
 migrations land.
 
 **See also:** `docs/adr-030-source-identity-normalization.md` —
@@ -56,6 +52,7 @@ listed here so the next session has a one-stop map of what was done.
 | Opt-in `raw_sample` on `list_uncategorized_transactions` | ADR-029 |
 | Filter non-discriminating rule suggestions | ADR-029 |
 | Source identity normalization Stage 1 (`source_id` FK foundation) | ADR-030 Stage 1 |
+| Source identity normalization Stage 2 (read-path JOIN, `list_sources`, FK cascade, `source_id` on MCP tools) | ADR-030 Stage 2 |
 
 ## How to use this file
 

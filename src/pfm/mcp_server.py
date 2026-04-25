@@ -485,6 +485,22 @@ async def get_sources(
 
 
 @mcp.tool()
+async def list_sources(
+    ctx: Context[ServerSession, AppContext],
+) -> str:
+    """List all configured sources with id, name, type, enabled, tx_count, snap_count.
+
+    Counts come from the ``source_id`` FK on ``transactions`` / ``snapshots``
+    (ADR-030). Use this for the categorization-curator survey pass to map
+    source ids to names and gauge per-source data volume before drilling
+    into uncategorized rows.
+    """
+    repo = _ctx_repo(ctx)
+    sources = await repo.list_sources_with_counts()
+    return _json({"count": len(sources), "sources": sources})
+
+
+@mcp.tool()
 async def get_ai_report_memory(
     ctx: Context[ServerSession, AppContext],
 ) -> str:
@@ -613,6 +629,7 @@ def _uncategorized_item_dict(
         "id": tx.id,  # type: ignore[attr-defined]
         "tx_id": tx.tx_id,  # type: ignore[attr-defined]
         "source_name": tx.source_name or tx.source,  # type: ignore[attr-defined]
+        "source_id": tx.source_id,  # type: ignore[attr-defined]
         "date": tx.date.isoformat(),  # type: ignore[attr-defined]
         "tx_type": tx.tx_type.value,  # type: ignore[attr-defined]
         "asset": tx.asset,  # type: ignore[attr-defined]
@@ -769,6 +786,7 @@ async def get_transaction_detail(
                 "tx_id": tx.tx_id,
                 "source": tx.source,
                 "source_name": tx.source_name or tx.source,
+                "source_id": tx.source_id,
                 "date": tx.date.isoformat(),
                 "tx_type": tx.tx_type.value,
                 "asset": tx.asset,

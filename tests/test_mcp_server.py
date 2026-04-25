@@ -71,6 +71,60 @@ class TestGetSources:
             assert parsed["sources"][1]["enabled"] is False
 
 
+class TestListSourcesTool:
+    @pytest.mark.asyncio
+    async def test_list_sources_returns_counts(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.models import Snapshot, Transaction, TransactionType
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import list_sources
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+            await repo._db.execute(
+                "INSERT INTO sources (name, type, credentials, enabled) VALUES (?, ?, ?, ?)",
+                ("wise-main", "wise", "{}", 1),
+            )
+            await repo._db.commit()
+
+            await repo.save_snapshots(
+                [
+                    Snapshot(
+                        date=date(2026, 4, 1),
+                        source="wise",
+                        source_name="wise-main",
+                        asset="USD",
+                        amount=Decimal(100),
+                        usd_value=Decimal(100),
+                    ),
+                ]
+            )
+            await repo.save_transactions(
+                [
+                    Transaction(
+                        date=date(2026, 4, 1),
+                        source="wise",
+                        source_name="wise-main",
+                        tx_type=TransactionType.DEPOSIT,
+                        asset="USD",
+                        amount=Decimal(50),
+                        usd_value=Decimal(50),
+                        tx_id="ls-tx-1",
+                    ),
+                ]
+            )
+
+            parsed = json.loads(await list_sources(ctx))
+            assert parsed["count"] == 1
+            entry = parsed["sources"][0]
+            assert entry["name"] == "wise-main"
+            assert entry["type"] == "wise"
+            assert entry["enabled"] is True
+            assert entry["tx_count"] == 1
+            assert entry["snap_count"] == 1
+
+
 class TestGetTransactions:
     @pytest.mark.asyncio
     async def test_returns_transactions(self):
@@ -513,6 +567,45 @@ class TestCategorizationTools:
             assert row["total"] == 2
             assert row["unknown_type"] == 1
             assert row["no_category"] == 2
+
+    @pytest.mark.asyncio
+    async def test_categorization_tools_surface_source_id(self, tmp_path):
+        """ADR-030 Stage 2: source_id surfaces on summary/list/detail tools."""
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import (
+            categorization_summary,
+            get_transaction_detail,
+            list_uncategorized_transactions,
+        )
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+
+            await repo._db.execute(
+                "INSERT INTO sources (name, type, credentials, enabled) VALUES (?, ?, ?, ?)",
+                ("kbank-main", "kbank", "{}", 1),
+            )
+            await repo._db.commit()
+
+            await repo.save_transactions(
+                [_make_tx(source_name="kbank-main", tx_id="src-id-1", raw_json=json.dumps({"k": "v"}))]
+            )
+            txs = await repo.get_transactions()
+            tid = txs[0].id
+            assert tid is not None
+            kbank_id = txs[0].source_id
+            assert kbank_id is not None
+
+            summary = json.loads(await categorization_summary(ctx, source="kbank-main"))
+            assert summary["sources"][0]["source_id"] == kbank_id
+
+            uncat = json.loads(await list_uncategorized_transactions(ctx, source="kbank-main", missing_category=True))
+            assert uncat["items"][0]["source_id"] == kbank_id
+
+            detail = json.loads(await get_transaction_detail(ctx, transaction_id=tid))
+            assert detail["transaction"]["source_id"] == kbank_id
 
     @pytest.mark.asyncio
     async def test_list_uncategorized_transactions_default_keys_only(self, tmp_path):

@@ -65,6 +65,7 @@ class TestCategorizationSummary:
             by_source = {row["source_name"]: row for row in summary}
             assert by_source["kbank"] == {
                 "source_name": "kbank",
+                "source_id": None,
                 "total": 3,
                 "unknown_type": 1,
                 "no_category": 2,  # k1 (unknown, no cat), k3 (spend, no cat)
@@ -72,6 +73,7 @@ class TestCategorizationSummary:
             }
             assert by_source["wise"] == {
                 "source_name": "wise",
+                "source_id": None,
                 "total": 1,
                 "unknown_type": 0,
                 "no_category": 1,

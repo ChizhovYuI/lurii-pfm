@@ -6,7 +6,7 @@ import json
 from dataclasses import replace
 from datetime import date
 from decimal import Decimal
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, NoReturn, Self
 
 import aiosqlite
 
@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from types import TracebackType
 
 
-def _raise_source_not_found(source_name: str) -> None:
+def _raise_source_not_found(source_name: str) -> NoReturn:
     msg = f"Source {source_name!r} not found"
     raise SourceNotFoundError(msg)
 
@@ -81,6 +81,33 @@ class Repository:
         sid = int(row[0])
         self._source_id_cache[source_name] = sid
         return sid
+
+    async def list_sources_with_counts(self) -> list[dict[str, object]]:
+        """Return all configured sources with tx/snap counts via FK join.
+
+        Uses ``source_id`` (Stage 1 backfill); rows whose ``source_id`` is
+        still NULL (no matching ``sources`` row) are not counted. Surface
+        for the categorization-curator skill survey pass.
+        """
+        cursor = await self._db.execute(
+            "SELECT s.id, s.name, s.type, s.enabled,"
+            "  (SELECT COUNT(*) FROM transactions WHERE source_id = s.id) AS tx_count,"
+            "  (SELECT COUNT(*) FROM snapshots WHERE source_id = s.id) AS snap_count"
+            " FROM sources s"
+            " ORDER BY s.id",
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "id": int(row[0]),
+                "name": str(row[1]),
+                "type": str(row[2]),
+                "enabled": bool(row[3]),
+                "tx_count": int(row[4] or 0),
+                "snap_count": int(row[5] or 0),
+            }
+            for row in rows
+        ]
 
     async def rename_source(self, old_name: str, new_name: str) -> None:
         """Rename a configured source and refresh denormalized text columns.
@@ -214,9 +241,9 @@ class Repository:
     @staticmethod
     def _row_to_snapshot(row: aiosqlite.Row) -> Snapshot:
         columns = row.keys()
-        source_name = row["source_name"] if "source_name" in columns else row["source"]
-        if not source_name:
-            source_name = row["source"]
+        canonical = row["canonical_source_name"] if "canonical_source_name" in columns else None
+        cached = row["source_name"] if "source_name" in columns else None
+        source_name = canonical or cached or row["source"]
         source_id_raw = row["source_id"] if "source_id" in columns else None
         return Snapshot(
             id=row["id"],
@@ -264,20 +291,28 @@ class Repository:
         return cursor.rowcount
 
     async def delete_source_cascade(self, source_name: str) -> SourceDeleteResult:
-        """Delete a source and all source-owned state in one transaction."""
-        row = await (await self._db.execute("SELECT name FROM sources WHERE name = ?", (source_name,))).fetchone()
-        if row is None:
+        """Delete a source and all source-owned state in one transaction.
+
+        Stage 2 (ADR-030): switched to FK-based deletes — tx/snap purge by
+        ``source_id`` rather than the denormalized ``source_name`` column.
+        Legacy rows whose Stage 1 backfill could not link (``source_id IS
+        NULL``) are not removed by this cascade — surface as orphans via
+        a future cleanup tool if needed.
+        """
+        source_row = await (await self._db.execute("SELECT id FROM sources WHERE name = ?", (source_name,))).fetchone()
+        if source_row is None or source_row[0] is None:
             _raise_source_not_found(source_name)
+        source_id = int(source_row[0])
 
         apy_rules_key = f"apy_rules:{source_name}"
 
         await self._db.execute("BEGIN")
         try:
             snapshot_rows = await (
-                await self._db.execute("SELECT DISTINCT date FROM snapshots WHERE source_name = ?", (source_name,))
+                await self._db.execute("SELECT DISTINCT date FROM snapshots WHERE source_id = ?", (source_id,))
             ).fetchall()
             tx_rows = await (
-                await self._db.execute("SELECT DISTINCT date FROM transactions WHERE source_name = ?", (source_name,))
+                await self._db.execute("SELECT DISTINCT date FROM transactions WHERE source_id = ?", (source_id,))
             ).fetchall()
             affected_dates = sorted({str(row[0]) for row in [*snapshot_rows, *tx_rows] if row[0]})
 
@@ -294,12 +329,12 @@ class Repository:
                     apy_rules_count = 0
 
             snapshot_cursor = await self._db.execute(
-                "DELETE FROM snapshots WHERE source_name = ?",
-                (source_name,),
+                "DELETE FROM snapshots WHERE source_id = ?",
+                (source_id,),
             )
             transaction_cursor = await self._db.execute(
-                "DELETE FROM transactions WHERE source_name = ?",
-                (source_name,),
+                "DELETE FROM transactions WHERE source_id = ?",
+                (source_id,),
             )
 
             analytics_count = 0
@@ -316,8 +351,8 @@ class Repository:
             await self._db.execute("DELETE FROM app_settings WHERE key = ?", (earn_overrides_key,))
 
             source_cursor = await self._db.execute(
-                "DELETE FROM sources WHERE name = ?",
-                (source_name,),
+                "DELETE FROM sources WHERE id = ?",
+                (source_id,),
             )
             if source_cursor.rowcount == 0:
                 _raise_source_not_found(source_name)
@@ -327,6 +362,7 @@ class Repository:
             await self._db.rollback()
             raise
 
+        self._source_id_cache.pop(source_name, None)
         return SourceDeleteResult(
             name=source_name,
             snapshots=snapshot_cursor.rowcount,
@@ -427,11 +463,14 @@ class Repository:
     def row_to_transaction(row: aiosqlite.Row) -> Transaction:
         columns = row.keys()
         source_id_raw = row["source_id"] if "source_id" in columns else None
+        canonical = row["canonical_source_name"] if "canonical_source_name" in columns else None
+        cached = row["source_name"] if "source_name" in columns else None
+        resolved_source_name = canonical or cached or row["source"]
         return Transaction(
             id=row["id"],
             date=date.fromisoformat(row["date"]),
             source=row["source"],
-            source_name=row["source_name"] if "source_name" in columns and row["source_name"] else row["source"],
+            source_name=resolved_source_name,
             source_id=int(source_id_raw) if source_id_raw is not None else None,
             tx_type=TransactionType(row["tx_type"]),
             asset=row["asset"],

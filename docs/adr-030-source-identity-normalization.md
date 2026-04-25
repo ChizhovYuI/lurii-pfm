@@ -1,6 +1,6 @@
 # ADR-030 — Source identity normalization (source_id FK)
 
-**Status:** Stage 1 shipped. Stages 2–3 deferred.
+**Status:** Stages 1–2 shipped. Stage 3 deferred.
 **Date:** 2026-04-25
 **Supersedes parts of:** ADR-028 "Source filter semantics" addendum
 (documents the matching rule unambiguously; this ADR replaces the
@@ -97,15 +97,41 @@ backfill migration on legacy rows.
 **Out of stage 1:** PRAGMA foreign_keys=ON enforcement, NOT NULL
 constraints, source_name drop, rule semantics rewrite, coinex merge.
 
-### Stage 2 — Read path migration (deferred)
+### Stage 2 — Read path migration (this commit)
 
-- Hydrate `source_name` via JOIN on `sources` rather than reading the
-  cached column.
-- Add `list_sources()` MCP tool exposing `(id, name, type, tx_count,
-  snap_count)` for skill survey.
-- Convert `delete_source_cascade` to FK-based.
-- Update `categorization_summary`, `list_uncategorized_transactions`,
-  `get_transaction_detail` to surface `source_id` (additive).
+Read paths now hydrate `source_name` from the `sources` table via JOIN,
+falling back to the denormalized cache when `source_id IS NULL` (legacy
+rows). All categorization-curator MCP surfaces additionally expose
+`source_id` so the skill can pin rules to a specific account before
+Stage 3 rules-rewrite lands.
+
+**Code:**
+
+- `Repository.list_sources_with_counts()` — returns `[{id, name, type,
+  enabled, tx_count, snap_count}]` keyed by FK joins on `transactions` /
+  `snapshots`. Surfaces via the new `list_sources` MCP tool.
+- `Repository.delete_source_cascade(name)` — switched to `source_id`
+  lookups internally. Signature unchanged. Legacy rows whose Stage 1
+  backfill could not link (`source_id IS NULL`) are not removed by the
+  cascade — orphans surface for a future cleanup tool.
+- `MetadataStore.get_categorization_summary` — JOIN `sources` and group
+  by canonical `s.name` (with COALESCE fallback). Adds `source_id` to
+  every row.
+- `MetadataStore.get_uncategorized_transactions` and
+  `get_transaction_by_id` — JOIN `sources`, project
+  `s.name AS canonical_source_name`. `Repository.row_to_transaction` and
+  `_row_to_snapshot` prefer `canonical_source_name` when present.
+- MCP tools `categorization_summary`, `list_uncategorized_transactions`,
+  `get_transaction_detail` surface `source_id` additively.
+
+**Coverage:** four new tests in `tests/test_db.py` covering
+`list_sources_with_counts`, FK-based cascade after a `source_name`
+drift, and canonical-name preference on `get_transaction_by_id`. Two
+new tests in `tests/test_mcp_server.py` lock the `list_sources` tool
+shape and the `source_id` surfacing on summary/list/detail.
+
+**Out of stage 2:** rules rewrite, drop of `source_name`,
+`PRAGMA foreign_keys=ON` (all stage 3).
 
 ### Stage 3 — Rules + cleanup (deferred)
 

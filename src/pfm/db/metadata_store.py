@@ -714,6 +714,7 @@ class MetadataStore:
 
         cursor = await self._db.execute(
             "SELECT t.*,"
+            " s.name AS canonical_source_name,"
             " m.category AS m_category, m.category_source AS m_category_source,"
             " m.category_confidence AS m_category_confidence,"
             " m.type_override AS m_type_override,"
@@ -723,6 +724,7 @@ class MetadataStore:
             " m.reviewed AS m_reviewed, m.notes AS m_notes"
             " FROM transactions t"
             " LEFT JOIN transaction_metadata m ON t.id = m.transaction_id"
+            " LEFT JOIN sources s ON t.source_id = s.id"
             " WHERE t.id = ?",
             (transaction_id,),
         )
@@ -756,15 +758,20 @@ class MetadataStore:
     ) -> list[dict[str, object]]:
         """Per-source counts for the categorization workflow.
 
-        Each entry: source_name, total, unknown_type, no_category, internal_transfer.
+        Each entry: source_name, source_id, total, unknown_type,
+        no_category, internal_transfer. ADR-030 Stage 2: source_name is
+        the canonical ``sources.name`` when ``source_id`` is set, falling
+        back to the denormalized ``transactions.source_name`` for legacy
+        rows whose Stage 1 backfill could not link.
         """
         params: list[str] = []
         where_sql = ""
         if source_name is not None:
-            where_sql = " WHERE t.source_name = ?"
+            where_sql = " WHERE COALESCE(s.name, t.source_name) = ?"
             params.append(source_name)
         cursor = await self._db.execute(
-            "SELECT t.source_name AS source_name,"  # noqa: S608
+            "SELECT COALESCE(s.name, t.source_name) AS source_name,"  # noqa: S608
+            "  s.id AS source_id,"
             "  COUNT(*) AS total,"
             "  SUM(CASE WHEN t.tx_type = 'unknown'"
             "       AND (m.type_override IS NULL OR m.type_override = '') THEN 1 ELSE 0 END) AS unknown_type,"
@@ -773,15 +780,17 @@ class MetadataStore:
             "  SUM(CASE WHEN COALESCE(m.is_internal_transfer, 0) = 1 THEN 1 ELSE 0 END) AS internal_transfer"
             " FROM transactions t"
             " LEFT JOIN transaction_metadata m ON t.id = m.transaction_id"
+            " LEFT JOIN sources s ON t.source_id = s.id"
             f"{where_sql}"
-            " GROUP BY t.source_name"
-            " ORDER BY t.source_name",
+            " GROUP BY COALESCE(s.name, t.source_name), s.id"
+            " ORDER BY source_name",
             params,
         )
         rows = await cursor.fetchall()
         return [
             {
                 "source_name": row["source_name"],
+                "source_id": int(row["source_id"]) if row["source_id"] is not None else None,
                 "total": int(row["total"]),
                 "unknown_type": int(row["unknown_type"] or 0),
                 "no_category": int(row["no_category"] or 0),
@@ -823,13 +832,14 @@ class MetadataStore:
         where_clauses: list[str] = [filter_clause]
         params: list[str | int] = []
         if source_name is not None:
-            where_clauses.append("t.source_name = ?")
+            where_clauses.append("COALESCE(s.name, t.source_name) = ?")
             params.append(source_name)
         where_sql = " WHERE " + " AND ".join(where_clauses)
 
         count_cursor = await self._db.execute(
             f"SELECT COUNT(*) FROM transactions t"  # noqa: S608
             f" LEFT JOIN transaction_metadata m ON t.id = m.transaction_id"
+            f" LEFT JOIN sources s ON t.source_id = s.id"
             f"{where_sql}",
             params,
         )
@@ -838,6 +848,7 @@ class MetadataStore:
 
         cursor = await self._db.execute(
             f"SELECT t.*,"  # noqa: S608
+            f" s.name AS canonical_source_name,"
             f" m.category AS m_category, m.category_source AS m_category_source,"
             f" m.category_confidence AS m_category_confidence,"
             f" m.type_override AS m_type_override,"
@@ -847,6 +858,7 @@ class MetadataStore:
             f" m.reviewed AS m_reviewed, m.notes AS m_notes"
             f" FROM transactions t"
             f" LEFT JOIN transaction_metadata m ON t.id = m.transaction_id"
+            f" LEFT JOIN sources s ON t.source_id = s.id"
             f"{where_sql}"
             f" ORDER BY t.date DESC, t.id DESC"
             f" LIMIT ? OFFSET ?",

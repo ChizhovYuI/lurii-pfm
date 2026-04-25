@@ -1108,3 +1108,155 @@ async def test_backfill_migration_populates_source_id_for_existing_rows(tmp_path
     assert rabby_row is not None
     assert rabby_src is not None
     assert rabby_row[0] == rabby_src[0]
+
+
+# ── ADR-030 Stage 2 ──────────────────────────────────────────────────
+
+
+async def test_list_sources_with_counts_empty(repo):
+    sources = await repo.list_sources_with_counts()
+    assert sources == []
+
+
+async def test_list_sources_with_counts_includes_tx_and_snap_counts(repo):
+    await repo._db.execute(
+        "INSERT INTO sources (name, type, credentials, enabled) VALUES (?, ?, ?, ?)",
+        ("wise-main", "wise", "{}", 1),
+    )
+    await repo._db.execute(
+        "INSERT INTO sources (name, type, credentials, enabled) VALUES (?, ?, ?, ?)",
+        ("kbank-main", "kbank", "{}", 0),
+    )
+    await repo._db.commit()
+
+    await repo.save_snapshots(
+        [
+            Snapshot(
+                date=date(2026, 4, 1),
+                source="wise",
+                source_name="wise-main",
+                asset="USD",
+                amount=Decimal(100),
+                usd_value=Decimal(100),
+            ),
+            Snapshot(
+                date=date(2026, 4, 2),
+                source="wise",
+                source_name="wise-main",
+                asset="USD",
+                amount=Decimal(110),
+                usd_value=Decimal(110),
+            ),
+        ]
+    )
+    await repo.save_transactions(
+        [
+            Transaction(
+                date=date(2026, 4, 1),
+                source="wise",
+                source_name="wise-main",
+                tx_type=TransactionType.DEPOSIT,
+                asset="USD",
+                amount=Decimal(50),
+                usd_value=Decimal(50),
+                tx_id="wise-tx-1",
+            ),
+            Transaction(
+                date=date(2026, 4, 1),
+                source="kbank",
+                source_name="kbank-main",
+                tx_type=TransactionType.SPEND,
+                asset="THB",
+                amount=Decimal(-100),
+                usd_value=Decimal(-3),
+                tx_id="kbank-tx-1",
+            ),
+        ]
+    )
+
+    sources = await repo.list_sources_with_counts()
+    by_name = {s["name"]: s for s in sources}
+
+    assert by_name["wise-main"]["type"] == "wise"
+    assert by_name["wise-main"]["enabled"] is True
+    assert by_name["wise-main"]["tx_count"] == 1
+    assert by_name["wise-main"]["snap_count"] == 2
+    assert isinstance(by_name["wise-main"]["id"], int)
+
+    assert by_name["kbank-main"]["enabled"] is False
+    assert by_name["kbank-main"]["tx_count"] == 1
+    assert by_name["kbank-main"]["snap_count"] == 0
+
+
+async def test_delete_source_cascade_uses_source_id_after_drift(repo):
+    """ADR-030 Stage 2: cascade purges by source_id, not denormalized name."""
+    await repo._db.execute(
+        "INSERT INTO sources (name, type, credentials, enabled) VALUES (?, ?, ?, ?)",
+        ("wise-main", "wise", "{}", 1),
+    )
+    await repo._db.commit()
+
+    await repo.save_transactions(
+        [
+            Transaction(
+                date=date(2026, 4, 1),
+                source="wise",
+                source_name="wise-main",
+                tx_type=TransactionType.DEPOSIT,
+                asset="USD",
+                amount=Decimal(10),
+                usd_value=Decimal(10),
+                tx_id="wise-fk-1",
+            )
+        ]
+    )
+
+    # Drift the cached source_name without updating sources.name. FK source_id stays linked.
+    await repo._db.execute("UPDATE transactions SET source_name = 'stale-name' WHERE tx_id = 'wise-fk-1'")
+    await repo._db.commit()
+
+    result = await repo.delete_source_cascade("wise-main")
+    assert result.transactions == 1
+
+    leftover = await (await repo._db.execute("SELECT id FROM transactions WHERE tx_id = 'wise-fk-1'")).fetchone()
+    assert leftover is None
+
+
+async def test_get_transaction_by_id_surfaces_canonical_source_name(repo):
+    from pfm.db.metadata_store import MetadataStore
+
+    store = MetadataStore(repo.connection)
+    await repo._db.execute(
+        "INSERT INTO sources (name, type, credentials, enabled) VALUES (?, ?, ?, ?)",
+        ("wise-main", "wise", "{}", 1),
+    )
+    await repo._db.commit()
+
+    await repo.save_transactions(
+        [
+            Transaction(
+                date=date(2026, 4, 1),
+                source="wise",
+                source_name="wise-main",
+                tx_type=TransactionType.DEPOSIT,
+                asset="USD",
+                amount=Decimal(10),
+                usd_value=Decimal(10),
+                tx_id="wise-canon-1",
+            )
+        ]
+    )
+
+    txs = await repo.get_transactions()
+    assert txs[0].id is not None
+    target_id = txs[0].id
+
+    # Drift the cached source_name; canonical via JOIN should win.
+    await repo._db.execute("UPDATE transactions SET source_name = 'stale-name' WHERE id = ?", (target_id,))
+    await repo._db.commit()
+
+    pair = await store.get_transaction_by_id(target_id)
+    assert pair is not None
+    tx, _ = pair
+    assert tx.source_name == "wise-main"
+    assert tx.source_id is not None
