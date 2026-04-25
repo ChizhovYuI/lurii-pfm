@@ -1128,6 +1128,12 @@ contract to allow writes scoped to categorization metadata only.
 - `_resolve_type_winner` promoted from private `rule_dryrun.py` helper to public `pfm.analytics.type_resolver.resolve_type_winner` — shared by both call sites.
 - Files: `src/pfm/analytics/type_resolver.py`, `src/pfm/analytics/rule_dryrun.py`, `src/pfm/mcp_server.py`, `tests/test_mcp_server.py` (+1 test, +3 assertions).
 
+**Phase 6.2 (done) — validate_rule_args pre-check + JSON envelope on validation errors:**
+- Invalid-regex `ValueError` propagated as raw exceptions from `create_*_rule` and `dry_run_*_rule`. Skill could not surface them as structured errors.
+- All four tools now wrap the validation site in `try/except ValueError` and return `{"error": "validation", "message": ...}` instead of raising. Backwards-incompatible for callers that relied on the exception path — only known caller is the skill, updated in the same pass.
+- New `validate_rule_args(field_operator, field_value)` MCP tool — cheap pre-check that compiles regex without DB scan. Returns `{"valid": true}` or `{"valid": false, "error": "validation", "message": ...}`. Skill calls before `dry_run_*_rule` when authoring a regex rule.
+- Files: `src/pfm/mcp_server.py`, `tests/test_mcp_server.py` (+5 tests, replaces the raises-ValueError test).
+
 ---
 
 ## ADR-029: Opt-in raw_sample + non-discriminating suggestion filter

@@ -277,6 +277,26 @@ both `rule_dryrun` and `mcp_server` import it. Tests in
 `tests/test_mcp_server.py::TestCategorizationTools` now assert the
 two new fields.
 
+### Phase 6.2 — validate_rule_args + JSON envelope on validation errors
+
+Invalid-regex `ValueError` previously propagated as raw exceptions
+out of `create_*_rule` and `dry_run_*_rule`, blocking the skill from
+surfacing structured errors. All four tools now wrap the validation
+site in `try/except ValueError` and return
+`{"error": "validation", "message": ...}` instead of raising — same
+envelope shape used elsewhere in the surface (`{"error": "not found"}`,
+etc.).
+
+A new `validate_rule_args(field_operator, field_value)` tool runs the
+same regex compile pre-check without a DB scan. Skill should call it
+before `dry_run_*_rule` when authoring a regex rule, so malformed
+patterns short-circuit before paying for the dry-run query (~100 ms
+on a 200-tx scope).
+
+Schema-wise: callers that relied on the old `ValueError` path must
+switch to checking `parsed.get("error") == "validation"`. Soft break —
+only known caller is the skill, updated in lockstep.
+
 ### Schema impact
 
 None. `field_operator` is plain `TEXT` — `"regex"` is a new accepted

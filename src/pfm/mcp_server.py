@@ -799,18 +799,25 @@ async def create_category_rule(  # noqa: PLR0913
     source: str = "*",
     priority: int | None = None,
 ) -> str:
-    """Create a category rule. Validates regex; auto-computes priority if omitted."""
+    """Create a category rule. Validates regex; auto-computes priority if omitted.
+
+    On validation failure (e.g. malformed regex) returns
+    ``{"error": "validation", "message": ...}`` instead of raising.
+    """
     store = _ctx_store(ctx)
-    rule = await store.create_category_rule(
-        type_match,
-        result_category,
-        type_operator=type_operator,
-        field_name=field_name,
-        field_operator=field_operator,
-        field_value=field_value,
-        source=source,
-        priority=priority,
-    )
+    try:
+        rule = await store.create_category_rule(
+            type_match,
+            result_category,
+            type_operator=type_operator,
+            field_name=field_name,
+            field_operator=field_operator,
+            field_value=field_value,
+            source=source,
+            priority=priority,
+        )
+    except ValueError as exc:
+        return _json({"error": "validation", "message": str(exc)})
     return _json({"rule": _category_rule_dict(rule)})
 
 
@@ -835,16 +842,23 @@ async def create_type_rule(  # noqa: PLR0913
     field_value: str = "",
     priority: int | None = None,
 ) -> str:
-    """Create a type rule. Validates regex; auto-computes priority if omitted."""
+    """Create a type rule. Validates regex; auto-computes priority if omitted.
+
+    On validation failure (e.g. malformed regex) returns
+    ``{"error": "validation", "message": ...}`` instead of raising.
+    """
     store = _ctx_store(ctx)
-    rule = await store.create_type_rule(
-        result_type,
-        source=source,
-        field_name=field_name,
-        field_operator=field_operator,
-        field_value=field_value,
-        priority=priority,
-    )
+    try:
+        rule = await store.create_type_rule(
+            result_type,
+            source=source,
+            field_name=field_name,
+            field_operator=field_operator,
+            field_value=field_value,
+            priority=priority,
+        )
+    except ValueError as exc:
+        return _json({"error": "validation", "message": str(exc)})
     return _json({"rule": _type_rule_dict(rule)})
 
 
@@ -910,6 +924,30 @@ async def unlink_transfer(
 
 
 @mcp.tool()
+async def validate_rule_args(
+    ctx: Context[ServerSession, AppContext],  # noqa: ARG001
+    field_operator: str = "",
+    field_value: str = "",
+) -> str:
+    """Pre-check rule arguments before dry-run / create.
+
+    Cheap validation pass — no DB scan. Currently checks regex compile
+    when ``field_operator='regex'`` and ``field_value`` is set. Returns
+    ``{"valid": true}`` or ``{"valid": false, "error": "validation",
+    "message": ...}``. Skill should call this before dry-run when authoring
+    a regex rule to short-circuit on malformed patterns.
+    """
+    from pfm.db.metadata_store import _validate_regex_value
+
+    if field_operator == "regex" and field_value:
+        try:
+            _validate_regex_value(field_value)
+        except ValueError as exc:
+            return _json({"valid": False, "error": "validation", "message": str(exc)})
+    return _json({"valid": True})
+
+
+@mcp.tool()
 async def dry_run_category_rule(  # noqa: PLR0913
     ctx: Context[ServerSession, AppContext],
     type_match: str,
@@ -935,20 +973,23 @@ async def dry_run_category_rule(  # noqa: PLR0913
 
     repo = _ctx_repo(ctx)
     store = _ctx_store(ctx)
-    result = await _impl(
-        repo,
-        store,
-        type_match=type_match,
-        result_category=result_category,
-        type_operator=type_operator,
-        field_name=field_name,
-        field_operator=field_operator,
-        field_value=field_value,
-        source=source,
-        priority=priority,
-        scope_source=scope_source,
-        limit=limit,
-    )
+    try:
+        result = await _impl(
+            repo,
+            store,
+            type_match=type_match,
+            result_category=result_category,
+            type_operator=type_operator,
+            field_name=field_name,
+            field_operator=field_operator,
+            field_value=field_value,
+            source=source,
+            priority=priority,
+            scope_source=scope_source,
+            limit=limit,
+        )
+    except ValueError as exc:
+        return _json({"error": "validation", "message": str(exc)})
     return _json(result)
 
 
@@ -976,18 +1017,21 @@ async def dry_run_type_rule(  # noqa: PLR0913
 
     repo = _ctx_repo(ctx)
     store = _ctx_store(ctx)
-    result = await _impl(
-        repo,
-        store,
-        result_type=result_type,
-        source=source,
-        field_name=field_name,
-        field_operator=field_operator,
-        field_value=field_value,
-        priority=priority,
-        scope_source=scope_source,
-        limit=limit,
-    )
+    try:
+        result = await _impl(
+            repo,
+            store,
+            result_type=result_type,
+            source=source,
+            field_name=field_name,
+            field_operator=field_operator,
+            field_value=field_value,
+            priority=priority,
+            scope_source=scope_source,
+            limit=limit,
+        )
+    except ValueError as exc:
+        return _json({"error": "validation", "message": str(exc)})
     return _json(result)
 
 

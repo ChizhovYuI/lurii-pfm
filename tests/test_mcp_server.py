@@ -663,7 +663,7 @@ class TestCategorizationTools:
             assert any(r.id == parsed["rule"]["id"] for r in saved)
 
     @pytest.mark.asyncio
-    async def test_create_category_rule_invalid_regex_raises(self, tmp_path):
+    async def test_create_category_rule_invalid_regex_returns_envelope(self, tmp_path):
         from pfm.db.metadata_store import MetadataStore
         from pfm.db.repository import Repository
         from pfm.mcp_server import create_category_rule
@@ -672,7 +672,7 @@ class TestCategorizationTools:
             store = MetadataStore(repo.connection)
             ctx = _make_ctx(repo, store, tmp_path / "x.db")
 
-            with pytest.raises(ValueError, match="invalid regex"):
+            parsed = json.loads(
                 await create_category_rule(
                     ctx,
                     type_match="spend",
@@ -680,7 +680,81 @@ class TestCategorizationTools:
                     field_name="description",
                     field_operator="regex",
                     field_value="(",
-                )
+                ),
+            )
+            assert parsed["error"] == "validation"
+            assert "invalid regex" in parsed["message"]
+            assert "rule" not in parsed
+
+    @pytest.mark.asyncio
+    async def test_validate_rule_args_accepts_valid_regex(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import validate_rule_args
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+
+            parsed = json.loads(
+                await validate_rule_args(ctx, field_operator="regex", field_value=r"^FX\b"),
+            )
+            assert parsed == {"valid": True}
+
+    @pytest.mark.asyncio
+    async def test_validate_rule_args_rejects_invalid_regex(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import validate_rule_args
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+
+            parsed = json.loads(
+                await validate_rule_args(ctx, field_operator="regex", field_value="("),
+            )
+            assert parsed["valid"] is False
+            assert parsed["error"] == "validation"
+            assert "invalid regex" in parsed["message"]
+
+    @pytest.mark.asyncio
+    async def test_validate_rule_args_no_op_for_non_regex(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import validate_rule_args
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+
+            parsed = json.loads(
+                await validate_rule_args(ctx, field_operator="contains", field_value="("),
+            )
+            assert parsed == {"valid": True}
+
+    @pytest.mark.asyncio
+    async def test_dry_run_category_rule_invalid_regex_returns_envelope(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import dry_run_category_rule
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+
+            parsed = json.loads(
+                await dry_run_category_rule(
+                    ctx,
+                    type_match="spend",
+                    result_category="fx",
+                    field_name="description",
+                    field_operator="regex",
+                    field_value="(",
+                ),
+            )
+            assert parsed["error"] == "validation"
+            assert "invalid regex" in parsed["message"]
 
     @pytest.mark.asyncio
     async def test_delete_category_rule_returns_status(self, tmp_path):
