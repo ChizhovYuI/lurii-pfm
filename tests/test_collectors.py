@@ -495,7 +495,7 @@ async def test_mexc_get_raises_on_api_error_code(pricing):
     error_resp = _mock_response({"code": 700002, "msg": "Signature for this request is not valid."})
     collector._client.get = AsyncMock(return_value=error_resp)
 
-    with pytest.raises(httpx.HTTPStatusError, match="Signature for this request is not valid."):
+    with pytest.raises(httpx.HTTPStatusError, match=r"Signature for this request is not valid\."):
         await collector._get("/api/v3/account")
 
 
