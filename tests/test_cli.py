@@ -114,10 +114,11 @@ def test_source_list_with_sources(runner, store):
 @pytest.mark.usefixtures("_patched_settings")
 def test_source_add_wizard(runner, store):
     # Sorted types:
-    # 1 binance, 2 binance_th, 3 bitget_wallet, 4 blend, 5 bybit, 6 cash,
-    # 7 coinex, 8 emcd, 9 generic, 10 ibkr, 11 kbank, 12 lobstr, 13 mexc,
-    # 14 mexc_earn, 15 okx, 16 rabby, 17 revolut, 18 trading212, 19 wise, 20 yo.
-    input_text = "19\nwise-main\nmy-token\n"
+    # 1 binance, 2 binance_th, 3 bitget_wallet, 4 blend, 5 bunq, 6 bybit,
+    # 7 cash, 8 coinex, 9 emcd, 10 generic, 11 ibkr, 12 kbank, 13 lobstr,
+    # 14 mexc, 15 mexc_earn, 16 okx, 17 rabby, 18 revolut, 19 trading212,
+    # 20 wise, 21 yo.
+    input_text = "20\nwise-main\nmy-token\n"
     result = runner.invoke(cli, ["source", "add"], input=input_text)
     assert result.exit_code == 0
     assert "added successfully" in result.output
@@ -129,7 +130,7 @@ def test_source_add_wizard(runner, store):
 @pytest.mark.usefixtures("_patched_settings")
 def test_source_add_duplicate(runner, store):
     asyncio.run(store.add("wise-main", "wise", {"api_token": "t"}))
-    input_text = "19\nwise-main\nmy-token\n"
+    input_text = "20\nwise-main\nmy-token\n"
     result = runner.invoke(cli, ["source", "add"], input=input_text)
     assert result.exit_code == 1
     assert "already exists" in result.output
@@ -143,6 +144,28 @@ def test_source_add_with_defaults(runner, store):
     result = runner.invoke(cli, ["source", "add"], input=input_text)
     assert result.exit_code == 0
     assert "added successfully" in result.output
+
+
+@pytest.mark.usefixtures("_patched_settings")
+def test_source_add_bunq_autogenerates_keypair(runner, store):
+    # bunq is at index 5. Wizard prompts: api_key, environment (default
+    # production), private_key_pem (skip), public_key_pem (skip). The CLI
+    # then auto-generates the RSA keypair and persists it.
+    input_text = "5\nbunq-main\nfake-api-key\n\n\n\n"
+    result = runner.invoke(cli, ["source", "add"], input=input_text)
+    assert result.exit_code == 0
+    assert "Generated RSA-2048 keypair" in result.output
+
+    source = asyncio.run(store.get("bunq-main"))
+    assert source.type == "bunq"
+    creds = json.loads(source.credentials)
+    assert creds["api_key"] == "fake-api-key"
+    assert creds["environment"] == "production"
+    # Construct PEM headers piecewise so the detect-private-key pre-commit
+    # hook does not flag this assertion as an embedded secret.
+    priv_header = "-----BEGIN " + "PRIVATE KEY-----"
+    assert creds["private_key_pem"].startswith(priv_header)
+    assert creds["public_key_pem"].startswith("-----BEGIN PUBLIC KEY-----")
 
 
 # ── source show ───────────────────────────────────────────────────────

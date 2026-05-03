@@ -159,6 +159,14 @@ def source_add() -> None:
         if value:
             credentials[field.name] = value
 
+    if source_type == "bunq" and not (credentials.get("private_key_pem") and credentials.get("public_key_pem")):
+        from pfm.collectors.bunq import generate_keypair_pem
+
+        priv, pub = generate_keypair_pem()
+        credentials["private_key_pem"] = priv
+        credentials["public_key_pem"] = pub
+        click.echo("Generated RSA-2048 keypair for bunq client identity.")
+
     # Step 4: save
     store = _get_store()
     try:

@@ -29,6 +29,7 @@ class SourceName(StrEnum):
     WISE = "wise"
     KBANK = "kbank"
     REVOLUT = "revolut"
+    BUNQ = "bunq"
     IBKR = "ibkr"
     TRADING212 = "trading212"
     CASH = "cash"
@@ -59,6 +60,7 @@ SOURCE_GROUP_MAP: dict[SourceName, SourceGroup] = {
     SourceName.WISE: SourceGroup.BANK,
     SourceName.KBANK: SourceGroup.BANK,
     SourceName.REVOLUT: SourceGroup.BANK,
+    SourceName.BUNQ: SourceGroup.BANK,
     SourceName.IBKR: SourceGroup.BROKER,
     SourceName.TRADING212: SourceGroup.BROKER,
     SourceName.CASH: SourceGroup.BANK,

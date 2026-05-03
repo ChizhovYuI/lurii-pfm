@@ -241,6 +241,36 @@ SOURCE_TYPES: dict[str, list[CredentialField]] = {
         ),
         CredentialField("access_key", "DeBank AccessKey (optional)", required=False),
     ],
+    "bunq": [
+        CredentialField(
+            "api_key",
+            "API Key",
+            tip=(
+                "1. Open bunq app → Profile → Security → Developers → API keys\n"
+                "2. Create a new API key (no IP whitelist required for read-only)\n"
+                "3. Copy the key and paste here\n"
+                "4. For sandbox testing, use scripts/bunq_sandbox_key.py to mint a throwaway key"
+            ),
+        ),
+        CredentialField(
+            "environment",
+            "Environment (sandbox/production)",
+            required=False,
+            default="production",
+            secret=False,
+        ),
+        CredentialField(
+            "private_key_pem",
+            "RSA private key PEM (auto-generated if blank)",
+            required=False,
+        ),
+        CredentialField(
+            "public_key_pem",
+            "RSA public key PEM (auto-generated if blank)",
+            required=False,
+            secret=False,
+        ),
+    ],
     "revolut": [
         CredentialField(
             "secret_id",
