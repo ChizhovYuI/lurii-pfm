@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from aiohttp import web
+from aiohttp import BodyPartReader, web
 
 from pfm.server.state import get_repo
 
@@ -76,8 +76,8 @@ async def _read_multipart_file(request: web.Request) -> tuple[str, str] | None:
         reader = await request.multipart()
         part = await reader.next()
         while part is not None:
-            if hasattr(part, "name") and part.name == "file":
-                filename = getattr(part, "filename", None) or "unknown.csv"
+            if isinstance(part, BodyPartReader) and part.name == "file":
+                filename = part.filename or "unknown.csv"
                 raw = await part.read(decode=False)
                 return raw.decode("utf-8-sig"), filename
             part = await reader.next()
