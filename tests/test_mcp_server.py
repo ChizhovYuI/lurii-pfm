@@ -2200,3 +2200,217 @@ class TestBestEffortCollect:
         reason = result["reason"]
         assert isinstance(reason, str)
         assert "another collection" in reason
+
+
+class TestGenericSource:
+    @pytest.mark.asyncio
+    async def test_add_generic_source_with_group_hint(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import add_source
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+
+            with patch("pfm.server.client.is_daemon_reachable", return_value=False):
+                parsed = json.loads(
+                    await add_source(
+                        ctx,
+                        name="generic-vault",
+                        source_type="generic",
+                        credentials={"label": "Defi vault", "group_hint": "defi"},
+                    )
+                )
+
+            assert parsed["added"] is True
+            assert parsed["source"]["type"] == "generic"
+
+    @pytest.mark.asyncio
+    async def test_generic_rejects_invalid_group_hint(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import add_source
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+            parsed = json.loads(
+                await add_source(
+                    ctx,
+                    name="generic-x",
+                    source_type="generic",
+                    credentials={"group_hint": "garbage"},
+                )
+            )
+        assert "Invalid group_hint" in parsed["error"]
+
+    @pytest.mark.asyncio
+    async def test_multiple_generic_sources_allowed(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import add_source
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+
+            with patch("pfm.server.client.is_daemon_reachable", return_value=False):
+                first = json.loads(
+                    await add_source(
+                        ctx,
+                        name="generic-a",
+                        source_type="generic",
+                        credentials={"label": "A"},
+                    )
+                )
+                second = json.loads(
+                    await add_source(
+                        ctx,
+                        name="generic-b",
+                        source_type="generic",
+                        credentials={"label": "B"},
+                    )
+                )
+        assert first["added"] is True
+        assert second["added"] is True
+
+
+class TestAddManualTransaction:
+    @pytest.mark.asyncio
+    async def test_saves_deposit_with_explicit_usd_value(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.db.source_store import SourceStore
+        from pfm.mcp_server import add_manual_transaction
+
+        db_path = tmp_path / "x.db"
+        async with Repository(db_path) as repo:
+            await SourceStore(db_path).add(
+                "generic-misc",
+                "generic",
+                {"label": "Misc"},
+            )
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, db_path)
+
+            parsed = json.loads(
+                await add_manual_transaction(
+                    ctx,
+                    source_name="generic-misc",
+                    tx_type="deposit",
+                    asset="USD",
+                    amount="100",
+                    usd_value="100",
+                    tx_date="2026-04-15",
+                )
+            )
+            assert parsed["saved"] == 1
+            assert parsed["tx_type"] == "deposit"
+            assert parsed["asset"] == "USD"
+            assert parsed["amount"] == "100"
+            assert parsed["usd_value"] == "100"
+
+            txs = await repo.get_transactions(source_name="generic-misc")
+            assert len(txs) == 1
+            assert txs[0].tx_type.value == "deposit"
+
+    @pytest.mark.asyncio
+    async def test_saves_trade_with_counterparty(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.db.source_store import SourceStore
+        from pfm.mcp_server import add_manual_transaction
+
+        db_path = tmp_path / "x.db"
+        async with Repository(db_path) as repo:
+            await SourceStore(db_path).add("generic-misc", "generic", {})
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, db_path)
+            parsed = json.loads(
+                await add_manual_transaction(
+                    ctx,
+                    source_name="generic-misc",
+                    tx_type="trade",
+                    asset="BTC",
+                    amount="0.5",
+                    usd_value="32500",
+                    counterparty_asset="usd",
+                    counterparty_amount="-32500",
+                )
+            )
+            assert parsed["saved"] == 1
+            assert parsed["counterparty_asset"] == "USD"
+            assert parsed["counterparty_amount"] == "-32500"
+
+    @pytest.mark.asyncio
+    async def test_rejects_unknown_tx_type(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.db.source_store import SourceStore
+        from pfm.mcp_server import add_manual_transaction
+
+        db_path = tmp_path / "x.db"
+        async with Repository(db_path) as repo:
+            await SourceStore(db_path).add("generic-misc", "generic", {})
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, db_path)
+            parsed = json.loads(
+                await add_manual_transaction(
+                    ctx,
+                    source_name="generic-misc",
+                    tx_type="totally_made_up",
+                    asset="USD",
+                    amount="100",
+                    usd_value="100",
+                )
+            )
+        assert "Invalid tx_type" in parsed["error"]
+
+    @pytest.mark.asyncio
+    async def test_rejects_unknown_source(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import add_manual_transaction
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+            parsed = json.loads(
+                await add_manual_transaction(
+                    ctx,
+                    source_name="missing",
+                    tx_type="deposit",
+                    asset="USD",
+                    amount="100",
+                    usd_value="100",
+                )
+            )
+        assert "not found" in parsed["error"]
+
+    @pytest.mark.asyncio
+    async def test_skips_pricing_when_usd_value_provided(self, tmp_path):
+        """Asset like REALESTATE not on CoinGecko — usd_value bypasses price lookup."""
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.db.source_store import SourceStore
+        from pfm.mcp_server import add_manual_transaction
+
+        db_path = tmp_path / "x.db"
+        async with Repository(db_path) as repo:
+            await SourceStore(db_path).add("generic-house", "generic", {})
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, db_path)
+            parsed = json.loads(
+                await add_manual_transaction(
+                    ctx,
+                    source_name="generic-house",
+                    tx_type="deposit",
+                    asset="REALESTATE",
+                    amount="1",
+                    usd_value="450000",
+                )
+            )
+            assert parsed["saved"] == 1
+            assert parsed["asset"] == "REALESTATE"
+            assert parsed["usd_value"] == "450000"

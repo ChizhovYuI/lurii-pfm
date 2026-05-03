@@ -32,6 +32,7 @@ class SourceName(StrEnum):
     IBKR = "ibkr"
     TRADING212 = "trading212"
     CASH = "cash"
+    GENERIC = "generic"
 
 
 class SourceGroup(StrEnum):
@@ -61,6 +62,7 @@ SOURCE_GROUP_MAP: dict[SourceName, SourceGroup] = {
     SourceName.IBKR: SourceGroup.BROKER,
     SourceName.TRADING212: SourceGroup.BROKER,
     SourceName.CASH: SourceGroup.BANK,
+    SourceName.GENERIC: SourceGroup.BANK,
 }
 
 

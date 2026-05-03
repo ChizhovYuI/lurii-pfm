@@ -113,9 +113,11 @@ def test_source_list_with_sources(runner, store):
 
 @pytest.mark.usefixtures("_patched_settings")
 def test_source_add_wizard(runner, store):
-    # Simulate wizard: pick type 18 (wise), name "wise-main", token "my-token"
-    # Type list is sorted, so wise is at position 18
-    input_text = "18\nwise-main\nmy-token\n"
+    # Sorted types:
+    # 1 binance, 2 binance_th, 3 bitget_wallet, 4 blend, 5 bybit, 6 cash,
+    # 7 coinex, 8 emcd, 9 generic, 10 ibkr, 11 kbank, 12 lobstr, 13 mexc,
+    # 14 mexc_earn, 15 okx, 16 rabby, 17 revolut, 18 trading212, 19 wise, 20 yo.
+    input_text = "19\nwise-main\nmy-token\n"
     result = runner.invoke(cli, ["source", "add"], input=input_text)
     assert result.exit_code == 0
     assert "added successfully" in result.output
@@ -127,7 +129,7 @@ def test_source_add_wizard(runner, store):
 @pytest.mark.usefixtures("_patched_settings")
 def test_source_add_duplicate(runner, store):
     asyncio.run(store.add("wise-main", "wise", {"api_token": "t"}))
-    input_text = "18\nwise-main\nmy-token\n"
+    input_text = "19\nwise-main\nmy-token\n"
     result = runner.invoke(cli, ["source", "add"], input=input_text)
     assert result.exit_code == 1
     assert "already exists" in result.output
@@ -136,11 +138,7 @@ def test_source_add_duplicate(runner, store):
 @pytest.mark.usefixtures("_patched_settings")
 def test_source_add_with_defaults(runner, store):
     # Blend has optional soroban_rpc_url with a default.
-    # Sorted types:
-    # 1 binance, 2 binance_th, 3 bitget_wallet, 4 blend, 5 bybit, 6 cash,
-    # 7 coinex, 8 emcd, 9 ibkr, 10 kbank, 11 lobstr, 12 mexc, 13 mexc_earn, 14 okx,
-    # 15 rabby, 16 revolut, 17 trading212, 18 wise, 19 yo.
-    # blend is index 4: address, contract_id, rpc_url (has default)
+    # Sorted types: blend at index 4. (See test_source_add_wizard for full order.)
     input_text = "4\nblend-main\nGABC123\nCABC456\n\n"  # empty = accept default
     result = runner.invoke(cli, ["source", "add"], input=input_text)
     assert result.exit_code == 0

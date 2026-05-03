@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from pfm.db.models import is_sync_marker_snapshot
+from pfm.db.source_store import SourceStore
 from pfm.enums import SourceGroup, source_group
 
 if TYPE_CHECKING:
@@ -14,6 +16,31 @@ if TYPE_CHECKING:
 
     from pfm.db.models import Snapshot, Source
     from pfm.db.repository import Repository
+
+_GENERIC_GROUP_HINTS: frozenset[str] = frozenset({"crypto", "defi", "bank", "broker"})
+
+
+async def _load_group_overrides(repo: Repository) -> dict[str, SourceGroup]:
+    """Build a source_name -> SourceGroup map for generic sources with group_hint."""
+    overrides: dict[str, SourceGroup] = {}
+    for src in await SourceStore(repo.db_path).list_all():
+        if src.type != "generic":
+            continue
+        try:
+            creds = json.loads(src.credentials or "{}")
+        except (ValueError, TypeError):
+            continue
+        hint = str(creds.get("group_hint") or "").strip().lower()
+        if hint in _GENERIC_GROUP_HINTS:
+            overrides[src.name] = SourceGroup(hint)
+    return overrides
+
+
+def _resolve_group(snap: Snapshot, overrides: dict[str, SourceGroup]) -> SourceGroup:
+    if snap.source_name and snap.source_name in overrides:
+        return overrides[snap.source_name]
+    return source_group(snap.source)
+
 
 _HUNDRED = Decimal(100)
 
@@ -91,10 +118,11 @@ async def compute_allocation_by_asset(repo: Repository, snapshot_date: date) -> 
     """Compute per-(asset, asset_type) allocation with sources list and cached price."""
     snapshots = [snap for snap in await repo.get_snapshots_resolved(snapshot_date) if not is_sync_marker_snapshot(snap)]
     total_usd = _sum_usd(snapshots)
+    overrides = await _load_group_overrides(repo)
     by_key: dict[tuple[str, str], tuple[Decimal, Decimal, set[str]]] = {}
 
     for snap in snapshots:
-        a_type = _asset_type(snap.source, snap.asset)
+        a_type = _asset_type(snap, overrides)
         key = (snap.asset, a_type)
         amount, usd_value, sources = by_key.get(key, (Decimal(0), Decimal(0), set()))
         sources.add(snap.source)
@@ -148,10 +176,11 @@ async def compute_allocation_by_category(repo: Repository, snapshot_date: date) 
     """Compute allocation across category buckets: crypto/fiat/stocks/DeFi."""
     snapshots = [snap for snap in await repo.get_snapshots_resolved(snapshot_date) if not is_sync_marker_snapshot(snap)]
     total_usd = _sum_usd(snapshots)
+    overrides = await _load_group_overrides(repo)
     by_category: dict[str, Decimal] = {}
 
     for snap in snapshots:
-        category = _category_for_snapshot(snap)
+        category = _category_for_snapshot(snap, overrides)
         by_category[category] = by_category.get(category, Decimal(0)) + snap.usd_value
 
     rows = [
@@ -271,13 +300,13 @@ _GROUP_TO_CATEGORY: dict[SourceGroup, str] = {
 }
 
 
-def _asset_type(source: str, asset: str) -> str:
-    """Classify an asset by its source and ticker."""
-    src = source.lower()
-    tkr = asset.upper()
+def _asset_type(snap: Snapshot, overrides: dict[str, SourceGroup]) -> str:
+    """Classify an asset by its source and ticker, honoring generic group_hint."""
+    src = snap.source.lower()
+    tkr = snap.asset.upper()
     if src in _DEPOSIT_SOURCES:
         return "deposit"
-    group = source_group(src)
+    group = _resolve_group(snap, overrides)
     result = _GROUP_TO_ASSET_TYPE.get(group)
     if result is not None:
         return result
@@ -288,13 +317,13 @@ def _asset_type(source: str, asset: str) -> str:
     return "crypto" if group == SourceGroup.CRYPTO else "other"
 
 
-def _category_for_snapshot(snap: Snapshot) -> str:
+def _category_for_snapshot(snap: Snapshot, overrides: dict[str, SourceGroup]) -> str:
     source = snap.source.lower()
     asset = snap.asset.upper()
 
     if source in _DEPOSIT_SOURCES:
         return "deposit"
-    group = source_group(source)
+    group = _resolve_group(snap, overrides)
     result = _GROUP_TO_CATEGORY.get(group)
     if result is not None:
         return result

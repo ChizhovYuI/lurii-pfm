@@ -59,6 +59,11 @@ class Repository:
         return self._db
 
     @property
+    def db_path(self) -> Path:
+        """Return the SQLite path used by this repository."""
+        return self._db_path
+
+    @property
     def _db(self) -> aiosqlite.Connection:
         if self._conn is None:
             msg = "Repository not opened. Use 'async with Repository(path) as repo:'"

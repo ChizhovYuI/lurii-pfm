@@ -16,7 +16,7 @@ from pfm.server.state import get_broadcaster
 
 routes = web.RouteTableDef()
 
-_ALLOWED_EVENT_TYPES = frozenset({"snapshot_updated", "sources_changed"})
+_ALLOWED_EVENT_TYPES = frozenset({"snapshot_updated", "sources_changed", "transactions_updated"})
 
 
 @routes.post("/api/v1/internal/broadcast")

@@ -51,7 +51,7 @@ async def test_list_source_types(client):
     assert resp.status == 200
     data = await resp.json()
     # Should return all configured source types
-    assert len(data) == 19
+    assert len(data) == 20
     expected_types = {
         "okx",
         "binance",
@@ -72,6 +72,7 @@ async def test_list_source_types(client):
         "trading212",
         "emcd",
         "yo",
+        "generic",
     }
     assert set(data.keys()) == expected_types
     # Each type has fields list and supported_apy_rules

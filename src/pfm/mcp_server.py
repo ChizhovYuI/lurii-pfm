@@ -1549,6 +1549,107 @@ async def add_manual_snapshot(  # noqa: PLR0913
 
 
 @mcp.tool()
+async def add_manual_transaction(  # noqa: PLR0913
+    ctx: Context[ServerSession, AppContext],
+    source_name: str,
+    tx_type: str,
+    asset: str,
+    amount: str,
+    *,
+    usd_value: str | None = None,
+    tx_date: str | None = None,
+    counterparty_asset: str | None = None,
+    counterparty_amount: str | None = None,
+    tx_id: str | None = None,
+    raw_metadata: dict[str, object] | None = None,
+) -> str:
+    """Save a manual transaction row for an existing source.
+
+    ``tx_type`` must be one of ``deposit``, ``withdrawal``, ``spend``, ``trade``,
+    ``yield``, ``fee``, ``transfer``, ``unknown``. ``amount`` is signed in the
+    convention used by collectors (positive = inbound, negative = outbound).
+    Provide ``usd_value`` to skip the CoinGecko price lookup (use it for assets
+    not on CoinGecko like ``"REALESTATE"``). For trades, set
+    ``counterparty_asset`` and ``counterparty_amount``.
+    """
+    from pfm.db.models import Transaction, TransactionType
+    from pfm.db.source_store import SourceNotFoundError, SourceStore
+
+    repo = _ctx_repo(ctx)
+    pricing = _ctx_pricing(ctx)
+
+    try:
+        source = await SourceStore(_ctx_db_path(ctx)).get(source_name)
+    except SourceNotFoundError:
+        return _json({"error": f"Source {source_name!r} not found"})
+
+    try:
+        tx_type_enum = TransactionType(tx_type.strip().lower())
+    except ValueError:
+        valid = ", ".join(t.value for t in TransactionType)
+        return _json({"error": f"Invalid tx_type {tx_type!r}; valid: {valid}"})
+
+    asset_code = asset.strip().upper()
+    if not asset_code:
+        return _json({"error": "asset must be non-empty"})
+
+    try:
+        amount_dec = _parse_decimal_field(amount, "amount", allow_negative=True)
+        if usd_value is None:
+            try:
+                price = await pricing.get_price_usd(asset_code)
+            except Exception as exc:  # noqa: BLE001
+                return _json({"error": f"Failed to price {asset_code}: {exc}"})
+            usd_dec = abs(amount_dec) * price
+        else:
+            usd_dec = _parse_decimal_field(usd_value, "usd_value", allow_negative=True)
+        cp_asset = (counterparty_asset or "").strip().upper()
+        cp_amount = (
+            _parse_decimal_field(counterparty_amount, "counterparty_amount", allow_negative=True)
+            if counterparty_amount is not None
+            else Decimal(0)
+        )
+    except _ManualSnapshotInputError as exc:
+        return _json({"error": str(exc)})
+
+    target_date = _parse_date(tx_date)
+
+    raw: dict[str, object] = {"manual": True, "via": "mcp"}
+    if raw_metadata:
+        raw.update(raw_metadata)
+
+    tx = Transaction(
+        date=target_date,
+        source=source.type,
+        source_name=source.name,
+        source_id=source.id,
+        tx_type=tx_type_enum,
+        asset=asset_code,
+        amount=amount_dec,
+        usd_value=usd_dec,
+        counterparty_asset=cp_asset,
+        counterparty_amount=cp_amount,
+        tx_id=(tx_id or "").strip(),
+        raw_json=json.dumps(raw, default=_json_default),
+    )
+    await repo.save_transactions([tx])
+    await _best_effort_broadcast("transactions_updated")
+    return _json(
+        {
+            "saved": 1,
+            "date": target_date.isoformat(),
+            "source_name": source.name,
+            "tx_type": tx_type_enum.value,
+            "asset": asset_code,
+            "amount": _dec(amount_dec),
+            "usd_value": _dec(usd_dec),
+            "counterparty_asset": cp_asset,
+            "counterparty_amount": _dec(cp_amount),
+        }
+    )
+
+
+@mcp.tool()
 async def get_collect_status(
     ctx: Context[ServerSession, AppContext],
 ) -> str:

@@ -15,6 +15,7 @@ from pfm.analytics.portfolio import (
     compute_risk_metrics,
 )
 from pfm.db.models import Price, Snapshot, Source
+from pfm.db.source_store import SourceStore
 
 
 async def test_compute_net_worth(repo):
@@ -198,6 +199,41 @@ async def test_empty_portfolio(repo):
     assert metrics.concentration_percentage == Decimal(0)
     assert metrics.top_5_assets == []
     assert metrics.hhi_index == Decimal(0)
+
+
+async def test_generic_source_group_hint_overrides_category(repo):
+    """A `generic` source with group_hint=defi rolls up under DeFi bucket."""
+    target_date = date(2024, 1, 15)
+    store = SourceStore(repo.db_path)
+    await store.add("generic-vault", "generic", {"label": "Vault", "group_hint": "defi"})
+    await store.add("generic-house", "generic", {"label": "House", "group_hint": "bank"})
+    await repo.save_snapshots(
+        [
+            Snapshot(target_date, "generic", "USDC", Decimal(1000), Decimal(1000), source_name="generic-vault"),
+            Snapshot(target_date, "generic", "USD", Decimal(500), Decimal(500), source_name="generic-house"),
+        ]
+    )
+
+    rows = await compute_allocation_by_category(repo, target_date)
+    by_bucket = {row.bucket: row.usd_value for row in rows}
+    assert by_bucket["DeFi"] == Decimal(1000)
+    assert by_bucket["fiat"] == Decimal(500)
+
+
+async def test_generic_source_no_group_hint_falls_back_to_bank(repo):
+    """Generic without group_hint maps to BANK group → fiat assets bucket as fiat."""
+    target_date = date(2024, 1, 15)
+    store = SourceStore(repo.db_path)
+    await store.add("generic-misc", "generic", {})
+    await repo.save_snapshots(
+        [
+            Snapshot(target_date, "generic", "EUR", Decimal(100), Decimal(110), source_name="generic-misc"),
+        ]
+    )
+
+    rows = await compute_allocation_by_category(repo, target_date)
+    by_bucket = {row.bucket: row.usd_value for row in rows}
+    assert by_bucket["fiat"] == Decimal(110)
 
 
 async def test_compute_allocation_by_category_unknown_source_fallbacks(repo):

@@ -296,7 +296,32 @@ SOURCE_TYPES: dict[str, list[CredentialField]] = {
             ),
         ),
     ],
+    "generic": [
+        CredentialField(
+            "label",
+            "Label / notes (free text)",
+            required=False,
+            secret=False,
+            tip=(
+                "1. Manual catch-all source for assets without a dedicated"
+                " collector (real estate, gold, friend IOU, etc.)\n"
+                "2. Feed snapshots via add_manual_snapshot and"
+                " transactions via add_manual_transaction"
+            ),
+        ),
+        CredentialField(
+            "group_hint",
+            "Allocation group (crypto/defi/bank/broker)",
+            required=False,
+            default="bank",
+            secret=False,
+            tip="Controls which allocation bucket this source rolls up into.",
+        ),
+    ],
 }
+
+
+GENERIC_GROUP_HINTS: frozenset[str] = frozenset({"crypto", "defi", "bank", "broker"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -321,4 +346,11 @@ def validate_credentials(source_type: str, credentials: dict[str, str]) -> list[
     if fields is None:
         return [f"Unknown source type: {source_type!r}"]
 
-    return [f"Missing required field: {f.name}" for f in fields if f.required and not credentials.get(f.name)]
+    errors = [f"Missing required field: {f.name}" for f in fields if f.required and not credentials.get(f.name)]
+
+    if source_type == "generic":
+        hint = (credentials.get("group_hint") or "").strip().lower()
+        if hint and hint not in GENERIC_GROUP_HINTS:
+            errors.append(f"Invalid group_hint {hint!r}; valid: {', '.join(sorted(GENERIC_GROUP_HINTS))}")
+
+    return errors

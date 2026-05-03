@@ -32,7 +32,7 @@ async def store(tmp_path: Path) -> SourceStore:
 
 
 def test_all_source_types_defined():
-    assert len(SOURCE_TYPES) == 19
+    assert len(SOURCE_TYPES) == 20
     expected = {
         "okx",
         "binance",
@@ -53,6 +53,7 @@ def test_all_source_types_defined():
         "trading212",
         "emcd",
         "yo",
+        "generic",
     }
     assert set(SOURCE_TYPES.keys()) == expected
 
@@ -95,6 +96,25 @@ def test_validate_credentials_optional_fields():
 def test_validate_credentials_cash_optional_field():
     errors = validate_credentials("cash", {})
     assert errors == []
+
+
+def test_validate_credentials_generic_no_required_fields():
+    assert validate_credentials("generic", {}) == []
+
+
+def test_validate_credentials_generic_with_label():
+    assert validate_credentials("generic", {"label": "Real estate"}) == []
+
+
+def test_validate_credentials_generic_valid_group_hint():
+    for hint in ("crypto", "defi", "bank", "broker"):
+        assert validate_credentials("generic", {"group_hint": hint}) == []
+
+
+def test_validate_credentials_generic_invalid_group_hint():
+    errors = validate_credentials("generic", {"group_hint": "garbage"})
+    assert len(errors) == 1
+    assert "Invalid group_hint" in errors[0]
 
 
 def test_validate_credentials_kbank():
@@ -319,6 +339,18 @@ async def test_multiple_instances_same_type(store: SourceStore):
     sources = await store.list_all()
     assert len(sources) == 2
     assert {s.name for s in sources} == {"okx-main", "okx-trading"}
+
+
+@pytest.mark.asyncio
+async def test_multiple_generic_instances_allowed(store: SourceStore):
+    """Multiple `generic` sources are allowed (only `cash` is singleton)."""
+    await store.add("generic-realestate", "generic", {"label": "House", "group_hint": "bank"})
+    await store.add("generic-gold", "generic", {"label": "Gold", "group_hint": "bank"})
+    sources = await store.list_all()
+    assert {s.name for s in sources if s.type == "generic"} == {
+        "generic-realestate",
+        "generic-gold",
+    }
 
 
 @pytest.mark.asyncio
