@@ -475,13 +475,19 @@ def _make_tx(
     )
 
 
-def _make_ctx(repo, store, db_path):
+def _make_ctx(repo, store, db_path, pricing=None):
     from unittest.mock import MagicMock
 
     from pfm.mcp_server import AppContext
+    from pfm.pricing.coingecko import PricingService
 
     ctx = MagicMock()
-    ctx.request_context.lifespan_context = AppContext(repo=repo, db_path=db_path, metadata_store=store)
+    ctx.request_context.lifespan_context = AppContext(
+        repo=repo,
+        db_path=db_path,
+        metadata_store=store,
+        pricing=pricing or PricingService(cache_db_path=None),
+    )
     return ctx
 
 
@@ -1176,3 +1182,616 @@ class TestCategorizationTools:
             assert "type_resolved" in parsed
             assert "transfers" in parsed
             assert "categorized" in parsed
+
+
+class TestCashTools:
+    @pytest.mark.asyncio
+    async def test_get_cash_balance_returns_error_when_no_cash_source(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import get_cash_balance
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+
+            parsed = json.loads(await get_cash_balance(ctx))
+            assert parsed == {"error": "Cash source not found"}
+
+    @pytest.mark.asyncio
+    async def test_set_cash_balance_creates_today_snapshots(self, tmp_path):
+        from datetime import UTC, datetime
+
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.db.source_store import SourceStore
+        from pfm.mcp_server import get_cash_balance, set_cash_balance
+        from pfm.pricing.coingecko import PricingService
+
+        db_path = tmp_path / "x.db"
+        pricing = PricingService(cache_db_path=None)
+        pricing.set_test_price("EUR", Decimal("1.1"))
+
+        async with Repository(db_path) as repo:
+            await SourceStore(db_path).add("cash", "cash", {"fiat_currencies": "USD"})
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, db_path, pricing=pricing)
+
+            parsed = json.loads(
+                await set_cash_balance(
+                    ctx,
+                    balances={"USD": "100", "EUR": "50"},
+                    selected_currencies=["USD", "EUR"],
+                )
+            )
+            assert parsed["updated"] is True
+            assert parsed["selected_currencies"] == ["USD", "EUR"]
+            assert parsed["balances"]["USD"]["amount"] == "100"
+            assert parsed["balances"]["EUR"]["usd_value"] == "55"
+
+            today = datetime.now(tz=UTC).date()
+            snapshots = await repo.get_snapshots_by_date(today)
+            cash_rows = {s.asset for s in snapshots if s.source == "cash"}
+            assert cash_rows == {"USD", "EUR"}
+
+            view = json.loads(await get_cash_balance(ctx))
+            assert view["source_name"] == "cash"
+            assert set(view["selected_currencies"]) == {"USD", "EUR"}
+            assert view["balances"]["EUR"]["price"] == "1.1"
+
+    @pytest.mark.asyncio
+    async def test_set_cash_balance_rejects_unsupported_currency(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.db.source_store import SourceStore
+        from pfm.mcp_server import set_cash_balance
+
+        db_path = tmp_path / "x.db"
+        async with Repository(db_path) as repo:
+            await SourceStore(db_path).add("cash", "cash", {"fiat_currencies": "USD"})
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, db_path)
+            parsed = json.loads(
+                await set_cash_balance(
+                    ctx,
+                    balances={"ABC": "10"},
+                    selected_currencies=["ABC"],
+                )
+            )
+            assert "selected_currencies" in parsed["error"]
+
+    @pytest.mark.asyncio
+    async def test_list_supported_fiat_currencies(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import list_supported_fiat_currencies
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+            parsed = json.loads(await list_supported_fiat_currencies(ctx))
+            assert "USD" in parsed["supported_currencies"]
+            assert "EUR" in parsed["supported_currencies"]
+
+
+class TestAddManualSnapshot:
+    @pytest.mark.asyncio
+    async def test_saves_snapshot_with_explicit_usd_value(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.db.source_store import SourceStore
+        from pfm.mcp_server import add_manual_snapshot
+
+        db_path = tmp_path / "x.db"
+        async with Repository(db_path) as repo:
+            await SourceStore(db_path).add(
+                "lobstr-main",
+                "lobstr",
+                {"stellar_address": "G" + "A" * 55},
+            )
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, db_path)
+
+            parsed = json.loads(
+                await add_manual_snapshot(
+                    ctx,
+                    source_name="lobstr-main",
+                    asset="xlm",
+                    amount="100",
+                    usd_value="50",
+                    apy_percent="4.25",
+                    snapshot_date="2026-04-15",
+                )
+            )
+            assert parsed["saved"] == 1
+            assert parsed["asset"] == "XLM"
+            assert parsed["amount"] == "100"
+            assert parsed["usd_value"] == "50"
+            assert parsed["apy"] == "0.0425"
+
+    @pytest.mark.asyncio
+    async def test_apy_percent_below_one_is_still_percent(self, tmp_path):
+        """Regression: '0.8' must be treated as 0.8% (not 80%)."""
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.db.source_store import SourceStore
+        from pfm.mcp_server import add_manual_snapshot
+
+        db_path = tmp_path / "x.db"
+        async with Repository(db_path) as repo:
+            await SourceStore(db_path).add(
+                "lobstr-main",
+                "lobstr",
+                {"stellar_address": "G" + "A" * 55},
+            )
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, db_path)
+
+            parsed = json.loads(
+                await add_manual_snapshot(
+                    ctx,
+                    source_name="lobstr-main",
+                    asset="XLM",
+                    amount="100",
+                    usd_value="50",
+                    apy_percent="0.8",
+                )
+            )
+            assert parsed["apy"] == "0.008"
+
+    @pytest.mark.asyncio
+    async def test_apy_percent_none_stores_zero(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.db.source_store import SourceStore
+        from pfm.mcp_server import add_manual_snapshot
+
+        db_path = tmp_path / "x.db"
+        async with Repository(db_path) as repo:
+            await SourceStore(db_path).add(
+                "lobstr-main",
+                "lobstr",
+                {"stellar_address": "G" + "A" * 55},
+            )
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, db_path)
+
+            parsed = json.loads(
+                await add_manual_snapshot(
+                    ctx,
+                    source_name="lobstr-main",
+                    asset="XLM",
+                    amount="100",
+                    usd_value="50",
+                )
+            )
+            assert parsed["apy"] == "0"
+
+    @pytest.mark.asyncio
+    async def test_rejects_unknown_source(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import add_manual_snapshot
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+            parsed = json.loads(
+                await add_manual_snapshot(
+                    ctx,
+                    source_name="missing",
+                    asset="BTC",
+                    amount="1",
+                    usd_value="60000",
+                )
+            )
+            assert "not found" in parsed["error"]
+
+    @pytest.mark.asyncio
+    async def test_rejects_negative_amount(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.db.source_store import SourceStore
+        from pfm.mcp_server import add_manual_snapshot
+
+        db_path = tmp_path / "x.db"
+        async with Repository(db_path) as repo:
+            await SourceStore(db_path).add(
+                "lobstr-main",
+                "lobstr",
+                {"stellar_address": "G" + "A" * 55},
+            )
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, db_path)
+            parsed = json.loads(
+                await add_manual_snapshot(
+                    ctx,
+                    source_name="lobstr-main",
+                    asset="XLM",
+                    amount="-1",
+                    usd_value="0",
+                )
+            )
+            assert "non-negative" in parsed["error"]
+
+
+class TestEarnOverridesTools:
+    @pytest.mark.asyncio
+    async def test_set_and_list_and_delete(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import delete_earn_overrides, list_earn_overrides, set_earn_overrides
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+
+            empty = json.loads(await list_earn_overrides(ctx, source_name="okx-main"))
+            assert empty["overrides"] == []
+
+            saved = json.loads(
+                await set_earn_overrides(
+                    ctx,
+                    source_name="okx-main",
+                    overrides=[{"category": "savings", "coin": "USDT", "apr": "0.05"}],
+                )
+            )
+            assert saved["overrides"][0]["coin"] == "USDT"
+
+            after = json.loads(await list_earn_overrides(ctx, source_name="okx-main"))
+            assert after["overrides"][0]["category"] == "savings"
+
+            cleared = json.loads(await delete_earn_overrides(ctx, source_name="okx-main"))
+            assert cleared["overrides"] == []
+
+    @pytest.mark.asyncio
+    async def test_set_rejects_missing_required_fields(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import set_earn_overrides
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+            parsed = json.loads(
+                await set_earn_overrides(
+                    ctx,
+                    source_name="okx-main",
+                    overrides=[{"coin": "USDT"}],
+                )
+            )
+            assert "category" in parsed["error"]
+
+    @pytest.mark.asyncio
+    async def test_set_rejects_invalid_apr(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import set_earn_overrides
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+            parsed = json.loads(
+                await set_earn_overrides(
+                    ctx,
+                    source_name="okx-main",
+                    overrides=[{"category": "savings", "coin": "USDT", "apr": "not-a-number"}],
+                )
+            )
+            assert "invalid apr" in parsed["error"]
+
+    @pytest.mark.asyncio
+    async def test_set_rejects_negative_apr(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import set_earn_overrides
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+            parsed = json.loads(
+                await set_earn_overrides(
+                    ctx,
+                    source_name="okx-main",
+                    overrides=[{"category": "savings", "coin": "USDT", "apr": "-0.01"}],
+                )
+            )
+            assert "non-negative" in parsed["error"]
+
+    @pytest.mark.asyncio
+    async def test_set_rejects_invalid_settlement_at(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import set_earn_overrides
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+            parsed = json.loads(
+                await set_earn_overrides(
+                    ctx,
+                    source_name="okx-main",
+                    overrides=[{"category": "savings", "coin": "USDT", "settlement_at": "tomorrow"}],
+                )
+            )
+            assert "ISO date" in parsed["error"]
+
+    @pytest.mark.asyncio
+    async def test_set_accepts_valid_apr_and_settlement(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import set_earn_overrides
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+            parsed = json.loads(
+                await set_earn_overrides(
+                    ctx,
+                    source_name="okx-main",
+                    overrides=[
+                        {
+                            "category": "savings",
+                            "coin": "USDT",
+                            "apr": "0.05",
+                            "settlement_at": "2026-04-15",
+                        }
+                    ],
+                )
+            )
+            assert parsed["overrides"][0]["apr"] == "0.05"
+
+
+class TestApyRulesTools:
+    @pytest.mark.asyncio
+    async def test_create_list_update_delete_apy_rule(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.db.source_store import SourceStore
+        from pfm.mcp_server import (
+            create_apy_rule,
+            delete_apy_rule,
+            list_apy_rules,
+            update_apy_rule,
+        )
+
+        db_path = tmp_path / "x.db"
+        async with Repository(db_path) as repo:
+            await SourceStore(db_path).add(
+                "wallet",
+                "bitget_wallet",
+                {"wallet_address": "0x" + "a" * 40},
+            )
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, db_path)
+
+            empty = json.loads(await list_apy_rules(ctx, source_name="wallet"))
+            assert empty["rules"] == []
+
+            created = json.loads(
+                await create_apy_rule(
+                    ctx,
+                    source_name="wallet",
+                    rule={
+                        "protocol": "aave",
+                        "coin": "usdc",
+                        "type": "base",
+                        "limits": [{"from_amount": "0", "to_amount": "10000", "apy": "0.05"}],
+                        "started_at": "2026-01-01",
+                        "finished_at": "2026-12-31",
+                    },
+                )
+            )
+            assert len(created["rules"]) == 1
+            rule_id = created["rules"][0]["id"]
+
+            updated = json.loads(
+                await update_apy_rule(
+                    ctx,
+                    source_name="wallet",
+                    rule_id=rule_id,
+                    rule={
+                        "protocol": "aave",
+                        "coin": "usdt",
+                        "type": "bonus",
+                        "limits": [{"from_amount": "0", "to_amount": None, "apy": "0.01"}],
+                        "started_at": "2026-01-01",
+                        "finished_at": "2026-06-30",
+                    },
+                )
+            )
+            assert updated["rules"][0]["coin"] == "usdt"
+
+            deleted = json.loads(await delete_apy_rule(ctx, source_name="wallet", rule_id=rule_id))
+            assert deleted["rules"] == []
+
+    @pytest.mark.asyncio
+    async def test_rejects_unsupported_source_type(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.db.source_store import SourceStore
+        from pfm.mcp_server import list_apy_rules
+
+        db_path = tmp_path / "x.db"
+        async with Repository(db_path) as repo:
+            await SourceStore(db_path).add("cash", "cash", {"fiat_currencies": "USD"})
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, db_path)
+            parsed = json.loads(await list_apy_rules(ctx, source_name="cash"))
+            assert "not supported" in parsed["error"]
+
+    @pytest.mark.asyncio
+    async def test_delete_apy_rule_rejects_unsupported_source_type(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.db.source_store import SourceStore
+        from pfm.mcp_server import delete_apy_rule
+
+        db_path = tmp_path / "x.db"
+        async with Repository(db_path) as repo:
+            await SourceStore(db_path).add("cash", "cash", {"fiat_currencies": "USD"})
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, db_path)
+            parsed = json.loads(await delete_apy_rule(ctx, source_name="cash", rule_id="x"))
+            assert "not supported" in parsed["error"]
+
+
+class TestBestEffortBroadcast:
+    @pytest.mark.asyncio
+    async def test_skips_when_daemon_unreachable(self):
+        from pfm.mcp_server import _best_effort_broadcast
+
+        with patch("pfm.server.client.is_daemon_reachable", return_value=False):
+            await _best_effort_broadcast("snapshot_updated")
+
+    @pytest.mark.asyncio
+    async def test_swallows_httpx_errors(self):
+        import httpx
+
+        from pfm.mcp_server import _best_effort_broadcast
+
+        class _BoomClient:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            async def post(self, *_args, **_kwargs):
+                raise httpx.ConnectError("nope")
+
+        with (
+            patch("pfm.server.client.is_daemon_reachable", return_value=True),
+            patch("httpx.AsyncClient", _BoomClient),
+        ):
+            await _best_effort_broadcast("snapshot_updated")
+
+    @pytest.mark.asyncio
+    async def test_posts_event_when_daemon_reachable(self):
+        from pfm.mcp_server import _best_effort_broadcast
+
+        captured: dict[str, object] = {}
+
+        class _OkClient:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            async def post(self, path, *, json):
+                captured["path"] = path
+                captured["json"] = json
+
+                class _Resp:
+                    status_code = 200
+
+                return _Resp()
+
+        with (
+            patch("pfm.server.client.is_daemon_reachable", return_value=True),
+            patch("httpx.AsyncClient", _OkClient),
+        ):
+            await _best_effort_broadcast("snapshot_updated")
+
+        assert captured["path"] == "/api/v1/internal/broadcast"
+        assert captured["json"] == {"type": "snapshot_updated"}
+
+
+class TestCollectTools:
+    @pytest.mark.asyncio
+    async def test_get_collect_status_daemon_unreachable(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import get_collect_status
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+            with patch("pfm.server.client.is_daemon_reachable", return_value=False):
+                parsed = json.loads(await get_collect_status(ctx))
+            assert parsed == {"daemon": "unreachable"}
+
+    @pytest.mark.asyncio
+    async def test_trigger_collect_daemon_unreachable(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import trigger_collect
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+            with patch("pfm.server.client.is_daemon_reachable", return_value=False):
+                parsed = json.loads(await trigger_collect(ctx))
+            assert "not reachable" in parsed["error"]
+
+    @pytest.mark.asyncio
+    async def test_trigger_collect_wraps_httpx_error(self, tmp_path):
+        import httpx
+
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import trigger_collect
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+
+            class _BoomClient:
+                def __init__(self, *_args, **_kwargs):
+                    pass
+
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, *_args):
+                    return False
+
+                async def post(self, *_args, **_kwargs):
+                    raise httpx.ConnectError("boom")
+
+            with (
+                patch("pfm.server.client.is_daemon_reachable", return_value=True),
+                patch("httpx.AsyncClient", _BoomClient),
+            ):
+                parsed = json.loads(await trigger_collect(ctx))
+            assert "Daemon request failed" in parsed["error"]
+            assert "boom" in parsed["error"]
+
+    @pytest.mark.asyncio
+    async def test_get_collect_status_wraps_httpx_error(self, tmp_path):
+        import httpx
+
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import get_collect_status
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+
+            class _BoomClient:
+                def __init__(self, *_args, **_kwargs):
+                    pass
+
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, *_args):
+                    return False
+
+                async def get(self, *_args, **_kwargs):
+                    raise httpx.ReadTimeout("slow")
+
+            with (
+                patch("pfm.server.client.is_daemon_reachable", return_value=True),
+                patch("httpx.AsyncClient", _BoomClient),
+            ):
+                parsed = json.loads(await get_collect_status(ctx))
+            assert "Daemon request failed" in parsed["error"]

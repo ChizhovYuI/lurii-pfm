@@ -56,6 +56,10 @@ class PricingService:
         """Close the HTTP client."""
         await self._client.aclose()
 
+    def set_test_price(self, ticker: str, price: Decimal) -> None:
+        """Test-only: prime the in-memory cache with a fixed USD price."""
+        self._set_cache(ticker.upper(), price)
+
     async def get_price_usd(self, ticker: str) -> Decimal:
         """Get the USD price for a single asset ticker (e.g. 'BTC', 'GBP')."""
         ticker = ticker.upper()

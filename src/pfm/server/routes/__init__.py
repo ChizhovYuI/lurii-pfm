@@ -18,6 +18,7 @@ def setup_routes(app: web.Application) -> None:
     from pfm.server.routes.earn import routes as earn_routes
     from pfm.server.routes.ext_snapshot import routes as ext_snapshot_routes
     from pfm.server.routes.health import routes as health_routes
+    from pfm.server.routes.internal import routes as internal_routes
     from pfm.server.routes.portfolio import routes as portfolio_routes
     from pfm.server.routes.report import routes as report_routes
     from pfm.server.routes.settings import routes as settings_routes
@@ -42,4 +43,5 @@ def setup_routes(app: web.Application) -> None:
     app.router.add_routes(statement_routes)
     app.router.add_routes(transactions_routes)
     app.router.add_routes(updates_routes)
+    app.router.add_routes(internal_routes)
     app.router.add_route("GET", "/api/v1/ws", websocket_handler)

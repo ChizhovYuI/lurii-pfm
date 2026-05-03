@@ -15,6 +15,7 @@ from pfm.db.ai_report_memory_store import AI_REPORT_MEMORY_MAX_CHARS, AIReportMe
 from pfm.db.metadata_store import MetadataStore
 from pfm.db.models import CategoryRule, TransactionMetadata, TypeRule
 from pfm.db.repository import Repository
+from pfm.pricing.coingecko import PricingService
 
 # ---------------------------------------------------------------------------
 # Lifespan: open DB once, share across all tool calls
@@ -31,17 +32,24 @@ class AppContext:
     repo: Repository
     db_path: Path
     metadata_store: MetadataStore
+    pricing: PricingService
 
 
 @asynccontextmanager
 async def _lifespan(_server: FastMCP) -> AsyncIterator[AppContext]:
+    from pfm.config import get_settings
     from pfm.db.repository import Repository
     from pfm.server.daemon import get_db_path
 
     db_path = get_db_path()
+    settings = get_settings()
     async with Repository(db_path) as repo:
         store = MetadataStore(repo.connection)
-        yield AppContext(repo=repo, db_path=db_path, metadata_store=store)
+        pricing = PricingService(api_key=settings.coingecko_api_key, cache_db_path=db_path)
+        try:
+            yield AppContext(repo=repo, db_path=db_path, metadata_store=store, pricing=pricing)
+        finally:
+            await pricing.close()
 
 
 mcp = FastMCP(
@@ -74,6 +82,11 @@ def _ctx_db_path(ctx: Context[ServerSession, AppContext]) -> Path:
 def _ctx_store(ctx: Context[ServerSession, AppContext]) -> MetadataStore:
     lc: AppContext = ctx.request_context.lifespan_context
     return lc.metadata_store
+
+
+def _ctx_pricing(ctx: Context[ServerSession, AppContext]) -> PricingService:
+    lc: AppContext = ctx.request_context.lifespan_context
+    return lc.pricing
 
 
 def _today() -> date:
@@ -1266,6 +1279,493 @@ async def apply_categorization(
     store = _ctx_store(ctx)
     result = await run_categorization(repo, store, force=force)
     return _json(result)
+
+
+# ---------------------------------------------------------------------------
+# Manual data entry & source configuration
+# ---------------------------------------------------------------------------
+
+
+async def _best_effort_broadcast(event_type: str) -> None:
+    """Notify the running daemon to push a WS event to subscribed clients.
+
+    No-op if the daemon is not reachable or the call fails. The DB write has
+    already committed; broadcasting is purely a UI hint.
+    """
+    from pfm.server.client import get_base_url, is_daemon_reachable
+
+    if not is_daemon_reachable():
+        return
+
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(base_url=get_base_url(), timeout=2.0) as client:
+            await client.post("/api/v1/internal/broadcast", json={"type": event_type})
+    except httpx.HTTPError:
+        pass
+
+
+@mcp.tool()
+async def list_supported_fiat_currencies(
+    ctx: Context[ServerSession, AppContext],
+) -> str:
+    """Return the list of fiat currency codes accepted by the manual cash source."""
+    del ctx
+    from pfm.cash_manual import SUPPORTED_FIAT_CURRENCIES
+
+    return _json({"supported_currencies": list(SUPPORTED_FIAT_CURRENCIES)})
+
+
+@mcp.tool()
+async def get_cash_balance(
+    ctx: Context[ServerSession, AppContext],
+) -> str:
+    """Return the current manual cash balances and selected currencies.
+
+    Use this for "How much cash do I have?" or before calling ``set_cash_balance``.
+    """
+    from pfm.cash_manual import (
+        CashSourceAmbiguousError,
+        CashSourceNotFoundError,
+        get_cash_balance_view,
+    )
+
+    repo = _ctx_repo(ctx)
+    db_path = _ctx_db_path(ctx)
+    try:
+        view = await get_cash_balance_view(repo=repo, db_path=db_path, target_date=_today())
+    except CashSourceNotFoundError as exc:
+        return _json({"error": str(exc)})
+    except CashSourceAmbiguousError as exc:
+        return _json({"error": str(exc), "matches": exc.names})
+    return _json(view.to_dict())
+
+
+@mcp.tool()
+async def set_cash_balance(
+    ctx: Context[ServerSession, AppContext],
+    balances: dict[str, str],
+    selected_currencies: list[str] | None = None,
+) -> str:
+    """Upsert today's manual cash balances for selected fiat currencies.
+
+    ``balances`` maps currency code -> non-negative decimal string (e.g. ``{"USD": "100", "EUR": "50"}``).
+    ``selected_currencies`` defaults to the keys of ``balances``. Currencies previously selected
+    but absent from this call get zeroed out (matches the REST PUT semantics).
+    """
+    from pfm.cash_manual import (
+        SUPPORTED_FIAT_CURRENCIES,
+        CashSourceAmbiguousError,
+        CashSourceNotFoundError,
+        CashValidationError,
+        parse_selected_amounts,
+        parse_selected_currencies,
+        resolve_cash_source,
+        snapshots_to_balance_dict,
+        upsert_manual_cash,
+    )
+    from pfm.db.source_store import InvalidCredentialsError
+
+    repo = _ctx_repo(ctx)
+    db_path = _ctx_db_path(ctx)
+    pricing = _ctx_pricing(ctx)
+
+    try:
+        source = await resolve_cash_source(db_path)
+    except CashSourceNotFoundError as exc:
+        return _json({"error": str(exc)})
+    except CashSourceAmbiguousError as exc:
+        return _json({"error": str(exc), "matches": exc.names})
+
+    selected_input: object = selected_currencies if selected_currencies is not None else list(balances.keys())
+    try:
+        selected = parse_selected_currencies(selected_input)
+        amounts = parse_selected_amounts(balances, selected)
+    except CashValidationError as exc:
+        return _json({"error": str(exc)})
+
+    today = _today()
+    try:
+        snapshots = await upsert_manual_cash(
+            repo=repo,
+            pricing=pricing,
+            db_path=db_path,
+            source_name=source.name,
+            selected_currencies=selected,
+            amounts=amounts,
+            today=today,
+        )
+    except InvalidCredentialsError as exc:
+        return _json({"error": str(exc)})
+
+    await _best_effort_broadcast("snapshot_updated")
+
+    return _json(
+        {
+            "updated": True,
+            "date": today.isoformat(),
+            "source_name": source.name,
+            "selected_currencies": selected,
+            "supported_currencies": list(SUPPORTED_FIAT_CURRENCIES),
+            "latest_snapshot_date": today.isoformat(),
+            "balances": snapshots_to_balance_dict(snapshots),
+        }
+    )
+
+
+class _ManualSnapshotInputError(ValueError):
+    """Validation error for ``add_manual_snapshot`` input."""
+
+
+def _parse_decimal_field(value: str, field: str, *, allow_negative: bool = False) -> Decimal:
+    try:
+        parsed = Decimal(str(value).strip())
+    except (ArithmeticError, ValueError) as exc:
+        msg = f"Invalid {field}: {value!r}"
+        raise _ManualSnapshotInputError(msg) from exc
+    if not allow_negative and parsed < 0:
+        msg = f"{field} must be non-negative"
+        raise _ManualSnapshotInputError(msg)
+    return parsed
+
+
+def _normalize_apy(apy_percent: str | None) -> Decimal:
+    if apy_percent is None:
+        return Decimal(0)
+    apy_pct = _parse_decimal_field(apy_percent, "apy_percent", allow_negative=True)
+    return apy_pct / Decimal(100)
+
+
+@mcp.tool()
+async def add_manual_snapshot(  # noqa: PLR0913
+    ctx: Context[ServerSession, AppContext],
+    source_name: str,
+    asset: str,
+    amount: str,
+    *,
+    usd_value: str | None = None,
+    apy_percent: str | None = None,
+    snapshot_date: str | None = None,
+    raw_metadata: dict[str, object] | None = None,
+) -> str:
+    """Save a manual snapshot row for an existing source (assets the API can't return).
+
+    Mirrors the ``/api/v1/ext/snapshot`` ingest path: prices ``asset`` against USD when
+    ``usd_value`` is omitted. Use for browser-extension style manual ingestion of
+    DeFi positions, CEX rows, etc.
+
+    ``apy_percent`` is always interpreted as a percent string and divided by 100
+    (e.g. ``"4.25"`` -> ``0.0425`` stored). Pass ``"0.8"`` for 0.8% APY.
+    Omit (or pass ``None``) for non-yield-bearing positions; downstream queries
+    treat ``apy == 0`` as "no yield" (same convention as auto collectors).
+    """
+    from pfm.db.models import Snapshot
+    from pfm.db.source_store import SourceNotFoundError, SourceStore
+
+    repo = _ctx_repo(ctx)
+    pricing = _ctx_pricing(ctx)
+
+    try:
+        source = await SourceStore(_ctx_db_path(ctx)).get(source_name)
+    except SourceNotFoundError:
+        return _json({"error": f"Source {source_name!r} not found"})
+
+    asset_code = asset.strip().upper()
+    if not asset_code:
+        return _json({"error": "asset must be non-empty"})
+
+    try:
+        amount_dec = _parse_decimal_field(amount, "amount")
+        if usd_value is None:
+            try:
+                price = await pricing.get_price_usd(asset_code)
+            except Exception as exc:  # noqa: BLE001
+                return _json({"error": f"Failed to price {asset_code}: {exc}"})
+            usd_dec = amount_dec * price
+        else:
+            usd_dec = _parse_decimal_field(usd_value, "usd_value")
+            price = usd_dec / amount_dec if amount_dec != 0 else Decimal(0)
+        apy = _normalize_apy(apy_percent)
+    except _ManualSnapshotInputError as exc:
+        return _json({"error": str(exc)})
+
+    target_date = _parse_date(snapshot_date)
+
+    raw: dict[str, object] = {"manual": True, "via": "mcp"}
+    if raw_metadata:
+        raw.update(raw_metadata)
+
+    snapshot = Snapshot(
+        date=target_date,
+        source=source.type,
+        source_name=source.name,
+        asset=asset_code,
+        amount=amount_dec,
+        usd_value=usd_dec,
+        price=price,
+        apy=apy,
+        raw_json=json.dumps(raw, default=_json_default),
+    )
+    await repo.save_snapshots([snapshot])
+    await _best_effort_broadcast("snapshot_updated")
+    return _json(
+        {
+            "saved": 1,
+            "date": target_date.isoformat(),
+            "source_name": source.name,
+            "asset": asset_code,
+            "amount": _dec(amount_dec),
+            "usd_value": _dec(usd_dec),
+            "price": _dec(price),
+            "apy": _dec(apy),
+        }
+    )
+
+
+@mcp.tool()
+async def get_collect_status(
+    ctx: Context[ServerSession, AppContext],
+) -> str:
+    """Return whether a collection cycle is in progress on the running daemon.
+
+    Reads ``/api/v1/collect/status`` on the local daemon (default port 19274).
+    Returns ``{"daemon": "unreachable"}`` if the daemon is not running.
+    """
+    del ctx
+    from pfm.server.client import get_base_url, is_daemon_reachable
+
+    if not is_daemon_reachable():
+        return _json({"daemon": "unreachable"})
+
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(base_url=get_base_url(), timeout=5.0) as client:
+            resp = await client.get("/api/v1/collect/status")
+            resp.raise_for_status()
+            payload: dict[str, object] = resp.json()
+    except httpx.HTTPError as exc:
+        return _json({"error": f"Daemon request failed: {exc}"})
+    return _json(payload)
+
+
+@mcp.tool()
+async def trigger_collect(
+    ctx: Context[ServerSession, AppContext],
+    source: str | None = None,
+) -> str:
+    """Start a background collection cycle on the running daemon.
+
+    ``source`` (optional) restricts collection to a single source name; otherwise all
+    enabled sources are collected. Requires the daemon to be running because collection
+    runs in its background pipeline. Returns immediately with status; check
+    ``get_collect_status`` for completion.
+    """
+    del ctx
+    from pfm.server.client import get_base_url, is_daemon_reachable
+
+    if not is_daemon_reachable():
+        return _json({"error": "Daemon is not reachable on 127.0.0.1:19274. Start it first."})
+
+    import httpx
+
+    body: dict[str, str] = {}
+    if source:
+        body["source"] = source
+
+    try:
+        async with httpx.AsyncClient(base_url=get_base_url(), timeout=10.0) as client:
+            resp = await client.post("/api/v1/collect", json=body)
+
+        if resp.status_code == 409:  # noqa: PLR2004
+            return _json({"error": "Collection already in progress", "status": "running"})
+        resp.raise_for_status()
+        payload: dict[str, object] = resp.json()
+    except httpx.HTTPError as exc:
+        return _json({"error": f"Daemon request failed: {exc}"})
+    return _json(payload)
+
+
+@mcp.tool()
+async def list_apy_rules(
+    ctx: Context[ServerSession, AppContext],
+    source_name: str,
+) -> str:
+    """List APY rules for a source. Only valid for sources in ``APY_RULES_TYPES``."""
+    from pfm.db.apy_rules_store import ApyRulesStore, rule_to_dict
+    from pfm.db.source_store import SourceNotFoundError, SourceStore
+    from pfm.source_types import APY_RULES_TYPES
+
+    db_path = _ctx_db_path(ctx)
+    try:
+        source = await SourceStore(db_path).get(source_name)
+    except SourceNotFoundError:
+        return _json({"error": f"Source {source_name!r} not found"})
+    if source.type not in APY_RULES_TYPES:
+        return _json({"error": f"APY rules are not supported for {source.type!r} sources"})
+
+    rules = await ApyRulesStore(db_path).load_rules(source_name)
+    return _json({"source_name": source_name, "rules": [rule_to_dict(r) for r in rules]})
+
+
+@mcp.tool()
+async def create_apy_rule(
+    ctx: Context[ServerSession, AppContext],
+    source_name: str,
+    rule: dict[str, object],
+) -> str:
+    """Create an APY rule for a source.
+
+    ``rule`` shape: ``{"protocol": "aave", "coin": "usdc", "type": "base"|"bonus",
+    "limits": [{"from_amount": "0", "to_amount": "10000", "apy": "0.05"}, ...],
+    "started_at": "YYYY-MM-DD", "finished_at": "YYYY-MM-DD"}``. APY values are decimal
+    fractions (0.05 = 5%).
+    """
+    from pfm.db.apy_rules_store import ApyRulesStore, ApyRuleValidationError, rule_to_dict
+    from pfm.db.source_store import SourceNotFoundError, SourceStore
+    from pfm.source_types import APY_RULES_TYPES
+
+    db_path = _ctx_db_path(ctx)
+    try:
+        source = await SourceStore(db_path).get(source_name)
+    except SourceNotFoundError:
+        return _json({"error": f"Source {source_name!r} not found"})
+    if source.type not in APY_RULES_TYPES:
+        return _json({"error": f"APY rules are not supported for {source.type!r} sources"})
+
+    try:
+        rules = await ApyRulesStore(db_path).add_rule(source_name, dict(rule))
+    except ApyRuleValidationError as exc:
+        return _json({"error": str(exc)})
+    return _json({"source_name": source_name, "rules": [rule_to_dict(r) for r in rules]})
+
+
+@mcp.tool()
+async def update_apy_rule(
+    ctx: Context[ServerSession, AppContext],
+    source_name: str,
+    rule_id: str,
+    rule: dict[str, object],
+) -> str:
+    """Replace an APY rule by id. Same ``rule`` shape as ``create_apy_rule``."""
+    from pfm.db.apy_rules_store import (
+        ApyRuleNotFoundError,
+        ApyRulesStore,
+        ApyRuleValidationError,
+        rule_to_dict,
+    )
+    from pfm.db.source_store import SourceNotFoundError, SourceStore
+    from pfm.source_types import APY_RULES_TYPES
+
+    db_path = _ctx_db_path(ctx)
+    try:
+        source = await SourceStore(db_path).get(source_name)
+    except SourceNotFoundError:
+        return _json({"error": f"Source {source_name!r} not found"})
+    if source.type not in APY_RULES_TYPES:
+        return _json({"error": f"APY rules are not supported for {source.type!r} sources"})
+
+    try:
+        rules = await ApyRulesStore(db_path).update_rule(source_name, rule_id, dict(rule))
+    except ApyRuleNotFoundError:
+        return _json({"error": f"Rule {rule_id!r} not found"})
+    except ApyRuleValidationError as exc:
+        return _json({"error": str(exc)})
+    return _json({"source_name": source_name, "rules": [rule_to_dict(r) for r in rules]})
+
+
+@mcp.tool()
+async def delete_apy_rule(
+    ctx: Context[ServerSession, AppContext],
+    source_name: str,
+    rule_id: str,
+) -> str:
+    """Delete an APY rule by id."""
+    from pfm.db.apy_rules_store import ApyRuleNotFoundError, ApyRulesStore, rule_to_dict
+    from pfm.db.source_store import SourceNotFoundError, SourceStore
+    from pfm.source_types import APY_RULES_TYPES
+
+    db_path = _ctx_db_path(ctx)
+    try:
+        source = await SourceStore(db_path).get(source_name)
+    except SourceNotFoundError:
+        return _json({"error": f"Source {source_name!r} not found"})
+    if source.type not in APY_RULES_TYPES:
+        return _json({"error": f"APY rules are not supported for {source.type!r} sources"})
+
+    try:
+        rules = await ApyRulesStore(db_path).delete_rule(source_name, rule_id)
+    except ApyRuleNotFoundError:
+        return _json({"error": f"Rule {rule_id!r} not found"})
+    return _json({"source_name": source_name, "rules": [rule_to_dict(r) for r in rules]})
+
+
+@mcp.tool()
+async def list_earn_overrides(
+    ctx: Context[ServerSession, AppContext],
+    source_name: str,
+) -> str:
+    """List earn overrides (manual APR / settlement) for a source."""
+    from pfm.db.earn_override_store import EarnOverrideStore
+
+    overrides = await EarnOverrideStore(_ctx_db_path(ctx)).load(source_name)
+    return _json({"source_name": source_name, "overrides": overrides})
+
+
+@mcp.tool()
+async def set_earn_overrides(
+    ctx: Context[ServerSession, AppContext],
+    source_name: str,
+    overrides: list[dict[str, str]],
+) -> str:
+    """Replace all earn overrides for a source.
+
+    Each override needs ``category`` and ``coin``. Optional fields:
+    ``apr`` (decimal fraction string, e.g. ``"0.05"`` for 5%, non-negative)
+    and ``settlement_at`` (ISO date ``YYYY-MM-DD``).
+    """
+    from datetime import date as _date
+
+    from pfm.db.earn_override_store import EarnOverrideStore
+
+    for index, override in enumerate(overrides):
+        if not override.get("category") or not override.get("coin"):
+            return _json({"error": f"override[{index}]: must have category and coin"})
+        apr = override.get("apr")
+        if apr not in (None, ""):
+            try:
+                apr_dec = Decimal(str(apr).strip())
+            except ArithmeticError:
+                return _json({"error": f"override[{index}]: invalid apr {apr!r}"})
+            if not apr_dec.is_finite() or apr_dec < 0:
+                return _json({"error": f"override[{index}]: apr must be finite and non-negative"})
+        settlement_at = override.get("settlement_at")
+        if settlement_at not in (None, ""):
+            try:
+                _date.fromisoformat(str(settlement_at))
+            except ValueError:
+                return _json({"error": f"override[{index}]: settlement_at must be ISO date (YYYY-MM-DD)"})
+
+    try:
+        await EarnOverrideStore(_ctx_db_path(ctx)).save(source_name, overrides)
+    except Exception as exc:  # noqa: BLE001
+        return _json({"error": f"Failed to save earn overrides: {exc}"})
+    await _best_effort_broadcast("snapshot_updated")
+    return _json({"source_name": source_name, "overrides": overrides})
+
+
+@mcp.tool()
+async def delete_earn_overrides(
+    ctx: Context[ServerSession, AppContext],
+    source_name: str,
+) -> str:
+    """Delete all earn overrides for a source."""
+    from pfm.db.earn_override_store import EarnOverrideStore
+
+    await EarnOverrideStore(_ctx_db_path(ctx)).save(source_name, [])
+    await _best_effort_broadcast("snapshot_updated")
+    return _json({"source_name": source_name, "overrides": []})
 
 
 # ---------------------------------------------------------------------------
