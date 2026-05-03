@@ -1306,6 +1306,31 @@ async def _best_effort_broadcast(event_type: str) -> None:
         pass
 
 
+async def _best_effort_collect(source_name: str) -> dict[str, object]:
+    """Trigger a single-source collect on the running daemon (best-effort).
+
+    Returns a status dict for the caller to surface. No-op-like result when the
+    daemon is unreachable — the source row is already committed; collection can
+    happen later via ``pfm refresh`` or app open.
+    """
+    from pfm.server.client import get_base_url, is_daemon_reachable
+
+    if not is_daemon_reachable():
+        return {"collect": "skipped", "reason": "daemon unreachable"}
+
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(base_url=get_base_url(), timeout=10.0) as client:
+            resp = await client.post("/api/v1/collect", json={"source": source_name})
+        if resp.status_code == 409:  # noqa: PLR2004
+            return {"collect": "skipped", "reason": "another collection is running"}
+        resp.raise_for_status()
+    except httpx.HTTPError as exc:
+        return {"collect": "skipped", "reason": f"daemon error: {exc}"}
+    return {"collect": "started", "source": source_name}
+
+
 @mcp.tool()
 async def list_supported_fiat_currencies(
     ctx: Context[ServerSession, AppContext],
@@ -1766,6 +1791,232 @@ async def delete_earn_overrides(
     await EarnOverrideStore(_ctx_db_path(ctx)).save(source_name, [])
     await _best_effort_broadcast("snapshot_updated")
     return _json({"source_name": source_name, "overrides": []})
+
+
+# ---------------------------------------------------------------------------
+# Source CRUD
+# ---------------------------------------------------------------------------
+
+
+def _field_to_dict(field: object) -> dict[str, object]:
+    """Serialize a CredentialField for MCP output."""
+    return {
+        "name": getattr(field, "name", ""),
+        "prompt": getattr(field, "prompt", ""),
+        "required": bool(getattr(field, "required", False)),
+        "default": getattr(field, "default", ""),
+        "secret": bool(getattr(field, "secret", True)),
+        "tip": getattr(field, "tip", ""),
+    }
+
+
+@mcp.tool()
+async def get_source_schema(
+    ctx: Context[ServerSession, AppContext],
+    source_type: str | None = None,
+) -> str:
+    """Return credential field schema(s) for source types.
+
+    Without ``source_type``: dict mapping every known type → {fields, supported_apy_rules}.
+    With ``source_type``: same payload for that one type, or an error if unknown.
+    Use this before ``add_source`` / ``update_source`` to know what credential
+    fields to collect.
+    """
+    del ctx
+    from pfm.source_types import APY_RULES_TYPES, SOURCE_TYPES
+
+    def _type_payload(type_name: str) -> dict[str, object]:
+        return {
+            "fields": [_field_to_dict(f) for f in SOURCE_TYPES[type_name]],
+            "supported_apy_rules": [
+                {"protocol": p.protocol, "coins": list(p.coins)} for p in APY_RULES_TYPES.get(type_name, ())
+            ],
+        }
+
+    if source_type is None:
+        return _json({name: _type_payload(name) for name in SOURCE_TYPES})
+
+    if source_type not in SOURCE_TYPES:
+        return _json(
+            {
+                "error": f"Unknown source type: {source_type!r}",
+                "valid_types": sorted(SOURCE_TYPES),
+            }
+        )
+    return _json({source_type: _type_payload(source_type)})
+
+
+def _source_to_public_dict(source: object) -> dict[str, object]:
+    """Public source row (no credential values)."""
+    return {
+        "id": getattr(source, "id", None),
+        "name": getattr(source, "name", ""),
+        "type": getattr(source, "type", ""),
+        "enabled": bool(getattr(source, "enabled", False)),
+        "created_at": getattr(source, "created_at", None),
+    }
+
+
+@mcp.tool()
+async def add_source(
+    ctx: Context[ServerSession, AppContext],
+    name: str,
+    source_type: str,
+    credentials: dict[str, str],
+) -> str:
+    """Add a new data source. Triggers a best-effort single-source collect on success.
+
+    ``credentials`` shape depends on ``source_type`` — call ``get_source_schema``
+    first to learn the required fields. Errors:
+
+    - unknown source type → ``{"error": "...", "valid_types": [...]}``
+    - missing required fields → ``{"error": "Missing required field: ..."}``
+    - duplicate name (or duplicate cash source) → ``{"error": "...already exists"}``
+    """
+    from pfm.db.source_store import (
+        DuplicateSourceError,
+        InvalidCredentialsError,
+        InvalidSourceTypeError,
+        SourceStore,
+    )
+    from pfm.source_types import SOURCE_TYPES
+
+    if not name or not name.strip():
+        return _json({"error": "name must not be empty"})
+    if source_type not in SOURCE_TYPES:
+        return _json(
+            {
+                "error": f"Unknown source type: {source_type!r}",
+                "valid_types": sorted(SOURCE_TYPES),
+            }
+        )
+
+    store = SourceStore(_ctx_db_path(ctx))
+    try:
+        source = await store.add(name.strip(), source_type, credentials)
+    except InvalidSourceTypeError as exc:
+        return _json({"error": str(exc), "valid_types": sorted(SOURCE_TYPES)})
+    except InvalidCredentialsError as exc:
+        return _json({"error": str(exc)})
+    except DuplicateSourceError as exc:
+        return _json({"error": str(exc)})
+
+    if source.enabled:
+        collect_status: dict[str, object] = await _best_effort_collect(source.name)
+    else:
+        collect_status = {"collect": "skipped", "reason": "source disabled"}
+    await _best_effort_broadcast("sources_changed")
+
+    return _json({"added": True, "source": _source_to_public_dict(source), "auto_refresh": collect_status})
+
+
+@mcp.tool()
+async def update_source(
+    ctx: Context[ServerSession, AppContext],
+    name: str,
+    *,
+    new_name: str | None = None,
+    credentials: dict[str, str] | None = None,
+    enabled: bool | None = None,
+) -> str:
+    """Update a source. Any of ``new_name`` / ``credentials`` / ``enabled`` may be set.
+
+    ``credentials`` is partial-merged into the existing dict — pass only fields
+    that change. The source ``type`` is immutable; create a new source if the
+    type needs to change. Renames preserve historical transactions/snapshots
+    (FK is on ``source_id``, not name).
+    """
+    from pfm.db.source_store import (
+        DuplicateSourceError,
+        InvalidCredentialsError,
+        SourceNotFoundError,
+        SourceStore,
+    )
+
+    if new_name is None and credentials is None and enabled is None:
+        return _json({"error": "at least one of new_name, credentials, enabled must be provided"})
+
+    store = SourceStore(_ctx_db_path(ctx))
+    try:
+        source = await store.update(
+            name,
+            new_name=new_name,
+            credentials=credentials,
+            enabled=enabled,
+        )
+    except SourceNotFoundError:
+        return _json({"error": f"Source {name!r} not found"})
+    except InvalidCredentialsError as exc:
+        return _json({"error": str(exc)})
+    except DuplicateSourceError as exc:
+        return _json({"error": str(exc)})
+
+    await _best_effort_broadcast("sources_changed")
+    return _json({"updated": True, "source": _source_to_public_dict(source)})
+
+
+@mcp.tool()
+async def delete_source(
+    ctx: Context[ServerSession, AppContext],
+    name: str,
+    *,
+    cascade: bool = False,
+) -> str:
+    """Delete a source.
+
+    Refuses by default if the source has any transactions or snapshots. Pass
+    ``cascade=true`` to also delete all dependent rows (transactions, snapshots,
+    analytics_cache for affected dates, APY rules, earn overrides) in one
+    transaction. Cascade is destructive and irreversible.
+    """
+    from pfm.db.source_store import SourceNotFoundError, SourceStore
+
+    repo = _ctx_repo(ctx)
+    db_path = _ctx_db_path(ctx)
+
+    try:
+        await SourceStore(db_path).get(name)
+    except SourceNotFoundError:
+        return _json({"error": f"Source {name!r} not found"})
+
+    if not cascade:
+        sources = await repo.list_sources_with_counts()
+        target = next((s for s in sources if s.get("name") == name), None)
+        tx_raw = target.get("tx_count") if target else None
+        snap_raw = target.get("snap_count") if target else None
+        tx_count = int(tx_raw) if isinstance(tx_raw, int) else 0
+        snap_count = int(snap_raw) if isinstance(snap_raw, int) else 0
+        if tx_count > 0 or snap_count > 0:
+            return _json(
+                {
+                    "error": (
+                        f"Source {name!r} has {tx_count} transaction(s) and {snap_count} snapshot(s). "
+                        "Pass cascade=true to delete the source and all its data."
+                    ),
+                    "tx_count": tx_count,
+                    "snap_count": snap_count,
+                }
+            )
+
+    try:
+        result = await repo.delete_source_cascade(name)
+    except SourceNotFoundError:
+        return _json({"error": f"Source {name!r} not found"})
+
+    await _best_effort_broadcast("sources_changed")
+    await _best_effort_broadcast("snapshot_updated")
+    return _json(
+        {
+            "deleted": True,
+            "name": result.name,
+            "removed": {
+                "snapshots": result.snapshots,
+                "transactions": result.transactions,
+                "analytics_metrics": result.analytics_metrics,
+                "apy_rules": result.apy_rules,
+            },
+        }
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -1795,3 +1795,408 @@ class TestCollectTools:
             ):
                 parsed = json.loads(await get_collect_status(ctx))
             assert "Daemon request failed" in parsed["error"]
+
+
+class TestGetSourceSchema:
+    @pytest.mark.asyncio
+    async def test_returns_all_types_when_no_filter(self):
+        from pfm.mcp_server import get_source_schema
+
+        ctx = AsyncMock()
+        parsed = json.loads(await get_source_schema(ctx))
+        assert "wise" in parsed
+        assert "okx" in parsed
+        wise_fields = {f["name"] for f in parsed["wise"]["fields"]}
+        assert "api_token" in wise_fields
+
+    @pytest.mark.asyncio
+    async def test_returns_single_type(self):
+        from pfm.mcp_server import get_source_schema
+
+        ctx = AsyncMock()
+        parsed = json.loads(await get_source_schema(ctx, source_type="bitget_wallet"))
+        assert list(parsed.keys()) == ["bitget_wallet"]
+        rules = parsed["bitget_wallet"]["supported_apy_rules"]
+        assert any(r["protocol"] == "aave" for r in rules)
+
+    @pytest.mark.asyncio
+    async def test_rejects_unknown_type(self):
+        from pfm.mcp_server import get_source_schema
+
+        ctx = AsyncMock()
+        parsed = json.loads(await get_source_schema(ctx, source_type="not_a_thing"))
+        assert "Unknown source type" in parsed["error"]
+        assert "wise" in parsed["valid_types"]
+
+
+class TestAddSource:
+    @pytest.mark.asyncio
+    async def test_adds_and_triggers_collect(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import add_source
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+
+            with (
+                patch("pfm.server.client.is_daemon_reachable", return_value=False),
+            ):
+                parsed = json.loads(
+                    await add_source(
+                        ctx,
+                        name="wise-main",
+                        source_type="wise",
+                        credentials={"api_token": "t"},
+                    )
+                )
+
+            assert parsed["added"] is True
+            assert parsed["source"]["name"] == "wise-main"
+            assert parsed["source"]["type"] == "wise"
+            assert parsed["source"]["enabled"] is True
+            assert parsed["auto_refresh"]["collect"] == "skipped"
+
+    @pytest.mark.asyncio
+    async def test_rejects_unknown_type(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import add_source
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+            parsed = json.loads(await add_source(ctx, name="x", source_type="totally_made_up", credentials={}))
+        assert "Unknown source type" in parsed["error"]
+        assert "valid_types" in parsed
+
+    @pytest.mark.asyncio
+    async def test_rejects_missing_required_credentials(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import add_source
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+            with patch("pfm.server.client.is_daemon_reachable", return_value=False):
+                parsed = json.loads(await add_source(ctx, name="wise-main", source_type="wise", credentials={}))
+        assert "Missing required field" in parsed["error"]
+
+    @pytest.mark.asyncio
+    async def test_rejects_duplicate_name(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import add_source
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+            with patch("pfm.server.client.is_daemon_reachable", return_value=False):
+                first = json.loads(
+                    await add_source(
+                        ctx,
+                        name="wise-main",
+                        source_type="wise",
+                        credentials={"api_token": "t"},
+                    )
+                )
+                assert first["added"] is True
+                second = json.loads(
+                    await add_source(
+                        ctx,
+                        name="wise-main",
+                        source_type="wise",
+                        credentials={"api_token": "t2"},
+                    )
+                )
+        assert "already exists" in second["error"]
+
+    @pytest.mark.asyncio
+    async def test_rejects_empty_name(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import add_source
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+            parsed = json.loads(await add_source(ctx, name="   ", source_type="wise", credentials={"api_token": "t"}))
+        assert "must not be empty" in parsed["error"]
+
+
+class TestUpdateSource:
+    @pytest.mark.asyncio
+    async def test_renames_and_updates_credentials(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.db.source_store import SourceStore
+        from pfm.mcp_server import update_source
+
+        db_path = tmp_path / "x.db"
+        async with Repository(db_path) as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, db_path)
+
+            await SourceStore(db_path).add("wise-main", "wise", {"api_token": "old"})
+
+            with patch("pfm.server.client.is_daemon_reachable", return_value=False):
+                parsed = json.loads(
+                    await update_source(
+                        ctx,
+                        name="wise-main",
+                        new_name="wise-eu",
+                        credentials={"api_token": "new"},
+                    )
+                )
+
+            assert parsed["updated"] is True
+            assert parsed["source"]["name"] == "wise-eu"
+
+            renamed = await SourceStore(db_path).get("wise-eu")
+            assert json.loads(renamed.credentials)["api_token"] == "new"
+
+    @pytest.mark.asyncio
+    async def test_rejects_when_no_fields_set(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import update_source
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+            parsed = json.loads(await update_source(ctx, name="wise-main"))
+        assert "at least one of" in parsed["error"]
+
+    @pytest.mark.asyncio
+    async def test_rejects_rename_collision(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.db.source_store import SourceStore
+        from pfm.mcp_server import update_source
+
+        db_path = tmp_path / "x.db"
+        async with Repository(db_path) as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, db_path)
+
+            await SourceStore(db_path).add("wise-main", "wise", {"api_token": "t"})
+            await SourceStore(db_path).add("wise-eu", "wise", {"api_token": "t"})
+
+            with patch("pfm.server.client.is_daemon_reachable", return_value=False):
+                parsed = json.loads(await update_source(ctx, name="wise-main", new_name="wise-eu"))
+        assert "already exists" in parsed["error"]
+
+    @pytest.mark.asyncio
+    async def test_rejects_unknown_source(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import update_source
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+            parsed = json.loads(await update_source(ctx, name="ghost", enabled=False))
+        assert "not found" in parsed["error"]
+
+    @pytest.mark.asyncio
+    async def test_toggles_enabled(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.db.source_store import SourceStore
+        from pfm.mcp_server import update_source
+
+        db_path = tmp_path / "x.db"
+        async with Repository(db_path) as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, db_path)
+
+            await SourceStore(db_path).add("wise-main", "wise", {"api_token": "t"})
+
+            with patch("pfm.server.client.is_daemon_reachable", return_value=False):
+                parsed = json.loads(await update_source(ctx, name="wise-main", enabled=False))
+        assert parsed["source"]["enabled"] is False
+
+
+class TestDeleteSource:
+    @pytest.mark.asyncio
+    async def test_refuses_without_cascade_when_data_present(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.models import Snapshot
+        from pfm.db.repository import Repository
+        from pfm.db.source_store import SourceStore
+        from pfm.mcp_server import delete_source
+
+        db_path = tmp_path / "x.db"
+        async with Repository(db_path) as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, db_path)
+
+            await SourceStore(db_path).add("wise-main", "wise", {"api_token": "t"})
+            await repo.save_snapshots(
+                [
+                    Snapshot(
+                        date=date(2026, 4, 1),
+                        source="wise",
+                        source_name="wise-main",
+                        asset="USD",
+                        amount=Decimal(100),
+                        usd_value=Decimal(100),
+                    ),
+                ]
+            )
+
+            with patch("pfm.server.client.is_daemon_reachable", return_value=False):
+                parsed = json.loads(await delete_source(ctx, name="wise-main"))
+
+            assert "cascade=true" in parsed["error"]
+            assert parsed["snap_count"] == 1
+            assert (await SourceStore(db_path).get("wise-main")) is not None
+
+    @pytest.mark.asyncio
+    async def test_cascade_deletes_data(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.models import Snapshot
+        from pfm.db.repository import Repository
+        from pfm.db.source_store import SourceNotFoundError, SourceStore
+        from pfm.mcp_server import delete_source
+
+        db_path = tmp_path / "x.db"
+        async with Repository(db_path) as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, db_path)
+
+            await SourceStore(db_path).add("wise-main", "wise", {"api_token": "t"})
+            await repo.save_snapshots(
+                [
+                    Snapshot(
+                        date=date(2026, 4, 1),
+                        source="wise",
+                        source_name="wise-main",
+                        asset="USD",
+                        amount=Decimal(100),
+                        usd_value=Decimal(100),
+                    ),
+                ]
+            )
+
+            with patch("pfm.server.client.is_daemon_reachable", return_value=False):
+                parsed = json.loads(await delete_source(ctx, name="wise-main", cascade=True))
+
+            assert parsed["deleted"] is True
+            assert parsed["removed"]["snapshots"] == 1
+
+            with pytest.raises(SourceNotFoundError):
+                await SourceStore(db_path).get("wise-main")
+
+    @pytest.mark.asyncio
+    async def test_deletes_empty_source_without_cascade(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.db.source_store import SourceStore
+        from pfm.mcp_server import delete_source
+
+        db_path = tmp_path / "x.db"
+        async with Repository(db_path) as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, db_path)
+
+            await SourceStore(db_path).add("wise-main", "wise", {"api_token": "t"})
+
+            with patch("pfm.server.client.is_daemon_reachable", return_value=False):
+                parsed = json.loads(await delete_source(ctx, name="wise-main"))
+
+            assert parsed["deleted"] is True
+            assert parsed["removed"]["snapshots"] == 0
+
+    @pytest.mark.asyncio
+    async def test_rejects_unknown_source(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import delete_source
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+            parsed = json.loads(await delete_source(ctx, name="ghost"))
+        assert "not found" in parsed["error"]
+
+
+class TestBestEffortCollect:
+    @pytest.mark.asyncio
+    async def test_skipped_when_daemon_unreachable(self):
+        from pfm.mcp_server import _best_effort_collect
+
+        with patch("pfm.server.client.is_daemon_reachable", return_value=False):
+            result = await _best_effort_collect("wise-main")
+        assert result == {"collect": "skipped", "reason": "daemon unreachable"}
+
+    @pytest.mark.asyncio
+    async def test_started_on_success(self):
+        from pfm.mcp_server import _best_effort_collect
+
+        captured: dict[str, object] = {}
+
+        class _OkClient:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            async def post(self, path, *, json):
+                captured["path"] = path
+                captured["json"] = json
+
+                class _Resp:
+                    status_code = 202
+
+                    def raise_for_status(self):
+                        return None
+
+                return _Resp()
+
+        with (
+            patch("pfm.server.client.is_daemon_reachable", return_value=True),
+            patch("httpx.AsyncClient", _OkClient),
+        ):
+            result = await _best_effort_collect("wise-main")
+
+        assert result == {"collect": "started", "source": "wise-main"}
+        assert captured["path"] == "/api/v1/collect"
+        assert captured["json"] == {"source": "wise-main"}
+
+    @pytest.mark.asyncio
+    async def test_skipped_on_409(self):
+        from pfm.mcp_server import _best_effort_collect
+
+        class _ConflictClient:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            async def post(self, *_args, **_kwargs):
+                class _Resp:
+                    status_code = 409
+
+                return _Resp()
+
+        with (
+            patch("pfm.server.client.is_daemon_reachable", return_value=True),
+            patch("httpx.AsyncClient", _ConflictClient),
+        ):
+            result = await _best_effort_collect("wise-main")
+
+        assert result["collect"] == "skipped"
+        reason = result["reason"]
+        assert isinstance(reason, str)
+        assert "another collection" in reason

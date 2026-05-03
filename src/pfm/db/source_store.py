@@ -120,14 +120,23 @@ class SourceStore:
         self,
         name: str,
         *,
+        new_name: str | None = None,
         credentials: dict[str, str] | None = None,
         enabled: bool | None = None,
     ) -> Source:
-        """Update a source's credentials and/or enabled flag."""
+        """Update a source's name, credentials, and/or enabled flag."""
         existing = await self.get(name)
 
         sets: list[str] = []
         params: list[str | int] = []
+
+        if new_name is not None and new_name != name:
+            stripped = new_name.strip()
+            if not stripped:
+                msg = "new_name must not be empty"
+                raise InvalidCredentialsError(msg)
+            sets.append("name = ?")
+            params.append(stripped)
 
         if credentials is not None:
             existing_creds: dict[str, str] = json.loads(existing.credentials)
@@ -149,10 +158,15 @@ class SourceStore:
         sql = f"UPDATE sources SET {', '.join(sets)} WHERE name = ?"  # noqa: S608
 
         async with aiosqlite.connect(self._db_path) as db:
-            await db.execute(sql, params)
-            await db.commit()
+            try:
+                await db.execute(sql, params)
+                await db.commit()
+            except aiosqlite.IntegrityError as exc:
+                msg = f"Source {new_name!r} already exists"
+                raise DuplicateSourceError(msg) from exc
 
-        return await self.get(name)
+        final_name = new_name.strip() if new_name is not None and new_name != name else name
+        return await self.get(final_name)
 
     @staticmethod
     def _row_to_source(row: aiosqlite.Row) -> Source:
