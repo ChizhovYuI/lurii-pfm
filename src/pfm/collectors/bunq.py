@@ -15,6 +15,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 
+from pfm import __version__ as _pfm_version
 from pfm.collectors import register_collector
 from pfm.collectors._retry import retry
 from pfm.collectors.base import BaseCollector
@@ -29,7 +30,7 @@ logger = logging.getLogger(__name__)
 _BASE_URL_PRODUCTION = "https://api.bunq.com"
 _BASE_URL_SANDBOX = "https://public-api.sandbox.bunq.com"
 
-_USER_AGENT = "lurii-pfm/0.22"
+_USER_AGENT = f"lurii-pfm/{_pfm_version}"
 _DESCRIPTION = "lurii-pfm"
 _PAYMENT_PAGE_SIZE = 200
 _RSA_KEY_BITS = 2048
@@ -165,6 +166,7 @@ class BunqCollector(BaseCollector):
 
     # ── Authenticated GET ────────────────────────────────────────────
 
+    @retry()
     async def _signed_get(self, path: str, *, _retry_on_401: bool = True) -> dict[str, Any]:
         if self._session_token is None:
             await self._handshake()

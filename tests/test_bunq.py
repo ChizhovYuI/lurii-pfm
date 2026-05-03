@@ -6,6 +6,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Any
 
+import httpx
 import pytest
 
 from pfm.collectors.bunq import (
@@ -237,3 +238,35 @@ async def test_fetch_transactions_stops_at_since_cutoff(pricing):
     txs = await collector.fetch_transactions(since=date(2026, 1, 1))
     # Only id=1 is on/after 2026-01-01; id=2 triggers stop.
     assert [t.tx_id for t in txs] == ["1"]
+
+
+async def test_signed_get_re_handshakes_on_401(pricing):
+    """A 401 on a signed GET clears the session and re-runs the handshake once."""
+    collector = _make_collector(pricing)
+
+    handshake_calls = 0
+
+    async def fake_handshake() -> None:
+        nonlocal handshake_calls
+        handshake_calls += 1
+        collector._session_token = f"session-{handshake_calls}"
+        collector._user_id = 42
+
+    collector._handshake = fake_handshake  # type: ignore[assignment]
+
+    responses = [
+        httpx.Response(401, json={"error": "expired"}, request=httpx.Request("GET", "https://x/v1/x")),
+        httpx.Response(200, json={"Response": [{"ok": True}]}, request=httpx.Request("GET", "https://x/v1/x")),
+    ]
+
+    async def fake_client_get(path: str, *, headers: dict[str, str]) -> httpx.Response:
+        return responses.pop(0)
+
+    collector._client.get = fake_client_get  # type: ignore[assignment]
+
+    payload = await collector._signed_get("/v1/user/42/monetary-account")
+    assert payload == {"Response": [{"ok": True}]}
+    # Initial token cleared on 401, then a fresh handshake ran.
+    assert handshake_calls == 1
+    assert collector._session_token == "session-1"
+    assert responses == []

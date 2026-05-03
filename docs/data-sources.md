@@ -22,6 +22,7 @@ Overview of all financial data sources, recommended integration method, and acce
 | 12 | yo.xyz | DeFi vault | Vault shares + underlying assets | yo.xyz REST API (`/vault`, `/history`) |
 | 13 | Bitget Wallet | EVM + Solana wallet | USDC/USDT (Aave), SOL (staking) | Aave GraphQL + Solana RPC + Stakewiz |
 | 14 | Trading 212 | Broker (stocks/ETFs + cash) | EUR cash, equities | Invest API (`/equity/account/*`, `/equity/history/*`) |
+| 15 | bunq | Multi-currency neobank | EUR + others | REST API with signed-request handshake (RSA-2048) |
 
 ## Money Flow
 
@@ -626,6 +627,56 @@ PFM reads:
 
 ---
 
+## 15. bunq
+
+**Method:** REST API with signed-request handshake (install -> device-server -> session)
+
+bunq has a self-service public API for personal accounts. Each request is signed with an RSA-2048 client key bound to the API key during install. The wizard auto-generates the keypair on first source add — no manual `openssl` step.
+
+### Endpoints
+
+Base URL (production): `https://api.bunq.com`
+Base URL (sandbox): `https://public-api.sandbox.bunq.com`
+
+| Purpose | Endpoint |
+|---------|----------|
+| Install client public key | `POST /v1/installation` |
+| Register device-server | `POST /v1/device-server` |
+| Open session | `POST /v1/session-server` |
+| List monetary accounts | `GET /v1/user/{user_id}/monetary-account` |
+| Account payments | `GET /v1/user/{user_id}/monetary-account/{account_id}/payment?count=200` |
+| Mint sandbox API key | `POST /v1/sandbox-user-person` (sandbox only, unauthenticated) |
+
+Auth: every non-install request carries `X-Bunq-Client-Authentication` (install or session token) plus `X-Bunq-Client-Signature` (RSA-PKCS1v15+SHA256 over the request body, base64). GET requests sign an empty body. A 401 triggers a single re-handshake; non-401 transient failures retry with exponential backoff.
+
+### Setup (production)
+
+1. Open bunq app -> Profile -> Security -> Developers -> API keys
+2. Create a new API key (no IP whitelist required for read-only)
+3. Add to pfm: `pfm source add` -> select `bunq` -> paste API key, leave environment as `production`, accept blank PEMs (the wizard mints an RSA-2048 keypair)
+4. The collector runs the install/device-server/session handshake on first call
+
+### Setup (sandbox)
+
+```
+python scripts/bunq_sandbox_key.py
+```
+
+Prints a throwaway sandbox API key (the bunq endpoint is unauthenticated and returns a freshly provisioned UserPerson). Then:
+
+1. `pfm source add` -> select `bunq` -> paste the key, set environment to `sandbox`
+2. To top up: bunq sandbox auto-pays any `request-inquiry` sent to `sugardaddy@bunq.com`. The correct path is `/v1/user/{user_id}/monetary-account/{account_id}/request-inquiry`.
+
+### Pagination
+
+Payments come newest-first. The collector follows `Pagination.older_url` until the page is exhausted or a payment older than the `since` cutoff appears.
+
+### Python Library
+
+No official bunq SDK is used. The collector relies on `httpx` plus `cryptography` for RSA signing — see `src/pfm/collectors/bunq.py`.
+
+---
+
 ## Summary: Integration Complexity
 
 | Source | Complexity | Auth | Real-time? |
@@ -644,6 +695,7 @@ PFM reads:
 | yo.xyz | Medium | Wallet + vault params | Yes |
 | Bitget Wallet | Low | Public addresses | Yes |
 | Trading 212 | Medium | API key + secret | Yes |
+| bunq | Medium | API key + RSA keypair (auto-generated) | Yes |
 
 ### Recommended Implementation Order
 
