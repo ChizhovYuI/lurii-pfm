@@ -32,8 +32,10 @@ def _extract_api_key(payload: dict[str, object]) -> str:
         if not isinstance(item, dict):
             continue
         api_key = item.get("ApiKey")
-        if isinstance(api_key, dict) and isinstance(api_key.get("api_key"), str):
-            return api_key["api_key"]
+        if isinstance(api_key, dict):
+            value = api_key.get("api_key")
+            if isinstance(value, str):
+                return value
     msg = f"sandbox response missing ApiKey: {payload!r}"
     raise RuntimeError(msg)
 
