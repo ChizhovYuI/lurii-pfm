@@ -55,6 +55,19 @@ def generate_keypair_pem() -> tuple[str, str]:
     return priv_pem, pub_pem
 
 
+def ensure_keypair(credentials: dict[str, str]) -> bool:
+    """Fill blank/missing bunq PEM fields in-place with a fresh RSA-2048 keypair.
+
+    Returns True if a keypair was generated.
+    """
+    if credentials.get("private_key_pem") and credentials.get("public_key_pem"):
+        return False
+    priv, pub = generate_keypair_pem()
+    credentials["private_key_pem"] = priv
+    credentials["public_key_pem"] = pub
+    return True
+
+
 @register_collector
 class BunqCollector(BaseCollector):
     """Collector for bunq monetary accounts via the public API.

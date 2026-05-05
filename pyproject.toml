@@ -115,6 +115,9 @@ ignore = [
 "src/pfm/db/metadata_store.py" = [
     "PLC0415", # late imports to break circular dep with repository.py
 ]
+"src/pfm/db/source_store.py" = [
+    "PLC0415", # late import of bunq helper to avoid pulling collectors at module load
+]
 "src/pfm/server/**/*.py" = [
     "PLC0415", # late imports are used to avoid circular deps and keep startup fast
 ]

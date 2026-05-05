@@ -14,6 +14,7 @@ from pfm.collectors.bunq import (
     _extract_session,
     _extract_token,
     _iter_accounts,
+    ensure_keypair,
     generate_keypair_pem,
 )
 
@@ -49,6 +50,30 @@ def test_generate_keypair_pem_round_trip():
         public_key_pem=pub,
         environment="sandbox",
     )
+
+
+def test_ensure_keypair_fills_when_missing():
+    creds: dict[str, str] = {"api_key": "k"}
+    generated = ensure_keypair(creds)
+    assert generated is True
+    priv_header = "-----BEGIN " + "PRIVATE KEY-----"
+    assert creds["private_key_pem"].startswith(priv_header)
+    assert creds["public_key_pem"].startswith("-----BEGIN PUBLIC KEY-----")
+
+
+def test_ensure_keypair_fills_when_blank():
+    creds = {"private_key_pem": "", "public_key_pem": ""}
+    assert ensure_keypair(creds) is True
+    assert creds["private_key_pem"]
+    assert creds["public_key_pem"]
+
+
+def test_ensure_keypair_noop_when_present():
+    priv, pub = generate_keypair_pem()
+    creds = {"private_key_pem": priv, "public_key_pem": pub}
+    assert ensure_keypair(creds) is False
+    assert creds["private_key_pem"] == priv
+    assert creds["public_key_pem"] == pub
 
 
 def test_extract_token_picks_token_field():

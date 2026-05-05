@@ -272,6 +272,41 @@ async def test_update_enabled(store: SourceStore):
 
 
 @pytest.mark.asyncio
+async def test_add_bunq_autogenerates_keypair_when_missing(store: SourceStore):
+    """Server/MCP entry path: blank PEM fields auto-fill with fresh keypair."""
+    source = await store.add("bunq-main", "bunq", {"api_key": "k"})
+    creds = json.loads(source.credentials)
+    priv_header = "-----BEGIN " + "PRIVATE KEY-----"
+    assert creds["private_key_pem"].startswith(priv_header)
+    assert creds["public_key_pem"].startswith("-----BEGIN PUBLIC KEY-----")
+
+
+@pytest.mark.asyncio
+async def test_add_bunq_autogenerates_when_blank_strings(store: SourceStore):
+    source = await store.add(
+        "bunq-main",
+        "bunq",
+        {"api_key": "k", "private_key_pem": "", "public_key_pem": ""},
+    )
+    creds = json.loads(source.credentials)
+    assert creds["private_key_pem"]
+    assert creds["public_key_pem"]
+
+
+@pytest.mark.asyncio
+async def test_update_bunq_regenerates_keypair_when_cleared(store: SourceStore):
+    await store.add("bunq-main", "bunq", {"api_key": "k"})
+    updated = await store.update(
+        "bunq-main",
+        credentials={"api_key": "k2", "private_key_pem": "", "public_key_pem": ""},
+    )
+    creds = json.loads(updated.credentials)
+    assert creds["api_key"] == "k2"
+    assert creds["private_key_pem"]
+    assert creds["public_key_pem"]
+
+
+@pytest.mark.asyncio
 async def test_update_partial_credentials_merges(store: SourceStore):
     await store.add(
         "okx-main",

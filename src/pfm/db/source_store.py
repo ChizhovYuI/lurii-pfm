@@ -54,6 +54,11 @@ class SourceStore:
             msg = f"Unknown source type: {source_type!r}. Valid types: {', '.join(sorted(SOURCE_TYPES))}"
             raise InvalidSourceTypeError(msg)
 
+        if source_type == "bunq":
+            from pfm.collectors.bunq import ensure_keypair
+
+            ensure_keypair(credentials)
+
         errors = validate_credentials(source_type, credentials)
         if errors:
             raise InvalidCredentialsError("; ".join(errors))
@@ -141,6 +146,10 @@ class SourceStore:
         if credentials is not None:
             existing_creds: dict[str, str] = json.loads(existing.credentials)
             merged = {**existing_creds, **credentials}
+            if existing.type == "bunq":
+                from pfm.collectors.bunq import ensure_keypair
+
+                ensure_keypair(merged)
             errors = validate_credentials(existing.type, merged)
             if errors:
                 raise InvalidCredentialsError("; ".join(errors))
