@@ -28,7 +28,7 @@ async def test_init_db(tmp_path):
     async with aiosqlite.connect(str(db_path)) as db:
         version_row = await (await db.execute("SELECT version_num FROM alembic_version")).fetchone()
     assert version_row is not None
-    assert version_row[0] == "j0k1l2m3n4o5"
+    assert version_row[0] == "k1l2m3n4o5p6"
 
 
 def test_runner_uses_package_relative_migration_path(tmp_path):
@@ -252,7 +252,7 @@ async def test_init_db_reaches_stage3_head_and_drops_source_name(tmp_path):
         cols = {r[1] for r in await cursor.fetchall()}
 
     assert version_row is not None
-    assert version_row[0] == "j0k1l2m3n4o5"
+    assert version_row[0] == "k1l2m3n4o5p6"
     assert "source_name" not in cols
     assert "source_id" in cols
 

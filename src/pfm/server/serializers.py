@@ -175,42 +175,6 @@ def parse_net_worth_usd(raw_json: str) -> Decimal:
         return Decimal(0)
 
 
-def parse_cached_ai_commentary(raw_json: str | None) -> str | None:
-    """Parse cached AI commentary metric text, if present."""
-    if raw_json is None:
-        return None
-    try:
-        parsed = json.loads(raw_json)
-    except json.JSONDecodeError:
-        text = raw_json.strip()
-        return text or None
-    if isinstance(parsed, str):
-        text = parsed.strip()
-        return text or None
-    if isinstance(parsed, dict):
-        text_value = parsed.get("text")
-        if isinstance(text_value, str):
-            value = text_value.strip()
-            return value or None
-    return None
-
-
-def parse_cached_ai_commentary_model(raw_json: str | None) -> str | None:
-    """Parse cached AI commentary metric model name, if present."""
-    if raw_json is None:
-        return None
-    try:
-        parsed = json.loads(raw_json)
-    except json.JSONDecodeError:
-        return None
-    if isinstance(parsed, dict):
-        model_value = parsed.get("model")
-        if isinstance(model_value, str):
-            value = model_value.strip()
-            return value or None
-    return None
-
-
 # ── JSON default handler ────────────────────────────────────────────────
 
 

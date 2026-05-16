@@ -10,7 +10,6 @@ if TYPE_CHECKING:
 
 def setup_routes(app: web.Application) -> None:
     """Register all route tables with the application."""
-    from pfm.server.routes.ai import routes as ai_routes
     from pfm.server.routes.analytics import routes as analytics_routes
     from pfm.server.routes.apy_rules import routes as apy_rules_routes
     from pfm.server.routes.cash_manual import routes as cash_manual_routes
@@ -20,7 +19,6 @@ def setup_routes(app: web.Application) -> None:
     from pfm.server.routes.health import routes as health_routes
     from pfm.server.routes.internal import routes as internal_routes
     from pfm.server.routes.portfolio import routes as portfolio_routes
-    from pfm.server.routes.report import routes as report_routes
     from pfm.server.routes.settings import routes as settings_routes
     from pfm.server.routes.sources import routes as sources_routes
     from pfm.server.routes.statement import routes as statement_routes
@@ -33,11 +31,9 @@ def setup_routes(app: web.Application) -> None:
     app.router.add_routes(cash_manual_routes)
     app.router.add_routes(portfolio_routes)
     app.router.add_routes(analytics_routes)
-    app.router.add_routes(ai_routes)
     app.router.add_routes(collect_routes)
     app.router.add_routes(earn_routes)
     app.router.add_routes(ext_snapshot_routes)
-    app.router.add_routes(report_routes)
     app.router.add_routes(settings_routes)
     app.router.add_routes(apy_rules_routes)
     app.router.add_routes(statement_routes)

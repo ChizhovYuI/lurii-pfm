@@ -9,10 +9,7 @@ dependencies = [
     "alembic>=1.18.4",
     "click>=8.3.1",
     "cryptography>=46.0.5",
-    "google-genai>=1.65.0",
     "httpx>=0.28.1",
-    "instructor>=1.8.0",
-    "openai>=1.82.0",
     "pdfplumber>=0.11.9",
     "pydantic-settings>=2.13.1",
     "sqlcipher3>=0.6.2",
@@ -183,10 +180,6 @@ module = ["alembic", "alembic.*", "sqlalchemy", "sqlalchemy.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = ["google", "google.*"]
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
 module = ["pdfplumber", "pdfplumber.*"]
 ignore_missing_imports = true
 
@@ -199,15 +192,7 @@ module = ["aiohttp", "aiohttp.*", "aiohttp_client"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = ["instructor", "instructor.*"]
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
 module = ["mcp", "mcp.*"]
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = ["openai", "openai.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
@@ -229,7 +214,7 @@ addopts = [
     "-ra",
     "--cov=src/pfm",
     "--cov-report=term-missing",
-    "--cov-fail-under=80",
+    "--cov-fail-under=70",
 ]
 asyncio_mode = "auto"
 

@@ -1,19 +1,13 @@
-"""Read-only connection validation for sources and AI providers."""
+"""Read-only connection validation for sources."""
 
 from __future__ import annotations
 
-import inspect
 import json
 import logging
 from typing import TYPE_CHECKING, Any
 
-import aiosqlite
 import httpx
-from google.genai import errors as genai_errors
-from openai import APIConnectionError, APIStatusError
 
-from pfm.ai.base import LLMProvider, ProviderName
-from pfm.ai.providers.registry import PROVIDER_REGISTRY
 from pfm.collectors import COLLECTOR_REGISTRY
 from pfm.collectors._retry import is_dns_resolution_error
 from pfm.config import get_settings
@@ -98,93 +92,6 @@ async def validate_source_connection(
         await pricing.close()
 
 
-async def validate_ai_provider_connection(
-    db_path: str | Path,
-    *,
-    provider_type: str,
-    fields: dict[str, Any] | None,
-) -> str:
-    """Validate AI provider configuration without persisting anything."""
-    cls = _resolve_provider_class(provider_type)
-    merged_fields = {**(await _load_saved_provider_fields(db_path, provider_type)), **_normalize_string_dict(fields)}
-    kwargs = _build_provider_kwargs(cls, merged_fields)
-
-    provider = None
-    try:
-        provider = cls(**kwargs)
-        await provider.validate_connection()
-    except Exception as exc:
-        raise _map_ai_error(exc) from exc
-    else:
-        return _SUCCESS_MESSAGE
-    finally:
-        if provider is not None:
-            await provider.close()
-
-
-def _resolve_provider_class(provider_type: str) -> type[LLMProvider]:
-    try:
-        provider_name = ProviderName(provider_type)
-    except ValueError as exc:
-        msg = f"Unknown AI provider: {provider_type!r}"
-        raise ConnectionValidationError(msg, _BAD_REQUEST) from exc
-
-    cls = PROVIDER_REGISTRY.get(provider_name)
-    if cls is None:
-        msg = f"AI provider {provider_type!r} is not registered"
-        raise ConnectionValidationError(msg, _BAD_REQUEST)
-    return cls
-
-
-def _build_provider_kwargs(cls: type[LLMProvider], values: dict[str, str]) -> dict[str, str]:
-    sig = inspect.signature(cls.__init__)
-    kwargs: dict[str, str] = {}
-    missing: list[str] = []
-
-    for name, param in sig.parameters.items():
-        if name == "self" or name in {"client", "raw_client", "openai_client", "http_client"}:
-            continue
-        if param.kind is inspect.Parameter.VAR_KEYWORD:
-            continue
-
-        value = values.get(name, "").strip()
-        if value:
-            kwargs[name] = value
-            continue
-
-        if param.default is inspect.Parameter.empty:
-            missing.append(name)
-
-    if missing:
-        msg = "; ".join(f"Missing required field: {name}" for name in missing)
-        raise ConnectionValidationError(msg, _BAD_REQUEST)
-
-    return kwargs
-
-
-async def _load_saved_provider_fields(db_path: str | Path, provider_type: str) -> dict[str, str]:
-    try:
-        async with aiosqlite.connect(str(db_path)) as db:
-            row = await (
-                await db.execute(
-                    "SELECT api_key, model, base_url FROM ai_providers WHERE type = ?",
-                    (provider_type,),
-                )
-            ).fetchone()
-    except aiosqlite.Error:
-        logger.debug("AI provider lookup skipped during validation.", exc_info=True)
-        return {}
-
-    if row is None:
-        return {}
-
-    return {
-        "api_key": str(row[0] or ""),
-        "model": str(row[1] or ""),
-        "base_url": str(row[2] or ""),
-    }
-
-
 def _normalize_string_dict(raw: object | None) -> dict[str, str]:
     if raw is None:
         return {}
@@ -213,44 +120,6 @@ def _map_source_error(exc: Exception) -> ConnectionValidationError:
         return ConnectionValidationError(str(exc), _BAD_REQUEST)
     logger.exception("Unexpected source validation failure")
     return ConnectionValidationError("Unexpected validation error.", _INTERNAL_SERVER_ERROR)
-
-
-def _map_ai_error(exc: Exception) -> ConnectionValidationError:
-    if isinstance(exc, ConnectionValidationError):
-        return exc
-    if isinstance(exc, APIConnectionError):
-        return ConnectionValidationError(_transport_message(exc), _SERVICE_UNAVAILABLE)
-    if isinstance(exc, APIStatusError):
-        upstream_status = getattr(exc, "status_code", _INTERNAL_SERVER_ERROR) or _INTERNAL_SERVER_ERROR
-        response = getattr(exc, "response", None)
-        upstream_message = _extract_http_message(response) if response is not None else str(exc)
-        return ConnectionValidationError(upstream_message, _map_upstream_status(upstream_status))
-
-    message: str
-    status_code: int
-    if isinstance(exc, genai_errors.APIError):
-        status_code = getattr(exc, "code", _INTERNAL_SERVER_ERROR) or _INTERNAL_SERVER_ERROR
-        message = _extract_genai_message(exc)
-    elif isinstance(exc, httpx.HTTPStatusError):
-        status_code = exc.response.status_code
-        message = _extract_http_message(exc.response)
-    elif isinstance(exc, httpx.TransportError | OSError):
-        status_code = _SERVICE_UNAVAILABLE
-        message = _transport_message(exc)
-    elif isinstance(exc, TypeError | ValueError):
-        status_code = _BAD_REQUEST
-        message = str(exc)
-    else:
-        logger.exception("Unexpected AI validation failure")
-        status_code = _INTERNAL_SERVER_ERROR
-        message = "Unexpected validation error."
-
-    final_status = (
-        status_code
-        if status_code in {_BAD_REQUEST, _SERVICE_UNAVAILABLE, _INTERNAL_SERVER_ERROR}
-        else _map_upstream_status(status_code)
-    )
-    return ConnectionValidationError(message, final_status)
 
 
 def _map_upstream_status(status_code: int) -> int:
@@ -287,16 +156,6 @@ def _extract_payload_message(response: httpx.Response) -> str | None:
     if text and len(text) <= _MAX_INLINE_ERROR_LENGTH:
         return text
     return None
-
-
-def _extract_genai_message(exc: genai_errors.APIError) -> str:
-    response = getattr(exc, "response", None)
-    if response is not None:
-        message = _extract_payload_message(response)
-        if message:
-            return message
-    detail = str(exc).strip()
-    return detail or "AI provider request failed."
 
 
 def _find_message(payload: object) -> str | None:

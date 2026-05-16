@@ -11,7 +11,6 @@ from pathlib import Path
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.session import ServerSession
 
-from pfm.db.ai_report_memory_store import AI_REPORT_MEMORY_MAX_CHARS, AIReportMemoryStore, normalize_ai_report_memory
 from pfm.db.metadata_store import MetadataStore
 from pfm.db.models import CategoryRule, TransactionMetadata, TypeRule
 from pfm.db.repository import Repository
@@ -511,38 +510,6 @@ async def list_sources(
     repo = _ctx_repo(ctx)
     sources = await repo.list_sources_with_counts()
     return _json({"count": len(sources), "sources": sources})
-
-
-@mcp.tool()
-async def get_ai_report_memory(
-    ctx: Context[ServerSession, AppContext],
-) -> str:
-    """Read the current weekly AI report memory."""
-    store = AIReportMemoryStore(_ctx_db_path(ctx))
-    memory = await store.get()
-    return _json(_memory_payload(memory))
-
-
-@mcp.tool()
-async def set_ai_report_memory(
-    ctx: Context[ServerSession, AppContext],
-    content: str,
-) -> str:
-    """Replace the weekly AI report memory with new content."""
-    normalized = normalize_ai_report_memory(content)
-    store = AIReportMemoryStore(_ctx_db_path(ctx))
-    await store.set(normalized)
-    return _json({"updated": True, **_memory_payload(normalized)})
-
-
-@mcp.tool()
-async def clear_ai_report_memory(
-    ctx: Context[ServerSession, AppContext],
-) -> str:
-    """Clear the weekly AI report memory."""
-    store = AIReportMemoryStore(_ctx_db_path(ctx))
-    await store.set("")
-    return _json({"updated": True, "cleared": True, **_memory_payload("")})
 
 
 # ---------------------------------------------------------------------------
@@ -2283,78 +2250,9 @@ async def resource_sources() -> str:
     return _json([{"name": s.name, "type": s.type, "enabled": s.enabled} for s in sources])
 
 
-@mcp.resource("lurii://ai/report-memory")
-async def resource_ai_report_memory() -> str:
-    """Current weekly AI report memory."""
-    from pfm.server.daemon import get_db_path
-
-    memory = await AIReportMemoryStore(get_db_path()).get()
-    return _json(_memory_payload(memory))
-
-
-@mcp.resource("lurii://ai/weekly-report/prompt")
-async def resource_weekly_report_prompt() -> str:
-    """Production weekly report prompt pack for external AI assistants."""
-    from pfm.ai import build_weekly_report_prompt_pack
-    from pfm.db.repository import Repository
-    from pfm.server.daemon import get_db_path
-
-    db_path = get_db_path()
-    d = _today()
-    async with Repository(db_path) as repo:
-        pack = await build_weekly_report_prompt_pack(repo, db_path, d)
-    return _json(pack)
-
-
 # ---------------------------------------------------------------------------
 # Prompts
 # ---------------------------------------------------------------------------
-
-
-@mcp.prompt()
-async def investment_review(focus: str = "") -> str:
-    """Start a portfolio investment review discussion.
-
-    Args:
-        focus: Optional focus area (e.g. "risk", "rebalancing", "yield", "performance").
-    """
-    from pfm.ai import build_weekly_report_prompt_pack
-    from pfm.db.repository import Repository
-    from pfm.server.daemon import get_db_path
-
-    d = _today()
-    db_path = get_db_path()
-    async with Repository(db_path) as repo:
-        pack = await build_weekly_report_prompt_pack(repo, db_path, d)
-
-    if pack.get("error"):
-        return f"Unable to build weekly review prompt: {pack['error']}"
-
-    sections = pack["sections"]
-    titles = ", ".join(section["title"] for section in sections)
-
-    parts = [
-        f"Review my investment portfolio as of {d.isoformat()}.",
-        "Use the weekly report prompt pack below as the authoritative contract.",
-        "",
-        f"Section order: {titles}",
-        "",
-        "System prompt:",
-        pack["system_prompt"],
-        "",
-        "Analytics context:",
-        pack["analytics_context"],
-    ]
-    if pack.get("investor_memory"):
-        parts.extend(["", "Investor memory:", pack["investor_memory"]])
-    if focus:
-        parts.append(f"\nPlease focus on: {focus}")
-    else:
-        parts.append(
-            "\nProvide a concise review covering: portfolio health, risk assessment, "
-            "rebalancing opportunities, and actionable recommendations."
-        )
-    return "\n".join(parts)
 
 
 @mcp.prompt()
@@ -2409,15 +2307,6 @@ async def weekly_check_in() -> str:
         "and suggest what I should focus on next week."
     )
     return "\n".join(parts)
-
-
-def _memory_payload(memory: str) -> dict[str, object]:
-    return {
-        "memory": memory,
-        "length": len(memory),
-        "normalized": True,
-        "max_chars": AI_REPORT_MEMORY_MAX_CHARS,
-    }
 
 
 # ---------------------------------------------------------------------------

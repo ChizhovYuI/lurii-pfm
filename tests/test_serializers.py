@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from datetime import date
 from decimal import Decimal
 
@@ -15,8 +14,6 @@ from pfm.server.serializers import (
     collector_result_to_dict,
     decimal_default,
     mask_secret,
-    parse_cached_ai_commentary,
-    parse_cached_ai_commentary_model,
     parse_net_worth_usd,
     snapshot_to_dict,
     source_to_dict,
@@ -188,32 +185,6 @@ class TestParseNetWorthUsd:
 
     def test_not_dict(self):
         assert parse_net_worth_usd('"hello"') == Decimal(0)
-
-
-class TestParseCachedAiCommentary:
-    def test_dict_format(self):
-        raw = json.dumps({"text": "Great week", "model": "gemini"})
-        assert parse_cached_ai_commentary(raw) == "Great week"
-
-    def test_none(self):
-        assert parse_cached_ai_commentary(None) is None
-
-    def test_string_format(self):
-        raw = json.dumps("Some commentary")
-        assert parse_cached_ai_commentary(raw) == "Some commentary"
-
-
-class TestParseCachedAiCommentaryModel:
-    def test_dict_format(self):
-        raw = json.dumps({"text": "x", "model": "gemini-pro"})
-        assert parse_cached_ai_commentary_model(raw) == "gemini-pro"
-
-    def test_none(self):
-        assert parse_cached_ai_commentary_model(None) is None
-
-    def test_no_model(self):
-        raw = json.dumps({"text": "x"})
-        assert parse_cached_ai_commentary_model(raw) is None
 
 
 class TestStrDecimal:

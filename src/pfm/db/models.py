@@ -121,17 +121,6 @@ class Source:
 
 
 @dataclass(frozen=True, slots=True)
-class AIProvider:
-    """A configured AI provider with credentials."""
-
-    type: str
-    api_key: str = ""
-    model: str = ""
-    base_url: str = ""
-    active: bool = False
-
-
-@dataclass(frozen=True, slots=True)
 class SourceDeleteResult:
     """Summary of rows removed when deleting a configured source."""
 
