@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 
-from pfm.collectors._retry import is_dns_resolution_error
+from pfm.collectors._retry import format_fetch_error as _format_fetch_error
 from pfm.db.models import (
     CollectorResult,
     RawBalance,
@@ -29,14 +29,6 @@ if TYPE_CHECKING:
     from pfm.pricing.coingecko import PricingService
 
 logger = logging.getLogger(__name__)
-_COUNTRY_ACCESS_HINT = "service access appears restricted from your current network or region. try a vpn and retry."
-
-
-def _format_fetch_error(source_name: str, stage: str, exc: Exception) -> tuple[str, bool]:
-    """Return user-facing collector error text and whether it is a DNS access issue."""
-    if is_dns_resolution_error(exc):
-        return (f"Failed to fetch {stage} from {source_name}: {_COUNTRY_ACCESS_HINT}", True)
-    return (f"Failed to fetch {stage} from {source_name}: {exc}", False)
 
 
 class BaseCollector(ABC):

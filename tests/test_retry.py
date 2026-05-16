@@ -6,7 +6,7 @@ import time
 import httpx
 import pytest
 
-from pfm.collectors._retry import RateLimiter, retry
+from pfm.collectors._retry import COUNTRY_ACCESS_HINT, RateLimiter, format_fetch_error, retry
 
 
 async def test_retry_succeeds_first_attempt():
@@ -124,3 +124,23 @@ async def test_rate_limiter_throttles():
 def test_rate_limiter_rejects_invalid_args():
     with pytest.raises(ValueError, match="requests_per_minute must be > 0"):
         RateLimiter(requests_per_minute=0)
+
+
+def test_format_fetch_error_returns_country_access_hint_for_dns_failure():
+    exc = httpx.ConnectError("connect error")
+    exc.__cause__ = socket.gaierror(8, "nodename nor servname provided, or not known")
+
+    msg, is_network_access_error = format_fetch_error("okx-main", "balances", exc)
+
+    assert is_network_access_error is True
+    assert COUNTRY_ACCESS_HINT in msg
+    assert "okx-main" in msg
+    assert "balances" in msg
+
+
+def test_format_fetch_error_passes_through_non_dns_error():
+    msg, is_network_access_error = format_fetch_error("wise-main", "transactions", ValueError("boom"))
+
+    assert is_network_access_error is False
+    assert "boom" in msg
+    assert "wise-main" in msg

@@ -9,7 +9,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from pfm.analytics.categorization_runner import run_categorization
-from pfm.collectors._retry import is_dns_resolution_error
+from pfm.collectors._retry import format_fetch_error, is_dns_resolution_error
 from pfm.db.metadata_store import MetadataStore
 from pfm.db.models import CollectorResult, is_sync_marker_snapshot, make_sync_marker_snapshot
 
@@ -126,8 +126,11 @@ async def _process_single(
     start = time.monotonic()
 
     if isinstance(raw, BaseException):
-        msg = f"Failed to fetch balances from {source_name}: {raw}"
-        logger.exception(msg, exc_info=raw)
+        msg, is_network_access_error = format_fetch_error(source_name, "balances", raw)
+        if is_network_access_error:
+            logger.warning("%s (original error: %s)", msg, raw)
+        else:
+            logger.exception(msg, exc_info=raw)
         result.errors.append(msg)
     else:
         try:
@@ -159,8 +162,11 @@ async def _process_single(
                 await repo.save_transactions(transactions)
                 result.transactions_count = len(transactions)
         except Exception as exc:
-            msg = f"Failed to fetch transactions from {source_name}: {exc}"
-            logger.exception(msg)
+            msg, is_network_access_error = format_fetch_error(source_name, "transactions", exc)
+            if is_network_access_error:
+                logger.warning("%s (original error: %s)", msg, exc)
+            else:
+                logger.exception(msg)
             result.errors.append(msg)
 
     result.duration_seconds = time.monotonic() - start

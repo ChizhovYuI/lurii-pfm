@@ -26,6 +26,9 @@ RETRYABLE_EXCEPTIONS: tuple[type[Exception], ...] = (
 )
 
 
+COUNTRY_ACCESS_HINT = "service access appears restricted from your current network or region. try a vpn and retry."
+
+
 def is_dns_resolution_error(exc: Exception) -> bool:
     """Return True when an exception chain contains a DNS resolution failure."""
     seen: set[int] = set()
@@ -37,6 +40,13 @@ def is_dns_resolution_error(exc: Exception) -> bool:
         next_exc = current.__cause__ or current.__context__
         current = next_exc if isinstance(next_exc, BaseException) else None
     return False
+
+
+def format_fetch_error(source_name: str, stage: str, exc: BaseException) -> tuple[str, bool]:
+    """Return user-facing collector error text and whether it is a DNS access issue."""
+    if isinstance(exc, Exception) and is_dns_resolution_error(exc):
+        return (f"Failed to fetch {stage} from {source_name}: {COUNTRY_ACCESS_HINT}", True)
+    return (f"Failed to fetch {stage} from {source_name}: {exc}", False)
 
 
 def retry(
