@@ -35,6 +35,19 @@ _BREW = "/opt/homebrew/bin/brew"
 _PFM_FORMULA = "lurii-pfm"
 _APP_CASK = "lurii-finance"
 
+
+def _brew_env() -> dict[str, str]:
+    """Return an env dict that disables brew's implicit auto-update.
+
+    `brew upgrade` would otherwise auto-tap `homebrew/core` on macOS Tahoe,
+    which fails with EPERM when launchd sandbox blocks writes to
+    `/opt/homebrew/Library/Taps/homebrew/homebrew-core`. The tap is refreshed
+    out-of-band by `scripts/release_lurii.py`, so the daemon never needs to
+    auto-update.
+    """
+    return {**os.environ, "HOMEBREW_NO_AUTO_UPDATE": "1"}
+
+
 # Module-level mutable cache container (single-process server).
 _cache: dict[str, Any] = {"data": None, "ts": 0.0}
 
@@ -193,10 +206,12 @@ def _extract_installed_versions(updates: dict[str, Any]) -> dict[str, str]:
 
 async def _exec(*cmd: str) -> int:
     """Run a command and return exit code."""
+    env = _brew_env() if cmd and cmd[0] == _BREW else None
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=env,
     )
     stdout, stderr = await proc.communicate()
     rc = proc.returncode or 0
@@ -233,6 +248,7 @@ async def _brew_info_json(*args: str) -> dict[str, Any] | None:
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=_brew_env(),
         )
     except OSError:
         logger.debug("Failed to execute brew info for %s", " ".join(args))
@@ -374,8 +390,12 @@ async def check_updates(request: web.Request) -> web.Response:
 
 @routes.post("/api/v1/updates/check")
 async def force_check_updates(request: web.Request) -> web.Response:
-    """Run ``brew update`` and return fresh version info."""
-    await _exec(_BREW, "update")
+    """Bust the in-process cache and return fresh version info.
+
+    The tap is refreshed out-of-band by `scripts/release_lurii.py`, so we do
+    not run ``brew update`` here — it would trigger a homebrew/core re-tap
+    that EPERMs under the launchd sandbox on macOS Tahoe.
+    """
     _cache["data"] = None
     result = await _get_updates()
     state = await _clear_error_install_state_if_present(request.app["db_path"])
@@ -430,15 +450,9 @@ async def install_updates(request: web.Request) -> web.Response:
         try:
             await broadcaster.broadcast({"type": "update_started"})
 
-            await _update_install_state(db_path, progress=0.33, message="Running brew update...")
+            await _update_install_state(db_path, progress=0.5, message="Upgrading packages...")
             await broadcaster.broadcast(
-                {"type": "update_progress", "progress": 0.33, "message": "Running brew update..."},
-            )
-            await _exec(_BREW, "update")
-
-            await _update_install_state(db_path, progress=0.66, message="Upgrading packages...")
-            await broadcaster.broadcast(
-                {"type": "update_progress", "progress": 0.66, "message": "Upgrading packages..."},
+                {"type": "update_progress", "progress": 0.5, "message": "Upgrading packages..."},
             )
             for cmd in commands:
                 await _exec(*cmd)

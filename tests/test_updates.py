@@ -446,8 +446,7 @@ async def test_install_flow_persists_progress_and_versions(client, db_path, monk
     state = await _wait_for_status(db_path, "installed")
     assert state["progress"] == 1.0
     assert state["installed_versions"] == {"pfm": _TEST_PFM_VERSION, "app": _TEST_APP_VERSION}
-    assert any(progress == 0.33 for _, progress, _ in seen_states)
-    assert any(progress == 0.66 for _, progress, _ in seen_states)
+    assert any(progress == 0.5 for _, progress, _ in seen_states)
 
 
 async def test_force_check_updates_clears_stale_error_state(client, db_path, monkeypatch):
