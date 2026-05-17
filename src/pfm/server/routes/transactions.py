@@ -9,21 +9,20 @@ from typing import TYPE_CHECKING
 
 from aiohttp import web
 
-from pfm.db.models import TransactionType, TypeRule, effective_type
+from pfm.db.models import TransactionType, effective_type
 from pfm.server.serializers import _str_decimal
 from pfm.server.state import get_repo
 
 if TYPE_CHECKING:
     from pfm.analytics.transaction_grouper import TransactionGroup
     from pfm.db.metadata_store import MetadataStore
-    from pfm.db.models import CategoryRule, Transaction, TransactionMetadata
+    from pfm.db.models import Transaction, TransactionMetadata
 
 logger = logging.getLogger(__name__)
 
 routes = web.RouteTableDef()
 
 _VALID_TYPES = frozenset(t.value for t in TransactionType if t != TransactionType.UNKNOWN)
-_VALID_OPERATORS = frozenset({"eq", "contains"})
 
 
 def _parse_int_param(request: web.Request, name: str = "id") -> int | web.Response:
@@ -373,48 +372,11 @@ def _group_usd_value(
     return total
 
 
-def _serialize_category_rule(rule: CategoryRule) -> dict[str, object]:
-    return {
-        "id": rule.id,
-        "type_match": rule.type_match,
-        "type_operator": rule.type_operator,
-        "field_name": rule.field_name or None,
-        "field_operator": rule.field_operator or None,
-        "field_value": rule.field_value or None,
-        "source_type": rule.source_type,
-        "source_id": rule.source_id,
-        "result_category": rule.result_category,
-        "priority": rule.priority,
-        "builtin": rule.builtin,
-        "deleted": rule.deleted,
-    }
-
-
-def _serialize_type_rule(rule: TypeRule) -> dict[str, object]:
-    return {
-        "id": rule.id,
-        "source_type": rule.source_type,
-        "source_id": rule.source_id,
-        "field_name": rule.field_name or None,
-        "field_operator": rule.field_operator or None,
-        "field_value": rule.field_value or None,
-        "result_type": rule.result_type,
-        "priority": rule.priority,
-        "builtin": rule.builtin,
-        "deleted": rule.deleted,
-    }
-
-
 def _get_metadata_store(app: web.Application) -> MetadataStore:
     from pfm.db.metadata_store import MetadataStore
 
     repo = get_repo(app)
     return MetadataStore(repo.connection)
-
-
-def _escape_like(value: str) -> str:
-    """Escape SQL LIKE wildcard characters."""
-    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 _RAW_SKIP_KEYS = {"_links", "topics"}
@@ -700,7 +662,7 @@ async def analytics_trends(request: web.Request) -> web.Response:
 
 @routes.get("/api/v1/transactions/{id}")
 async def get_transaction(request: web.Request) -> web.Response:
-    """Get a single transaction with metadata, matched rule, raw fields, and available options."""
+    """Get a single transaction with metadata, raw fields, and available options."""
     tx_id = _parse_int_param(request)
     if isinstance(tx_id, web.Response):
         return tx_id
@@ -715,36 +677,12 @@ async def get_transaction(request: web.Request) -> web.Response:
     data = _serialize_tx(tx, meta, prices)
     data["rawFields"] = _parse_raw_fields(tx)
 
-    # Find the matched category rule (if any).
-    from pfm.analytics.categorizer import _match_category_rule
-
     etype = effective_type(tx, meta)
-    rules = await store.get_category_rules()
-    matched_rule = None
-    for rule in rules:
-        if _match_category_rule(etype, tx, rule):
-            matched_rule = rule
-            break
-    data["matchedRule"] = _serialize_category_rule(matched_rule) if matched_rule else None
-
-    # Available categories for this effective type.
     categories = await store.get_categories(tx_type=etype)
     data["availableCategories"] = [
         {"category": c.category, "display_name": c.display_name, "tx_type": c.tx_type} for c in categories
     ]
 
-    # Matched type rule.
-    from pfm.analytics.type_resolver import match_type_rule
-
-    type_rules = await store.get_type_rules()
-    matched_type_rule = None
-    for tr in type_rules:
-        if match_type_rule(tx, tr):
-            matched_type_rule = tr
-            break
-    data["matchedTypeRule"] = _serialize_type_rule(matched_type_rule) if matched_type_rule else None
-
-    # Available types for manual override.
     data["availableTypes"] = [t.value for t in TransactionType]
 
     return web.json_response(data)
@@ -1076,395 +1014,3 @@ async def create_category(request: web.Request) -> web.Response:
         },
         status=201,
     )
-
-
-# ── Category rules CRUD ───────────────────────────────────────────────
-
-
-async def _resolve_legacy_source(
-    repo: object,
-    legacy: str | None,
-) -> tuple[str | None, int | None]:
-    """Map a legacy ``source`` arg into ``(source_type, source_id)`` (ADR-030 Stage 3)."""
-    from pfm.db.repository import Repository
-
-    if legacy is None or legacy in {"", "*"}:
-        return None, None
-    if not isinstance(repo, Repository):
-        return legacy, None
-    sources = await repo.list_sources_with_counts()
-    by_name: dict[str, int] = {}
-    for s in sources:
-        name = s.get("name")
-        sid = s.get("id")
-        if isinstance(name, str) and isinstance(sid, int):
-            by_name[name] = sid
-    if legacy in by_name:
-        return None, by_name[legacy]
-    return legacy, None
-
-
-def _split_rule_source_args(body: dict[str, object]) -> tuple[str | None, int | None, str | None]:
-    """Pull source_type / source_id / legacy source from a request body."""
-    source_type = body.get("source_type")
-    source_id_val = body.get("source_id")
-    legacy = body.get("source")
-    return (
-        str(source_type) if isinstance(source_type, str) and source_type else None,
-        int(source_id_val) if isinstance(source_id_val, int) else None,
-        str(legacy) if isinstance(legacy, str) and legacy else None,
-    )
-
-
-@routes.get("/api/v1/category-rules")
-async def list_category_rules(request: web.Request) -> web.Response:
-    """List all category rules."""
-    repo = get_repo(request.app)
-    store = _get_metadata_store(request.app)
-    source_type, source_id = await _resolve_legacy_source(repo, request.query.get("source"))
-    include_deleted = request.query.get("include_deleted", "false").lower() == "true"
-    rules = await store.get_category_rules(
-        source_type=source_type, source_id=source_id, include_deleted=include_deleted
-    )
-    return web.json_response([_serialize_category_rule(r) for r in rules])
-
-
-@routes.post("/api/v1/category-rules")
-async def create_category_rule(request: web.Request) -> web.Response:
-    """Create a compound category rule."""
-    body = await request.json()
-    if "type_match" not in body or "result_category" not in body:
-        return web.json_response({"error": "type_match and result_category are required"}, status=400)
-
-    # Validate operator if a field condition is provided.
-    field_op = body.get("field_operator", "")
-    if field_op and field_op not in _VALID_OPERATORS:
-        return web.json_response(
-            {"error": f"field_operator must be one of: {sorted(_VALID_OPERATORS)}"},
-            status=400,
-        )
-
-    # Serialize array values to JSON.
-    field_value = body.get("field_value", "")
-    if isinstance(field_value, list):
-        field_value = json.dumps(field_value)
-
-    store = _get_metadata_store(request.app)
-    repo = get_repo(request.app)
-    source_type, source_id, legacy = _split_rule_source_args(body)
-    if legacy is not None and source_type is None and source_id is None:
-        source_type, source_id = await _resolve_legacy_source(repo, legacy)
-    rule = await store.create_category_rule(
-        type_match=body["type_match"],
-        result_category=body["result_category"],
-        type_operator=body.get("type_operator", "eq"),
-        field_name=body.get("field_name", ""),
-        field_operator=field_op,
-        field_value=field_value,
-        source_type=source_type,
-        source_id=source_id,
-        priority=body.get("priority", 50),
-    )
-
-    # Apply new rule to uncategorized transactions.
-    await _run_categorization(repo, store, force=True)
-
-    return web.json_response(_serialize_category_rule(rule), status=201)
-
-
-async def _apply_type_rule(repo: object, store: MetadataStore, rule: TypeRule) -> None:
-    """Apply a single type rule to all non-transfer transactions."""
-    from pfm.analytics.type_resolver import match_type_rule
-    from pfm.db.repository import Repository
-
-    assert isinstance(repo, Repository)  # noqa: S101
-    all_txs = await repo.get_transactions()
-    meta_map = await store.get_metadata_batch([tx.id for tx in all_txs if tx.id is not None])
-
-    updates: list[tuple[int, str]] = []
-    for tx in all_txs:
-        if tx.id is None:
-            continue
-        meta = meta_map.get(tx.id)
-        if meta and (meta.is_internal_transfer or meta.type_override):
-            continue
-        if match_type_rule(tx, rule):
-            updates.append((tx.id, rule.result_type))
-
-    if updates:
-        await repo.connection.executemany(
-            "UPDATE transactions SET tx_type = ? WHERE id = ?",
-            [(t, tid) for tid, t in updates],
-        )
-        # Clear category for affected transactions so re-categorization picks up the new type.
-        affected_ids = [tid for tid, _ in updates]
-        placeholders = ",".join("?" for _ in affected_ids)
-        await repo.connection.execute(
-            f"UPDATE transaction_metadata SET category = NULL, category_source = 'auto',"  # noqa: S608
-            f" category_confidence = NULL WHERE transaction_id IN ({placeholders})"
-            f" AND category_source != 'manual'",
-            affected_ids,
-        )
-        await repo.connection.commit()
-        logger.info("Type rule applied to %d transactions", len(updates))
-
-
-async def _run_categorization(repo: object, store: MetadataStore, *, force: bool = False) -> None:
-    from pfm.analytics.categorization_runner import run_categorization
-    from pfm.db.repository import Repository
-
-    if isinstance(repo, Repository):
-        try:
-            await run_categorization(repo, store, force=force)
-        except Exception:
-            logger.exception("Post-rule categorization failed")
-
-
-@routes.delete("/api/v1/category-rules/{id}")
-async def delete_category_rule(request: web.Request) -> web.Response:
-    """Delete a category rule (soft-delete for builtins)."""
-    rule_id = _parse_int_param(request)
-    if isinstance(rule_id, web.Response):
-        return rule_id
-
-    store = _get_metadata_store(request.app)
-    deleted = await store.delete_category_rule(rule_id)
-    if not deleted:
-        return web.json_response({"error": "Rule not found"}, status=404)
-    return web.json_response({"deleted": True})
-
-
-@routes.post("/api/v1/category-rules/preview")
-async def preview_category_rule(request: web.Request) -> web.Response:
-    """Dry-run a rule against all transactions to show affected ones."""
-    body = await request.json()
-    if "type_match" not in body or "result_category" not in body:
-        return web.json_response({"error": "type_match and result_category are required"}, status=400)
-
-    from pfm.analytics.categorizer import _match_category_rule
-    from pfm.db.models import CategoryRule
-
-    field_value = body.get("field_value", "")
-    if isinstance(field_value, list):
-        field_value = json.dumps(field_value)
-
-    repo = get_repo(request.app)
-    store = _get_metadata_store(request.app)
-    source_type, source_id, legacy = _split_rule_source_args(body)
-    if legacy is not None and source_type is None and source_id is None:
-        source_type, source_id = await _resolve_legacy_source(repo, legacy)
-    preview_rule = CategoryRule(
-        type_match=body["type_match"],
-        result_category=body["result_category"],
-        type_operator=body.get("type_operator", "eq"),
-        field_name=body.get("field_name", ""),
-        field_operator=body.get("field_operator", ""),
-        field_value=field_value,
-        source_type=source_type,
-        source_id=source_id,
-    )
-    all_txs = await repo.get_transactions()
-    tx_ids = [tx.id for tx in all_txs if tx.id is not None]
-    meta_map = await store.get_metadata_batch(tx_ids)
-
-    affected: list[dict[str, object]] = []
-    for tx in all_txs:
-        if tx.id is None:
-            continue
-        meta = meta_map.get(tx.id)
-        etype = effective_type(tx, meta)
-        if _match_category_rule(etype, tx, preview_rule):
-            affected.append(
-                {
-                    "id": tx.id,
-                    "date": tx.date.isoformat(),
-                    "source": tx.source_name or tx.source,
-                    "description": _extract_description(tx),
-                    "current_category": meta.category if meta else None,
-                    "new_category": body["result_category"],
-                }
-            )
-
-    return web.json_response(
-        {
-            "affected_count": len(affected),
-            "sample": affected[:50],
-        }
-    )
-
-
-@routes.get("/api/v1/category-rules/suggestions")
-async def category_rule_suggestions(request: web.Request) -> web.Response:
-    """Analyze user choices and suggest new rules."""
-    store = _get_metadata_store(request.app)
-    min_evidence = _parse_int_query(request, "min_evidence", 2)
-    suggestions = await store.get_category_suggestions(min_evidence=min_evidence)
-    return web.json_response(suggestions)
-
-
-@routes.post("/api/v1/category-rules/reset")
-async def reset_category_rules(request: web.Request) -> web.Response:
-    """Reset rules: soft-delete custom, restore builtins.
-
-    Legacy ``source`` is treated as ``source_type`` (the reset endpoint only
-    scopes to a type, never a specific source instance).
-    """
-    body = await request.json()
-    source_type = body.get("source_type") or body.get("source")
-    store = _get_metadata_store(request.app)
-    await store.reset_category_rules(source_type=source_type if isinstance(source_type, str) else None)
-    return web.json_response({"reset": True, "source_type": source_type})
-
-
-# ── Categorization trigger ─────────────────────────────────────────────
-
-
-@routes.post("/api/v1/transactions/categorize")
-async def run_categorize(request: web.Request) -> web.Response:
-    """Trigger auto-categorization run."""
-    from pfm.analytics.categorization_runner import run_categorization
-    from pfm.db.metadata_store import MetadataStore
-
-    repo = get_repo(request.app)
-    store = MetadataStore(repo.connection)
-
-    force = request.query.get("force", "false").lower() == "true"
-    summary = await run_categorization(repo, store, force=force)
-
-    return web.json_response(summary)
-
-
-# ── Type rules CRUD ────────────────────────────────────────────────
-
-
-@routes.get("/api/v1/type-rules")
-async def list_type_rules(request: web.Request) -> web.Response:
-    """List all type rules."""
-    repo = get_repo(request.app)
-    store = _get_metadata_store(request.app)
-    source_type, source_id = await _resolve_legacy_source(repo, request.query.get("source"))
-    include_deleted = request.query.get("include_deleted", "false").lower() == "true"
-    rules = await store.get_type_rules(source_type=source_type, source_id=source_id, include_deleted=include_deleted)
-    return web.json_response([_serialize_type_rule(r) for r in rules])
-
-
-@routes.post("/api/v1/type-rules")
-async def create_type_rule(request: web.Request) -> web.Response:
-    """Create a type rule."""
-    body = await request.json()
-    result_type = body.get("result_type")
-    if not result_type:
-        return web.json_response({"error": "result_type is required"}, status=400)
-    if result_type not in _VALID_TYPES:
-        return web.json_response(
-            {"error": f"result_type must be one of: {sorted(_VALID_TYPES)}"},
-            status=400,
-        )
-
-    field_op = body.get("field_operator", "eq")
-    if field_op and field_op not in _VALID_OPERATORS:
-        return web.json_response(
-            {"error": f"field_operator must be one of: {sorted(_VALID_OPERATORS)}"},
-            status=400,
-        )
-
-    field_value = body.get("field_value", "")
-    if isinstance(field_value, list):
-        field_value = json.dumps(field_value)
-
-    store = _get_metadata_store(request.app)
-    repo = get_repo(request.app)
-    source_type, source_id, legacy = _split_rule_source_args(body)
-    if legacy is not None and source_type is None and source_id is None:
-        source_type, source_id = await _resolve_legacy_source(repo, legacy)
-    rule = await store.create_type_rule(
-        result_type=result_type,
-        source_type=source_type,
-        source_id=source_id,
-        field_name=body.get("field_name", ""),
-        field_operator=field_op,
-        field_value=field_value,
-        priority=body.get("priority", 50),
-    )
-
-    # Apply new rule to all non-transfer transactions.
-    await _apply_type_rule(repo, store, rule)
-    await _run_categorization(repo, store, force=True)
-
-    return web.json_response(_serialize_type_rule(rule), status=201)
-
-
-@routes.delete("/api/v1/type-rules/{id}")
-async def delete_type_rule(request: web.Request) -> web.Response:
-    """Delete a type rule (soft-delete for builtins)."""
-    rule_id = _parse_int_param(request)
-    if isinstance(rule_id, web.Response):
-        return rule_id
-
-    store = _get_metadata_store(request.app)
-    deleted = await store.delete_type_rule(rule_id)
-    if not deleted:
-        return web.json_response({"error": "Rule not found"}, status=404)
-    return web.json_response({"deleted": True})
-
-
-@routes.post("/api/v1/type-rules/preview")
-async def preview_type_rule(request: web.Request) -> web.Response:
-    """Dry-run a type rule against transactions."""
-    body = await request.json()
-    result_type = body.get("result_type")
-    if not result_type:
-        return web.json_response({"error": "result_type is required"}, status=400)
-
-    from pfm.analytics.type_resolver import match_type_rule
-    from pfm.db.models import TypeRule as TypeRuleModel
-
-    field_value = body.get("field_value", "")
-    if isinstance(field_value, list):
-        field_value = json.dumps(field_value)
-
-    repo = get_repo(request.app)
-    source_type, source_id, legacy = _split_rule_source_args(body)
-    if legacy is not None and source_type is None and source_id is None:
-        source_type, source_id = await _resolve_legacy_source(repo, legacy)
-    preview_rule = TypeRuleModel(
-        source_type=source_type,
-        source_id=source_id,
-        field_name=body.get("field_name", ""),
-        field_operator=body.get("field_operator", "eq"),
-        field_value=field_value,
-        result_type=result_type,
-    )
-    all_txs = await repo.get_transactions()
-
-    affected: list[dict[str, object]] = []
-    for tx in all_txs:
-        if tx.id is None:
-            continue
-        if match_type_rule(tx, preview_rule):
-            affected.append(
-                {
-                    "id": tx.id,
-                    "date": tx.date.isoformat(),
-                    "source": tx.source_name or tx.source,
-                    "current_type": tx.tx_type.value,
-                    "new_type": result_type,
-                }
-            )
-
-    return web.json_response(
-        {
-            "affected_count": len(affected),
-            "sample": affected[:50],
-        }
-    )
-
-
-@routes.post("/api/v1/type-rules/reset")
-async def reset_type_rules(request: web.Request) -> web.Response:
-    """Reset type rules: soft-delete custom, restore builtins."""
-    body = await request.json()
-    source_type = body.get("source_type") or body.get("source")
-    store = _get_metadata_store(request.app)
-    await store.reset_type_rules(source_type=source_type if isinstance(source_type, str) else None)
-    return web.json_response({"reset": True, "source_type": source_type})
