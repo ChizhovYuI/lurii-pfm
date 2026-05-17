@@ -32,8 +32,10 @@ _REPOS = {
 }
 _CACHE_TTL = 3600  # 1 hour
 _BREW = "/opt/homebrew/bin/brew"
+_GIT = "/usr/bin/git"
 _PFM_FORMULA = "lurii-pfm"
 _APP_CASK = "lurii-finance"
+_TAP = "ChizhovYuI/lurii"
 
 
 def _brew_env() -> dict[str, str]:
@@ -41,11 +43,40 @@ def _brew_env() -> dict[str, str]:
 
     `brew upgrade` would otherwise auto-tap `homebrew/core` on macOS Tahoe,
     which fails with EPERM when launchd sandbox blocks writes to
-    `/opt/homebrew/Library/Taps/homebrew/homebrew-core`. The tap is refreshed
-    out-of-band by `scripts/release_lurii.py`, so the daemon never needs to
-    auto-update.
+    `/opt/homebrew/Library/Taps/homebrew/homebrew-core`. The local
+    `ChizhovYuI/lurii` tap is refreshed explicitly by ``_update_tap`` so
+    ``brew upgrade`` still sees new versions without re-tapping homebrew/core.
     """
     return {**os.environ, "HOMEBREW_NO_AUTO_UPDATE": "1"}
+
+
+async def _update_tap() -> None:
+    """Fast-forward the local lurii tap so brew upgrade sees new releases.
+
+    A plain ``brew update`` would also touch homebrew/core, which EPERMs in
+    the launchd sandbox on macOS Tahoe. Pulling our tap repo directly avoids
+    that while keeping the formula/cask metadata current.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            _BREW,
+            "--repo",
+            _TAP,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=_brew_env(),
+        )
+    except OSError:
+        logger.warning("brew --repo %s failed to start", _TAP)
+        return
+    stdout, _ = await proc.communicate()
+    if proc.returncode != 0 or not stdout.strip():
+        logger.warning("brew --repo %s exited %d", _TAP, proc.returncode or 0)
+        return
+    tap_path = stdout.decode().strip()
+    rc = await _exec(_GIT, "-C", tap_path, "pull", "--ff-only", "--quiet", "origin", "main")
+    if rc != 0:
+        logger.warning("Failed to fast-forward tap %s (rc=%d)", _TAP, rc)
 
 
 # Module-level mutable cache container (single-process server).
@@ -454,6 +485,7 @@ async def install_updates(request: web.Request) -> web.Response:
             await broadcaster.broadcast(
                 {"type": "update_progress", "progress": 0.5, "message": "Upgrading packages..."},
             )
+            await _update_tap()
             for cmd in commands:
                 await _exec(*cmd)
 
