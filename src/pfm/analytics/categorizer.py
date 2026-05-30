@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
+from pfm.analytics.merchant import derive_merchant_name
 from pfm.db.models import effective_type
 
 if TYPE_CHECKING:
@@ -89,6 +90,8 @@ def _resolve_field(tx: Transaction, field_name: str) -> str | None:
         return tx.asset.upper()
     if field_name == "description":
         return _extract_description(tx) or None
+    if field_name == "merchant_name":
+        return _extract_merchant_name(tx)
     # Any other field: look up in raw_json.
     if not tx.raw_json:
         return None
@@ -100,6 +103,19 @@ def _resolve_field(tx: Transaction, field_name: str) -> str | None:
     except (json.JSONDecodeError, TypeError):
         pass
     return None
+
+
+def _extract_merchant_name(tx: Transaction) -> str | None:
+    """Derive the normalized merchant token from raw_json (virtual field)."""
+    if not tx.raw_json:
+        return None
+    try:
+        parsed = json.loads(tx.raw_json)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    return derive_merchant_name(tx.source, parsed)
 
 
 # ── Compound rule matching ─────────────────────────────────────────────

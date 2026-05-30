@@ -851,14 +851,16 @@ async def set_category(request: web.Request) -> web.Response:
     etype = effective_type(tx, existing_meta)
     previous = existing_meta.category if existing_meta else None
 
-    # Record choice for learning.
-    raw_fields = _parse_raw_fields(tx)
+    # Record choice for learning. Use the source TYPE and the full raw_json so
+    # rule suggestions derive the same top-level fields (and the same
+    # merchant_name token) that the categorizer resolves at match time — the MCP
+    # set_transaction_category path records identical inputs.
     await store.record_category_choice(
         transaction_id=tx_id,
-        source=(tx.source_name or tx.source).lower(),
+        source=tx.source,
         effective_type=etype,
         chosen_category=category,
-        field_snapshot=json.dumps(raw_fields) if raw_fields else "",
+        field_snapshot=tx.raw_json,
         previous_category=previous or "",
     )
 

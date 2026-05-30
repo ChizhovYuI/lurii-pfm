@@ -9,6 +9,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from pfm.analytics.categorization_runner import run_categorization
+from pfm.analytics.usd_value_backfill import backfill_transaction_usd_values
 from pfm.collectors._retry import format_fetch_error, is_dns_resolution_error
 from pfm.db.metadata_store import MetadataStore
 from pfm.db.models import CollectorResult, is_sync_marker_snapshot, make_sync_marker_snapshot
@@ -75,13 +76,22 @@ async def run_parallel_pipeline(
     if has_new_txs:
         if on_progress:
             await on_progress(0.95, 1, "Categorizing transactions...")
-        await _run_post_import(repo)
+        await _run_post_import(repo, pricing)
 
     return results
 
 
-async def _run_post_import(repo: Repository) -> None:
-    """Run the categorization pipeline after collection."""
+# Cap the post-collect valuation so collection never blocks on the full
+# historical backlog (use the backfill_usd_values tool for a full sweep).
+# ``_FORWARD_FILL_MAX_LOOKUPS`` bounds wall-clock: CoinGecko is serialized at
+# ~2.1s/request, so 20 distinct (asset, date) lookups cap the added collect
+# latency at ~45s. The backlog drains across successive collects.
+_FORWARD_FILL_LIMIT = 200
+_FORWARD_FILL_MAX_LOOKUPS = 20
+
+
+async def _run_post_import(repo: Repository, pricing: PricingService) -> None:
+    """Run the categorization pipeline, then value recent imports best-effort."""
     store = MetadataStore(repo.connection)
     summary = await run_categorization(repo, store)
     logger.info(
@@ -90,6 +100,18 @@ async def _run_post_import(repo: Repository) -> None:
         summary["transfers"],
         summary["categorized"],
     )
+
+    try:
+        valued = await backfill_transaction_usd_values(
+            repo,
+            pricing,
+            limit=_FORWARD_FILL_LIMIT,
+            newest_first=True,
+            max_lookups=_FORWARD_FILL_MAX_LOOKUPS,
+        )
+        logger.info("Post-import usd_value forward-fill: %s", valued)
+    except Exception:
+        logger.exception("Post-import usd_value forward-fill failed (non-fatal)")
 
 
 async def _fetch_all(

@@ -181,3 +181,313 @@ async def test_full_pipeline_resolves_types_then_categorizes(tmp_path):
         meta = await store.get_metadata(txs[0].id)
         assert meta is not None
         assert meta.category == "trade"
+
+
+def _transfer_pair_txs() -> list[Transaction]:
+    """A cross-source outflow/inflow pair the detector should match."""
+    return [
+        Transaction(
+            date=date(2026, 4, 1),
+            source="okx",
+            source_name="okx-main",
+            tx_type=TransactionType.WITHDRAWAL,
+            asset="USDC",
+            amount=Decimal(500),
+            usd_value=Decimal(500),
+            tx_id="okx-out",
+        ),
+        Transaction(
+            date=date(2026, 4, 2),
+            source="wise",
+            source_name="wise-main",
+            tx_type=TransactionType.DEPOSIT,
+            asset="USDC",
+            amount=Decimal(500),
+            usd_value=Decimal(500),
+            tx_id="wise-in",
+        ),
+    ]
+
+
+async def _assert_symmetric(store, a_id: int, b_id: int) -> None:
+    meta_a = await store.get_metadata(a_id)
+    meta_b = await store.get_metadata(b_id)
+    assert meta_a is not None
+    assert meta_b is not None
+    assert meta_a.is_internal_transfer is True
+    assert meta_b.is_internal_transfer is True
+    assert meta_a.transfer_pair_id == b_id
+    assert meta_b.transfer_pair_id == a_id
+
+
+async def test_categorization_preserves_transfer_pairing_under_force(tmp_path):
+    """Re-running categorization (even forced) must not clobber a linked pair."""
+    from pfm.analytics.categorization_runner import run_categorization
+    from pfm.db.metadata_store import MetadataStore
+    from pfm.db.repository import Repository
+
+    async with Repository(tmp_path / "x.db") as repo:
+        store = MetadataStore(repo.connection)
+        await repo.save_transactions(_transfer_pair_txs())
+        ids = {t.tx_id: t.id for t in await repo.get_transactions()}
+        out_id, in_id = ids["okx-out"], ids["wise-in"]
+        assert out_id is not None
+        assert in_id is not None
+
+        first = await run_categorization(repo, store)
+        assert first["transfers"] == 1
+        await _assert_symmetric(store, out_id, in_id)
+
+        # A forced re-run previously rebuilt category metadata and dropped the
+        # transfer overlay on one side — assert it now survives.
+        await run_categorization(repo, store, force=True)
+        await _assert_symmetric(store, out_id, in_id)
+
+
+async def test_categorization_preserves_type_override_and_review_under_force(tmp_path):
+    """A forced rule-categorization must not drop a row's type_override/reviewed."""
+    from pfm.analytics.categorization_runner import run_categorization
+    from pfm.db.metadata_store import MetadataStore
+    from pfm.db.repository import Repository
+
+    async with Repository(tmp_path / "x.db") as repo:
+        store = MetadataStore(repo.connection)
+        await repo.save_transactions(
+            [
+                Transaction(
+                    date=date(2026, 4, 1),
+                    source="kbank",
+                    source_name="kbank-main",
+                    tx_type=TransactionType.SPEND,
+                    asset="THB",
+                    amount=Decimal(120),
+                    usd_value=Decimal(0),
+                    tx_id="thb-spend",
+                )
+            ]
+        )
+        tx_id = (await repo.get_transactions())[0].id
+        assert tx_id is not None
+        # An overlay set by other tooling: a manual type override + reviewed flag,
+        # no category yet, not a transfer.
+        await store.upsert_metadata(tx_id, type_override="spend", reviewed=True, notes="keep me")
+        await store.create_category_rule(
+            "spend", "groceries", field_name="asset", field_operator="eq", field_value="THB"
+        )
+
+        await run_categorization(repo, store, force=True)
+
+        meta = await store.get_metadata(tx_id)
+        assert meta is not None
+        assert meta.category == "groceries"  # rule applied
+        assert meta.type_override == "spend"  # overlay preserved
+        assert meta.reviewed is True
+        assert meta.notes == "keep me"
+
+
+async def test_detection_does_not_repair_or_repair_already_linked(tmp_path):
+    """A second pass must not re-pair an already-linked transaction."""
+    from pfm.analytics.categorization_runner import run_categorization
+    from pfm.db.metadata_store import MetadataStore
+    from pfm.db.repository import Repository
+
+    async with Repository(tmp_path / "x.db") as repo:
+        store = MetadataStore(repo.connection)
+        await repo.save_transactions(_transfer_pair_txs())
+        await run_categorization(repo, store)
+        # Second pass finds no *new* transfers (already paired).
+        second = await run_categorization(repo, store)
+        assert second["transfers"] == 0
+
+
+async def test_repair_transfer_pairs_restores_one_sided_link(tmp_path):
+    """Mirror of the live bug: A→B but B lost its back-link."""
+    from pfm.db.metadata_store import MetadataStore
+    from pfm.db.repository import Repository
+
+    async with Repository(tmp_path / "x.db") as repo:
+        store = MetadataStore(repo.connection)
+        await repo.save_transactions(_transfer_pair_txs())
+        ids = {t.tx_id: t.id for t in await repo.get_transactions()}
+        a_id, b_id = ids["okx-out"], ids["wise-in"]
+        assert a_id is not None
+        assert b_id is not None
+
+        await store.link_transfer(a_id, b_id)
+        # Simulate the clobber: clear B's transfer overlay only.
+        await repo.connection.execute(
+            "UPDATE transaction_metadata SET is_internal_transfer = 0, transfer_pair_id = NULL"
+            " WHERE transaction_id = ?",
+            (b_id,),
+        )
+        await repo.connection.commit()
+
+        result = await store.repair_transfer_pairs()
+        assert result["repaired"] == 1
+        assert result["cleared"] == 0
+        await _assert_symmetric(store, a_id, b_id)
+
+
+async def test_repair_transfer_pairs_clears_orphan(tmp_path):
+    """A dangling transfer flag (internal=1, no pair) is cleared by repair.
+
+    This is the post-SET-NULL orphan shape that legacy rows (or rows broken by a
+    path the delete trigger does not cover) can still carry. The FK forbids a
+    bogus ``transfer_pair_id``, so the orphan is fabricated directly.
+    """
+    from pfm.db.metadata_store import MetadataStore
+    from pfm.db.repository import Repository
+
+    async with Repository(tmp_path / "x.db") as repo:
+        store = MetadataStore(repo.connection)
+        await repo.save_transactions(_transfer_pair_txs())
+        ids = {t.tx_id: t.id for t in await repo.get_transactions()}
+        a_id = ids["okx-out"]
+        assert a_id is not None
+
+        # Dangling flag: marked an internal transfer but claiming no partner.
+        await store.upsert_metadata(a_id, is_internal_transfer=True)
+        orphan = await store.get_metadata(a_id)
+        assert orphan is not None
+        assert orphan.is_internal_transfer is True
+        assert orphan.transfer_pair_id is None
+
+        result = await store.repair_transfer_pairs()
+        assert result["cleared"] == 1
+        assert result["repaired"] == 0
+        meta_a = await store.get_metadata(a_id)
+        assert meta_a is not None
+        assert meta_a.is_internal_transfer is False
+        assert meta_a.transfer_pair_id is None
+
+
+async def test_repair_transfer_pairs_does_not_clobber_real_categorized_partner(tmp_path):
+    """A stale claim onto a genuine non-transfer row clears the claim, not the row."""
+    from pfm.db.metadata_store import MetadataStore
+    from pfm.db.repository import Repository
+
+    async with Repository(tmp_path / "x.db") as repo:
+        store = MetadataStore(repo.connection)
+        await repo.save_transactions(_transfer_pair_txs())
+        ids = {t.tx_id: t.id for t in await repo.get_transactions()}
+        a_id, b_id = ids["okx-out"], ids["wise-in"]
+        assert a_id is not None
+        assert b_id is not None
+
+        # B is a genuinely categorized NON-transfer row.
+        await store.upsert_metadata(b_id, category="groceries", category_source="manual")
+        # A carries a stale one-sided claim onto B (FK allows it: B exists).
+        await store.upsert_metadata(a_id, is_internal_transfer=True)
+        await repo.connection.execute(
+            "UPDATE transaction_metadata SET transfer_pair_id = ? WHERE transaction_id = ?",
+            (b_id, a_id),
+        )
+        await repo.connection.commit()
+
+        result = await store.repair_transfer_pairs()
+        assert result == {"repaired": 0, "cleared": 1}
+
+        meta_a = await store.get_metadata(a_id)
+        meta_b = await store.get_metadata(b_id)
+        assert meta_a is not None
+        assert meta_b is not None
+        # A's stale claim is cleared; B's real categorization is untouched.
+        assert meta_a.is_internal_transfer is False
+        assert meta_a.transfer_pair_id is None
+        assert meta_b.is_internal_transfer is False
+        assert meta_b.category == "groceries"
+        assert meta_b.category_source == "manual"
+
+
+async def test_repair_transfer_pairs_is_order_independent(tmp_path):
+    """A half-orphan heals to a symmetric pair regardless of metadata row order.
+
+    The decide-then-apply rewrite removes the iteration-order dependence the
+    original loop had: B still claims A and A is still flagged, so there is
+    enough signal to restore the pair — deterministically, either visit order.
+    """
+    from pfm.db.metadata_store import MetadataStore
+    from pfm.db.repository import Repository
+
+    async with Repository(tmp_path / "x.db") as repo:
+        store = MetadataStore(repo.connection)
+        await repo.save_transactions(_transfer_pair_txs())
+        ids = {t.tx_id: t.id for t in await repo.get_transactions()}
+        a_id, b_id = ids["okx-out"], ids["wise-in"]
+        assert a_id is not None
+        assert b_id is not None
+
+        await store.link_transfer(a_id, b_id)
+        # Half-orphan: B keeps its back-link to A, but A drops its claim while
+        # staying flagged as an internal transfer.
+        await repo.connection.execute(
+            "UPDATE transaction_metadata SET transfer_pair_id = NULL WHERE transaction_id = ?",
+            (a_id,),
+        )
+        await repo.connection.commit()
+
+        result = await store.repair_transfer_pairs()
+        assert result == {"repaired": 1, "cleared": 0}
+        await _assert_symmetric(store, a_id, b_id)
+
+
+async def test_deleting_one_side_clears_partner_transfer_overlay(tmp_path):
+    """The BEFORE DELETE trigger clears a partner's overlay so no orphan accrues."""
+    from pfm.db.metadata_store import MetadataStore
+    from pfm.db.repository import Repository
+
+    async with Repository(tmp_path / "x.db") as repo:
+        store = MetadataStore(repo.connection)
+        await repo.save_transactions(_transfer_pair_txs())
+        ids = {t.tx_id: t.id for t in await repo.get_transactions()}
+        a_id, b_id = ids["okx-out"], ids["wise-in"]
+        assert a_id is not None
+        assert b_id is not None
+
+        await store.link_transfer(a_id, b_id)
+        # Deleting B must clear A's transfer overlay (trigger fires before the FK
+        # SET-NULL), leaving no one-sided link behind — repair has nothing to do.
+        await repo.connection.execute("DELETE FROM transactions WHERE id = ?", (b_id,))
+        await repo.connection.commit()
+
+        meta_a = await store.get_metadata(a_id)
+        assert meta_a is not None
+        assert meta_a.is_internal_transfer is False
+        assert meta_a.transfer_pair_id is None
+        assert meta_a.category != "transfer"
+
+        result = await store.repair_transfer_pairs()
+        assert result == {"repaired": 0, "cleared": 0}
+
+
+async def test_repair_transfer_pairs_preserves_manual_detection_source(tmp_path):
+    """Restoring a one-sided MANUAL link must not downgrade either side to 'auto'."""
+    from pfm.db.metadata_store import MetadataStore
+    from pfm.db.repository import Repository
+
+    async with Repository(tmp_path / "x.db") as repo:
+        store = MetadataStore(repo.connection)
+        await repo.save_transactions(_transfer_pair_txs())
+        ids = {t.tx_id: t.id for t in await repo.get_transactions()}
+        a_id, b_id = ids["okx-out"], ids["wise-in"]
+        assert a_id is not None
+        assert b_id is not None
+
+        await store.link_transfer(a_id, b_id)  # manual on both sides
+        # Drop B's overlay entirely (cascade-style clobber): no row to inherit from.
+        await repo.connection.execute("DELETE FROM transaction_metadata WHERE transaction_id = ?", (b_id,))
+        await repo.connection.commit()
+
+        result = await store.repair_transfer_pairs()
+        assert result["repaired"] == 1
+        await _assert_symmetric(store, a_id, b_id)
+        meta_a = await store.get_metadata(a_id)
+        meta_b = await store.get_metadata(b_id)
+        assert meta_a is not None
+        assert meta_b is not None
+        # A keeps its own manual source; B inherits the claimer's manual source
+        # rather than being silently downgraded to 'auto'.
+        assert meta_a.transfer_detected_by == "manual"
+        assert meta_b.transfer_detected_by == "manual"
+        assert meta_a.category_source == "manual"
+        assert meta_b.category_source == "manual"

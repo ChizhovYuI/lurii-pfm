@@ -1288,3 +1288,62 @@ soak in production.
   rule shape (~30 test changes; 976 pass), and the sibling
   `../lurii-portfolio/.claude/skills/categorization-curator/SKILL.md`
   reworded.
+
+## ADR-031: Transfer tooling, transaction valuation backfill, and merchant-name matching
+
+**Date:** 2026-05-30
+
+**Status:** Phases 1–5 accepted.
+
+See `adr-031-transfer-tooling-and-valuation.md`. A live curation session
+surfaced one blocker — no general transaction list exposed row `id`s, so every
+categorized row (every transfer) was unreachable for `link_transfer` /
+`set_transaction_category` — plus gaps: no server-side transfer matcher, two
+asymmetric transfer links in live data, `usd_value=0` on 96% of transactions
+(1219/1269), a single undifferentiated `internal_transfer` count, and noisy
+rule suggestions for free-form sources (kbank falling back to `channel`).
+
+**Decision:** five phases (new tools MCP-only; `link/unlink_transfer` keep their
+HTTP routes).
+
+- **Phase 1 — transfer/listing tooling:** `list_transactions` (ids + overlay +
+  filters incl. `is_internal_transfer`/`has_pair`), `get_transactions` enriched
+  with `id`+overlay, `suggest_transfer_links` (read-only matcher over
+  `detect_transfer_pairs`), `bulk_link_transfers`, `link_transfer(dry_run=True)`.
+  `get_transactions_paginated` gains `source_type`/`is_internal_transfer`/
+  `has_pair` (filter build extracted to `_build_paginated_filters`).
+- **Phase 2 — pairing integrity:** detection runs over **unpaired only**,
+  categorization **skips transfers** and writes only category columns (the
+  upsert `ON CONFLICT` preserves the overlay — root cause of the asymmetry);
+  new `repair_transfer_pairs` restores one-sided links (each side keeps its own
+  detection source, so a manual link is not downgraded) and clears orphans (FK
+  is `SET NULL` on `transfer_pair_id`, `CASCADE` on `transaction_id`). Fixes the
+  two live rows.
+- **Phase 3 — summary:** `categorization_summary` splits `internal_transfer`
+  into `transfer_linked` + `transfer_unpaired`.
+- **Phase 4 — valuation:** `PricingService.get_price_usd_on` (CoinGecko
+  `/coins/{id}/history`, date-keyed cache; live read pins `date=today` +
+  `source` so a historical row can never be served as the current price; a
+  definitive miss records a 7-day sentinel), `backfill_transaction_usd_values`
+  (dedup by `(asset,date)`), `backfill_usd_values` MCP tool (full sweep) +
+  bounded best-effort post-collect forward-fill (200 rows, 20-lookup budget,
+  newest-first). Full first sweep is ~40 min at the free-tier rate limit; run in
+  `limit` batches.
+- **Phase 5 — merchant matching:** `analytics/merchant.py:derive_merchant_name`
+  (kbank ref-prefix stripping that keeps bare digit runs, wise payee/payer), a
+  `merchant_name` **virtual field** in the categorizer so suggested rules match,
+  and a `_find_common_field` bias toward the derived merchant over noisy raw
+  fields. Both record paths store the source type + full `raw_json` for
+  suggestion/match parity.
+- **Post-review hardening:** a recall-mode review hardened the change set
+  (live-cache poisoning, forward-fill blocking, re-fetch of unpriceable rows,
+  `bulk_link_transfers` batch abort / one-sided links, manual-link downgrade in
+  repair, merchant ref over-stripping). See the ADR's "Post-review hardening".
+
+**Files:** `src/pfm/mcp_server.py`, `src/pfm/db/metadata_store.py`,
+`src/pfm/db/repository.py`, `src/pfm/analytics/categorization_runner.py`,
+`src/pfm/analytics/categorizer.py`, `src/pfm/analytics/merchant.py` (new),
+`src/pfm/analytics/usd_value_backfill.py` (new),
+`src/pfm/pricing/coingecko.py`, `src/pfm/collectors/pipeline.py`; tests in
+`test_db.py`, `test_mcp_server.py`, `test_type_resolver.py`, `test_pricing.py`,
+`test_usd_value_backfill.py` (new), `test_merchant.py` (new). 866 pass, 75.6%.

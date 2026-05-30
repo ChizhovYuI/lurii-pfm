@@ -11,6 +11,7 @@ import aiosqlite
 
 from pfm.db.models import Price, Snapshot, SourceDeleteResult, Transaction, TransactionType, init_db
 from pfm.db.source_store import SourceNotFoundError
+from pfm.pricing.constants import MISS_PRICE_SOURCE
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -536,6 +537,43 @@ class Repository:
         )
         await self._db.commit()
 
+    async def get_transactions_missing_usd_value(
+        self, *, newest_first: bool = False, limit: int | None = None
+    ) -> list[Transaction]:
+        """Return transactions with no USD valuation (usd_value == 0, amount != 0).
+
+        ``usd_value`` is stored as text, so compare via REAL cast to catch both
+        ``"0"`` and ``"0.00"``. ``newest_first`` orders by most-recent date — the
+        bounded post-collect forward-fill wants recent imports; the full sweep
+        uses the default oldest-first. ``limit`` is pushed into SQL so the
+        bounded forward-fill materializes only the rows it can process rather
+        than every unvalued row on every collect.
+        """
+        order = "DESC" if newest_first else "ASC"
+        sql = (
+            "SELECT t.*, s.name AS canonical_source_name FROM transactions t"  # noqa: S608
+            " LEFT JOIN sources s ON t.source_id = s.id"
+            " WHERE CAST(t.usd_value AS REAL) = 0 AND CAST(t.amount AS REAL) != 0"
+            f" ORDER BY t.date {order}"
+        )
+        params: list[int] = []
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        cursor = await self._db.execute(sql, params)
+        rows = await cursor.fetchall()
+        return [self.row_to_transaction(row) for row in rows]
+
+    async def update_transaction_usd_values(self, updates: list[tuple[int, Decimal]]) -> None:
+        """Batch update usd_value for valued transactions."""
+        if not updates:
+            return
+        await self._db.executemany(
+            "UPDATE transactions SET usd_value = ? WHERE id = ?",
+            [(str(usd_value), tx_id) for tx_id, usd_value in updates],
+        )
+        await self._db.commit()
+
     # ── Prices ────────────────────────────────────────────────────────
 
     async def save_price(self, price: Price) -> None:
@@ -555,19 +593,25 @@ class Repository:
         await self._db.commit()
 
     async def get_prices_by_date(self, d: date) -> list[Price]:
-        """Get all cached prices for a specific date."""
+        """Get all cached prices for a specific date.
+
+        Excludes the "no price available" miss sentinel (``source =
+        MISS_PRICE_SOURCE``, price '0') so a sentinel is never read back as a
+        real price by valuation code.
+        """
         cursor = await self._db.execute(
-            "SELECT * FROM prices WHERE date = ?",
-            (str(d),),
+            "SELECT * FROM prices WHERE date = ? AND source != ?",
+            (str(d), MISS_PRICE_SOURCE),
         )
         rows = await cursor.fetchall()
         return [self._row_to_price(row) for row in rows]
 
     async def get_price(self, asset: str, currency: str, d: date) -> Price | None:
-        """Get a specific price if cached."""
+        """Get a specific price if cached (excluding the miss sentinel)."""
         cursor = await self._db.execute(
-            "SELECT * FROM prices WHERE asset = ? AND currency = ? AND date = ? ORDER BY created_at DESC LIMIT 1",
-            (asset, currency, str(d)),
+            "SELECT * FROM prices WHERE asset = ? AND currency = ? AND date = ? AND source != ? "
+            "ORDER BY created_at DESC LIMIT 1",
+            (asset, currency, str(d), MISS_PRICE_SOURCE),
         )
         row = await cursor.fetchone()
         if row is None:

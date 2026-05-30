@@ -28,7 +28,7 @@ async def test_init_db(tmp_path):
     async with aiosqlite.connect(str(db_path)) as db:
         version_row = await (await db.execute("SELECT version_num FROM alembic_version")).fetchone()
     assert version_row is not None
-    assert version_row[0] == "k1l2m3n4o5p6"
+    assert version_row[0] == "l2m3n4o5p6q7"
 
 
 def test_runner_uses_package_relative_migration_path(tmp_path):
@@ -252,7 +252,7 @@ async def test_init_db_reaches_stage3_head_and_drops_source_name(tmp_path):
         cols = {r[1] for r in await cursor.fetchall()}
 
     assert version_row is not None
-    assert version_row[0] == "k1l2m3n4o5p6"
+    assert version_row[0] == "l2m3n4o5p6q7"
     assert "source_name" not in cols
     assert "source_id" in cols
 
@@ -603,6 +603,36 @@ async def test_save_and_get_price(repo):
 async def test_get_price_not_found(repo):
     result = await repo.get_price("BTC", "USD", date(2024, 1, 15))
     assert result is None
+
+
+async def test_price_readers_exclude_miss_sentinel(repo):
+    """A 'coingecko-miss' price='0' sentinel must never be read as a real price."""
+    from pfm.pricing.constants import MISS_PRICE_SOURCE
+
+    d = date(2024, 1, 15)
+    await repo.save_price(Price(date=d, asset="BTC", currency="USD", price=Decimal(45000), source="coingecko"))
+    # A later miss sentinel for the same (asset, date) has the newest created_at.
+    await repo.save_price(Price(date=d, asset="BTC", currency="USD", price=Decimal(0), source=MISS_PRICE_SOURCE))
+
+    # get_price (ORDER BY created_at DESC) must skip the sentinel, not return $0.
+    single = await repo.get_price("BTC", "USD", d)
+    assert single is not None
+    assert single.price == Decimal(45000)
+
+    # get_prices_by_date must not surface the sentinel at all.
+    by_date = await repo.get_prices_by_date(d)
+    assert [p.source for p in by_date] == ["coingecko"]
+    assert by_date[0].price == Decimal(45000)
+
+
+async def test_get_price_returns_none_when_only_sentinel(repo):
+    """A date with only a miss sentinel reads as no price (not $0)."""
+    from pfm.pricing.constants import MISS_PRICE_SOURCE
+
+    d = date(2024, 2, 1)
+    await repo.save_price(Price(date=d, asset="DOGE", currency="USD", price=Decimal(0), source=MISS_PRICE_SOURCE))
+    assert await repo.get_price("DOGE", "USD", d) is None
+    assert await repo.get_prices_by_date(d) == []
 
 
 async def test_save_and_get_analytics_metric(repo):
@@ -1249,3 +1279,78 @@ async def test_get_transaction_by_id_surfaces_canonical_source_name(repo):
     pair_again = await store.get_transaction_by_id(target_id)
     assert pair_again is not None
     assert pair_again[0].source_name == "wise-renamed"
+
+
+async def test_get_transactions_paginated_new_filters(repo):
+    """source_type / is_internal_transfer / has_pair filters narrow the result set."""
+    from pfm.db.metadata_store import MetadataStore
+
+    store = MetadataStore(repo.connection)
+    for name, stype in [("okx-main", "okx"), ("wise-main", "wise")]:
+        await repo._db.execute(
+            "INSERT INTO sources (name, type, credentials, enabled) VALUES (?, ?, ?, ?)",
+            (name, stype, "{}", 1),
+        )
+    await repo._db.commit()
+
+    await repo.save_transactions(
+        [
+            Transaction(
+                date=date(2026, 5, 1),
+                source="okx",
+                source_name="okx-main",
+                tx_type=TransactionType.WITHDRAWAL,
+                asset="USDC",
+                amount=Decimal(100),
+                usd_value=Decimal(100),
+                tx_id="okx-out-1",
+            ),
+            Transaction(
+                date=date(2026, 5, 1),
+                source="wise",
+                source_name="wise-main",
+                tx_type=TransactionType.DEPOSIT,
+                asset="USDC",
+                amount=Decimal(100),
+                usd_value=Decimal(100),
+                tx_id="wise-in-1",
+            ),
+            Transaction(
+                date=date(2026, 5, 2),
+                source="wise",
+                source_name="wise-main",
+                tx_type=TransactionType.DEPOSIT,
+                asset="USD",
+                amount=Decimal(50),
+                usd_value=Decimal(50),
+                tx_id="wise-plain-1",
+            ),
+        ]
+    )
+
+    txs = await repo.get_transactions()
+    by_tx_id = {t.tx_id: t.id for t in txs}
+    out_id, in_id = by_tx_id["okx-out-1"], by_tx_id["wise-in-1"]
+    assert out_id is not None
+    assert in_id is not None
+    await store.link_transfer(out_id, in_id)
+
+    # source_type narrows to the cached type column.
+    okx_items, okx_total = await store.get_transactions_paginated(source_type="okx")
+    assert okx_total == 1
+    assert okx_items[0][0].tx_id == "okx-out-1"
+
+    # is_internal_transfer=True yields exactly the linked pair.
+    transfer_items, transfer_total = await store.get_transactions_paginated(is_internal_transfer=True)
+    assert transfer_total == 2
+    assert {tx.tx_id for tx, _ in transfer_items} == {"okx-out-1", "wise-in-1"}
+
+    # is_internal_transfer=False excludes the pair (NULL metadata treated as False).
+    _, plain_total = await store.get_transactions_paginated(is_internal_transfer=False)
+    assert plain_total == 1
+
+    # has_pair mirrors transfer_pair_id presence.
+    _, paired_total = await store.get_transactions_paginated(has_pair=True)
+    assert paired_total == 2
+    _, unpaired_total = await store.get_transactions_paginated(has_pair=False)
+    assert unpaired_total == 1

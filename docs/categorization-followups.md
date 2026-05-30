@@ -31,6 +31,12 @@ listed here so the next session has a one-stop map of what was done.
 | Source identity normalization Stage 1 (`source_id` FK foundation) | ADR-030 Stage 1 |
 | Source identity normalization Stage 2 (read-path JOIN, `list_sources`, FK cascade, `source_id` on MCP tools) | ADR-030 Stage 2 |
 | Source identity normalization Stage 3 (coinex merge, drop `source_name`, `source_id` NOT NULL, rule `source_type`+`source_id` XOR with deprecation alias, 6-tier auto-priority, `PRAGMA foreign_keys=ON`) | ADR-030 Stage 3 |
+| `list_transactions` (ids + overlay + filters) and `id`+overlay on `get_transactions` — the "row ids unreachable" blocker | ADR-031 Phase 1 |
+| `suggest_transfer_links`, `bulk_link_transfers`, `link_transfer` dry-run | ADR-031 Phase 1 |
+| Symmetric transfer pairing (unpaired-only detection, overlay-preserving upsert, per-side repair source) + `repair_transfer_pairs` | ADR-031 Phase 2 |
+| `categorization_summary` splits `transfer_linked` / `transfer_unpaired` | ADR-031 Phase 3 |
+| Transaction `usd_value` backfill (historical CoinGecko prices, `backfill_usd_values` + post-collect forward-fill) | ADR-031 Phase 4 |
+| `merchant_name` derived field — virtual rule field + suggestion bias over noisy raw fields | ADR-031 Phase 5 |
 
 ## How to use this file
 

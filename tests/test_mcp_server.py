@@ -126,43 +126,129 @@ class TestListSourcesTool:
 
 class TestGetTransactions:
     @pytest.mark.asyncio
-    async def test_returns_transactions(self):
+    async def test_returns_transactions_with_id_and_metadata(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
         from pfm.db.models import Transaction, TransactionType
+        from pfm.db.repository import Repository
         from pfm.mcp_server import get_transactions
 
-        mock_txs = [
-            Transaction(
-                date=date(2024, 1, 15),
-                source="wise",
-                source_name="wise-main",
-                tx_type=TransactionType.WITHDRAWAL,
-                asset="GBP",
-                amount=Decimal(5000),
-                usd_value=Decimal(6300),
-                counterparty_asset="",
-                counterparty_amount=Decimal(0),
-                tx_id="tx1",
-                raw_json="",
-                trade_side="",
-            ),
-        ]
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+            await repo._db.execute(
+                "INSERT INTO sources (name, type, credentials, enabled) VALUES (?, ?, ?, ?)",
+                ("wise-main", "wise", "{}", 1),
+            )
+            await repo._db.commit()
+            await repo.save_transactions(
+                [
+                    Transaction(
+                        date=date(2024, 1, 15),
+                        source="wise",
+                        source_name="wise-main",
+                        tx_type=TransactionType.WITHDRAWAL,
+                        asset="GBP",
+                        amount=Decimal(5000),
+                        usd_value=Decimal(6300),
+                        tx_id="tx1",
+                    )
+                ]
+            )
 
-        mock_ctx = AsyncMock()
-        mock_repo = AsyncMock()
-        mock_repo.get_transactions.return_value = mock_txs
-        mock_ctx.request_context.lifespan_context.repo = mock_repo
+            result = await get_transactions(ctx, source="wise", limit=10)
+            parsed = json.loads(result)
+            assert parsed["count"] == 1
+            tx = parsed["transactions"][0]
+            assert isinstance(tx["id"], int)
+            assert tx["source"] == "wise"
+            assert tx["source_name"] == "wise-main"
+            assert tx["type"] == "withdrawal"
+            assert tx["asset"] == "GBP"
+            assert tx["amount"] == "5000.00"
+            assert tx["trade_side"] is None
+            assert tx["category"] is None
+            assert tx["is_internal_transfer"] is False
+            assert tx["transfer_pair_id"] is None
 
-        result = await get_transactions(mock_ctx, source="wise", limit=10)
-        parsed = json.loads(result)
-        assert parsed["count"] == 1
-        tx = parsed["transactions"][0]
-        assert tx["source"] == "wise"
-        assert tx["source_name"] == "wise-main"
-        assert tx["type"] == "withdrawal"
-        assert tx["asset"] == "GBP"
-        assert tx["amount"] == "5000.00"
-        assert tx["trade_side"] is None
-        mock_repo.get_transactions.assert_awaited_once_with(source="wise", source_name=None, start=None, end=None)
+
+class TestListTransactions:
+    @pytest.mark.asyncio
+    async def test_exposes_ids_and_filters_transfers(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.models import Transaction, TransactionType
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import list_transactions
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+            for name, stype in [("okx-main", "okx"), ("wise-main", "wise")]:
+                await repo._db.execute(
+                    "INSERT INTO sources (name, type, credentials, enabled) VALUES (?, ?, ?, ?)",
+                    (name, stype, "{}", 1),
+                )
+            await repo._db.commit()
+            await repo.save_transactions(
+                [
+                    Transaction(
+                        date=date(2026, 5, 1),
+                        source="okx",
+                        source_name="okx-main",
+                        tx_type=TransactionType.WITHDRAWAL,
+                        asset="USDC",
+                        amount=Decimal(100),
+                        usd_value=Decimal(100),
+                        tx_id="okx-out-1",
+                    ),
+                    Transaction(
+                        date=date(2026, 5, 1),
+                        source="wise",
+                        source_name="wise-main",
+                        tx_type=TransactionType.DEPOSIT,
+                        asset="USDC",
+                        amount=Decimal(100),
+                        usd_value=Decimal(100),
+                        tx_id="wise-in-1",
+                    ),
+                    Transaction(
+                        date=date(2026, 5, 2),
+                        source="wise",
+                        source_name="wise-main",
+                        tx_type=TransactionType.DEPOSIT,
+                        asset="USD",
+                        amount=Decimal(50),
+                        usd_value=Decimal(50),
+                        tx_id="wise-plain-1",
+                    ),
+                ]
+            )
+            by_tx_id = {t.tx_id: t.id for t in await repo.get_transactions()}
+            out_id, in_id = by_tx_id["okx-out-1"], by_tx_id["wise-in-1"]
+            assert out_id is not None
+            assert in_id is not None
+            await store.link_transfer(out_id, in_id)
+
+            # Every row carries its id — including the linked transfer rows.
+            allrows = json.loads(await list_transactions(ctx))
+            assert allrows["total"] == 3
+            assert all(isinstance(r["id"], int) for r in allrows["transactions"])
+
+            # Transfer-only filter returns the linked pair, both back-linked.
+            transfers = json.loads(await list_transactions(ctx, is_internal_transfer=True))
+            assert transfers["total"] == 2
+            ids = {r["tx_id"] for r in transfers["transactions"]}
+            assert ids == {"okx-out-1", "wise-in-1"}
+            assert all(r["transfer_pair_id"] is not None for r in transfers["transactions"])
+
+            # Unpaired filter excludes the linked pair.
+            unpaired = json.loads(await list_transactions(ctx, has_pair=False))
+            assert unpaired["total"] == 1
+            assert unpaired["transactions"][0]["tx_id"] == "wise-plain-1"
+
+            # source type filter narrows to okx.
+            okx = json.loads(await list_transactions(ctx, source="okx"))
+            assert okx["total"] == 1
+            assert okx["transactions"][0]["source"] == "okx"
 
 
 class TestGetPnl:
@@ -388,6 +474,35 @@ class TestCategorizationTools:
             assert row["total"] == 2
             assert row["unknown_type"] == 1
             assert row["no_category"] == 2
+
+    @pytest.mark.asyncio
+    async def test_categorization_summary_splits_linked_and_unpaired(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import categorization_summary
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+            await repo.save_transactions(
+                [
+                    _make_tx(source_name="kbank", tx_id="k1"),
+                    _make_tx(source_name="kbank", tx_id="k2"),
+                    _make_tx(source_name="kbank", tx_id="k3"),
+                ]
+            )
+            ids = {t.tx_id: t.id for t in await repo.get_transactions()}
+            a, b, c = ids["k1"], ids["k2"], ids["k3"]
+            assert a is not None
+            assert b is not None
+            assert c is not None
+            await store.link_transfer(a, b)  # two linked sides
+            await store.upsert_metadata(c, is_internal_transfer=True)  # one-sided, no pair
+
+            row = json.loads(await categorization_summary(ctx, source="kbank"))["sources"][0]
+            assert row["internal_transfer"] == 3
+            assert row["transfer_linked"] == 2
+            assert row["transfer_unpaired"] == 1
 
     @pytest.mark.asyncio
     async def test_categorization_tools_surface_source_id(self, tmp_path):
@@ -899,6 +1014,258 @@ class TestCategorizationTools:
             meta_a_after = await store.get_metadata(a_id)
             assert meta_a_after is not None
             assert meta_a_after.is_internal_transfer is False
+
+    @pytest.mark.asyncio
+    async def test_link_transfer_dry_run_does_not_write(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import link_transfer
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+            await repo.save_transactions([_make_tx(tx_id="a"), _make_tx(tx_id="b")])
+            txs = await repo.get_transactions()
+            a_id, b_id = txs[0].id, txs[1].id
+            assert a_id is not None
+            assert b_id is not None
+
+            parsed = json.loads(await link_transfer(ctx, tx_id_a=a_id, tx_id_b=b_id, dry_run=True))
+            assert parsed["dry_run"] is True
+            preview = {p["transaction_id"]: p for p in parsed["preview"]}
+            assert preview[a_id]["exists"] is True
+            assert preview[a_id]["before"] is None
+            assert preview[a_id]["after"]["is_internal_transfer"] is True
+            assert preview[a_id]["after"]["transfer_pair_id"] == b_id
+            # Nothing persisted.
+            assert await store.get_metadata(a_id) is None
+
+            # A bogus id is reported as non-existent.
+            bogus = json.loads(await link_transfer(ctx, tx_id_a=a_id, tx_id_b=999999, dry_run=True))
+            bogus_preview = {p["transaction_id"]: p for p in bogus["preview"]}
+            assert bogus_preview[999999]["exists"] is False
+            assert bogus_preview[999999]["after"] is None
+
+    @pytest.mark.asyncio
+    async def test_link_transfer_dry_run_after_matches_real_write(self, tmp_path):
+        """The dry-run 'after' projection must equal what a real link persists."""
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import link_transfer
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+            await repo.save_transactions([_make_tx(tx_id="a"), _make_tx(tx_id="b")])
+            txs = await repo.get_transactions()
+            a_id, b_id = txs[0].id, txs[1].id
+            assert a_id is not None
+            assert b_id is not None
+            # A pre-existing review state + notes is preserved by a link, so the
+            # dry-run 'after' projection must carry it forward too.
+            await store.upsert_metadata(a_id, reviewed=True, notes="keep me")
+
+            dry = json.loads(await link_transfer(ctx, tx_id_a=a_id, tx_id_b=b_id, dry_run=True))
+            after_a = next(p["after"] for p in dry["preview"] if p["transaction_id"] == a_id)
+
+            await link_transfer(ctx, tx_id_a=a_id, tx_id_b=b_id)  # real write
+            meta = await store.get_metadata(a_id)
+            assert meta is not None
+            assert meta.reviewed is True  # link preserved the review state
+            assert meta.notes == "keep me"
+            # Guards against _link_after_dict drifting from the store's link SQL.
+            assert after_a == {
+                "transaction_id": a_id,
+                "category": meta.category,
+                "category_source": meta.category_source,
+                "category_confidence": meta.category_confidence,
+                "type_override": meta.type_override,
+                "is_internal_transfer": meta.is_internal_transfer,
+                "transfer_pair_id": meta.transfer_pair_id,
+                "transfer_detected_by": meta.transfer_detected_by,
+                "reviewed": meta.reviewed,
+                "notes": meta.notes,
+            }
+
+    @pytest.mark.asyncio
+    async def test_bulk_link_transfers_links_and_skips(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import bulk_link_transfers
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+            await repo.save_transactions(
+                [_make_tx(tx_id="a"), _make_tx(tx_id="b"), _make_tx(tx_id="c"), _make_tx(tx_id="d")]
+            )
+            a, b, c, d = (t.id for t in await repo.get_transactions())
+            assert a is not None
+            assert b is not None
+            assert c is not None
+            assert d is not None
+
+            parsed = json.loads(await bulk_link_transfers(ctx, pairs=[[a, b], [c, d], [c]]))
+            assert parsed["linked"] == 2
+            assert parsed["skipped"] == [[c]]
+            # Both sides of each pair are symmetric.
+            meta_a = await store.get_metadata(a)
+            meta_b = await store.get_metadata(b)
+            assert meta_a is not None
+            assert meta_b is not None
+            assert meta_a.transfer_pair_id == b
+            assert meta_b.transfer_pair_id == a
+
+    @pytest.mark.asyncio
+    async def test_bulk_link_transfers_skips_missing_id_without_aborting_batch(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import bulk_link_transfers
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+            await repo.save_transactions([_make_tx(tx_id="a"), _make_tx(tx_id="b")])
+            a, b = (t.id for t in await repo.get_transactions())
+            assert a is not None
+            assert b is not None
+            missing = 999_999
+
+            # A pair referencing a non-existent id would raise a FOREIGN KEY
+            # error inside the single executemany and roll back every pair; it
+            # must be skipped so the valid pair still links.
+            parsed = json.loads(await bulk_link_transfers(ctx, pairs=[[a, b], [a, missing]]))
+            assert parsed["linked"] == 1
+            assert [a, missing] in parsed["skipped"]
+            meta_a = await store.get_metadata(a)
+            meta_b = await store.get_metadata(b)
+            assert meta_a is not None
+            assert meta_b is not None
+            assert meta_a.transfer_pair_id == b
+            assert meta_b.transfer_pair_id == a
+
+    @pytest.mark.asyncio
+    async def test_bulk_link_transfers_rejects_boolean_ids(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import bulk_link_transfers
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+            await repo.save_transactions([_make_tx(tx_id="a"), _make_tx(tx_id="b")])
+
+            # ``isinstance(True, int)`` is True; booleans must be rejected, not
+            # coerced into transaction ids 0/1.
+            parsed = json.loads(await bulk_link_transfers(ctx, pairs=[[True, False]]))
+            assert parsed["linked"] == 0
+            assert parsed["skipped"] == [[True, False]]
+
+    @pytest.mark.asyncio
+    async def test_bulk_link_transfers_skips_id_reused_across_pairs(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import bulk_link_transfers
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+            await repo.save_transactions([_make_tx(tx_id="a"), _make_tx(tx_id="b"), _make_tx(tx_id="c")])
+            a, b, c = (t.id for t in await repo.get_transactions())
+            assert a is not None
+            assert b is not None
+            assert c is not None
+
+            # [a,b] then [a,c] reuses a; linking both would leave a one-sided
+            # link (a→c while b still claims a). The second pair must be skipped.
+            parsed = json.loads(await bulk_link_transfers(ctx, pairs=[[a, b], [a, c]]))
+            assert parsed["linked"] == 1
+            assert [a, c] in parsed["skipped"]
+            meta_a = await store.get_metadata(a)
+            meta_b = await store.get_metadata(b)
+            meta_c = await store.get_metadata(c)
+            assert meta_a is not None
+            assert meta_b is not None
+            assert meta_a.transfer_pair_id == b
+            assert meta_b.transfer_pair_id == a
+            assert meta_c is None  # c never linked
+
+    @pytest.mark.asyncio
+    async def test_bulk_link_transfers_skips_self_pair(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import bulk_link_transfers
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+            await repo.save_transactions([_make_tx(tx_id="a")])
+            (a,) = (t.id for t in await repo.get_transactions())
+            assert a is not None
+
+            # [a, a] would link a row to itself; it must be skipped, not linked.
+            parsed = json.loads(await bulk_link_transfers(ctx, pairs=[[a, a]]))
+            assert parsed["linked"] == 0
+            assert [a, a] in parsed["skipped"]
+            assert await store.get_metadata(a) is None
+
+    @pytest.mark.asyncio
+    async def test_link_transfer_rejects_self_link(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import link_transfer
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+            await repo.save_transactions([_make_tx(tx_id="a")])
+            (a,) = (t.id for t in await repo.get_transactions())
+            assert a is not None
+
+            parsed = json.loads(await link_transfer(ctx, tx_id_a=a, tx_id_b=a))
+            assert parsed["ok"] is False
+            assert "itself" in parsed["error"]
+            assert await store.get_metadata(a) is None
+
+    @pytest.mark.asyncio
+    async def test_suggest_transfer_links_matches_cross_source(self, tmp_path):
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.models import TransactionType
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import suggest_transfer_links
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db")
+            await repo.save_transactions(
+                [
+                    _make_tx(
+                        source_name="okx",
+                        tx_type=TransactionType.WITHDRAWAL,
+                        tx_id="out",
+                        asset="USDC",
+                        d=date(2026, 3, 1),
+                    ),
+                    _make_tx(
+                        source_name="wise",
+                        tx_type=TransactionType.DEPOSIT,
+                        tx_id="in",
+                        asset="USDC",
+                        d=date(2026, 3, 2),
+                    ),
+                ]
+            )
+
+            parsed = json.loads(await suggest_transfer_links(ctx))
+            assert parsed["count"] == 1
+            cand = parsed["suggestions"][0]
+            assert {cand["source_a"], cand["source_b"]} == {"okx", "wise"}
+            assert 0.0 < cand["score"] <= 1.0
+
+            # Once linked, the candidate disappears.
+            await store.link_transfer(cand["id_a"], cand["id_b"])
+            again = json.loads(await suggest_transfer_links(ctx))
+            assert again["count"] == 0
 
     @pytest.mark.asyncio
     async def test_dry_run_category_rule_wires(self, tmp_path):
@@ -2229,3 +2596,45 @@ class TestAddManualTransaction:
             assert parsed["saved"] == 1
             assert parsed["asset"] == "REALESTATE"
             assert parsed["usd_value"] == "450000"
+
+
+class TestBackfillUsdValues:
+    @pytest.mark.asyncio
+    async def test_backfill_tool_values_zero_rows(self, tmp_path):
+        from datetime import date as _date
+
+        from pfm.db.metadata_store import MetadataStore
+        from pfm.db.models import Transaction, TransactionType
+        from pfm.db.repository import Repository
+        from pfm.mcp_server import backfill_usd_values
+
+        class _StubPricing:
+            async def peek_price_usd_on(self, ticker, on_date):
+                _ = (ticker, on_date)
+                return "unknown", None
+
+            async def get_price_usd_on(self, ticker, on_date):
+                _ = on_date
+                return Decimal(40000) if ticker.upper() == "BTC" else None
+
+        async with Repository(tmp_path / "x.db") as repo:
+            store = MetadataStore(repo.connection)
+            ctx = _make_ctx(repo, store, tmp_path / "x.db", pricing=_StubPricing())
+            await repo.save_transactions(
+                [
+                    Transaction(
+                        date=_date(2026, 4, 1),
+                        source="okx",
+                        source_name="okx-main",
+                        tx_type=TransactionType.WITHDRAWAL,
+                        asset="BTC",
+                        amount=Decimal("0.5"),
+                        usd_value=Decimal(0),
+                        tx_id="b1",
+                    )
+                ]
+            )
+            parsed = json.loads(await backfill_usd_values(ctx))
+            assert parsed["ok"] is True
+            assert parsed["updated"] == 1
+            assert (await repo.get_transactions())[0].usd_value == Decimal(20000)

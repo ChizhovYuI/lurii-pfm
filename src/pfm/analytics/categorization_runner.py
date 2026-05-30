@@ -33,6 +33,11 @@ def _filter_uncategorized(
         if tx.id is None:
             continue
         meta = existing.get(tx.id)
+        # Never recategorize a linked transfer — a fresh category write would
+        # clobber its is_internal_transfer / transfer_pair_id overlay. This
+        # holds even under ``force``.
+        if meta and meta.is_internal_transfer:
+            continue
         if not force and meta and (meta.reviewed or meta.category):
             continue
         result.append(tx)
@@ -102,8 +107,19 @@ async def run_categorization(
     tx_ids = [tx.id for tx in all_txs if tx.id is not None]
     existing = await metadata_store.get_metadata_batch(tx_ids)
 
+    # Only match transactions that are not already part of a pair. Re-running
+    # detection over already-linked rows could re-pair one side to a new
+    # partner and leave the link asymmetric (one side updated, the other not),
+    # and would also stomp manual links. Unpaired-only keeps detection
+    # idempotent and preserves existing (auto or manual) pairs.
+    unpaired_txs = [
+        tx
+        for tx in all_txs
+        if tx.id is not None
+        and not ((m := existing.get(tx.id)) and (m.is_internal_transfer or m.transfer_pair_id is not None))
+    ]
     transfer_batch: list[TransactionMetadata] = []
-    pairs = detect_transfer_pairs(all_txs)
+    pairs = detect_transfer_pairs(unpaired_txs)
     for pair in pairs:
         _apply_transfer_to_batch(transfer_batch, existing, pair.tx_id_a, pair.tx_id_b, "transfer", pair.score)
         _apply_transfer_to_batch(transfer_batch, existing, pair.tx_id_b, pair.tx_id_a, "transfer", pair.score)
@@ -123,6 +139,10 @@ async def run_categorization(
         if tx.id is None:
             continue
         if cat_result and cat_result.source == "rule":
+            # Write only the category columns: upsert_metadata_batch's ON CONFLICT
+            # touches category/category_source/category_confidence and leaves any
+            # existing overlay (transfer pairing, type override, review state,
+            # notes) untouched, so no manual field-copy is needed.
             category_batch.append(
                 TransactionMetadata(
                     transaction_id=tx.id,

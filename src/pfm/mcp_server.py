@@ -12,7 +12,7 @@ from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.session import ServerSession
 
 from pfm.db.metadata_store import MetadataStore
-from pfm.db.models import CategoryRule, TransactionMetadata, TypeRule
+from pfm.db.models import CategoryRule, Transaction, TransactionMetadata, TypeRule
 from pfm.db.repository import Repository
 from pfm.pricing.coingecko import PricingService
 
@@ -22,6 +22,7 @@ from pfm.pricing.coingecko import PricingService
 
 _MAX_TRANSACTIONS = 100
 _MAX_SNAPSHOTS = 500
+_TRANSFER_PAIR_LEN = 2
 
 
 @dataclass
@@ -348,29 +349,81 @@ async def get_transactions(  # noqa: PLR0913
         limit: Maximum number of transactions to return (default 50, max 100).
 
     Use this for questions like "Show my recent transactions" or "What did I trade on OKX?"
+    Each row carries its integer ``id`` plus the transfer/category overlay; use
+    ``list_transactions`` for richer filters (by type, category, transfer state).
     """
-    repo = _ctx_repo(ctx)
-    start_date = date.fromisoformat(start) if start else None
-    end_date = date.fromisoformat(end) if end else None
+    store = _ctx_store(ctx)
     capped_limit = min(limit, _MAX_TRANSACTIONS)
-
-    txs = await repo.get_transactions(source=source, source_name=source_name, start=start_date, end=end_date)
-    data = [
-        {
-            "date": t.date.isoformat(),
-            "source": t.source,
-            "source_name": t.source_name or t.source,
-            "type": t.tx_type.value,
-            "asset": t.asset,
-            "amount": _dec2(t.amount),
-            "usd_value": _dec2(t.usd_value),
-            "counterparty_asset": t.counterparty_asset or None,
-            "counterparty_amount": _dec2(t.counterparty_amount) if t.counterparty_amount else None,
-            "trade_side": t.trade_side or None,
-        }
-        for t in txs[:capped_limit]
-    ]
+    items, _ = await store.get_transactions_paginated(
+        source_type=source,
+        source_name=source_name,
+        start=date.fromisoformat(start) if start else None,
+        end=date.fromisoformat(end) if end else None,
+        limit=capped_limit,
+        offset=0,
+        include_total=False,
+    )
+    data = [_transaction_row_dict(tx, meta) for tx, meta in items]
     return _json({"count": len(data), "transactions": data})
+
+
+@mcp.tool()
+async def list_transactions(  # noqa: PLR0913
+    ctx: Context[ServerSession, AppContext],
+    source: str | None = None,
+    source_name: str | None = None,
+    tx_type: str | None = None,
+    category: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    search: str | None = None,
+    *,
+    is_internal_transfer: bool | None = None,
+    has_pair: bool | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> str:
+    """List transactions with row ``id``s, metadata, and rich filters.
+
+    Unlike ``get_transactions``, every row carries its integer ``id`` plus the
+    transfer/category overlay (``category``, ``category_source``,
+    ``is_internal_transfer``, ``transfer_pair_id``, ``transfer_detected_by``),
+    so any row — including categorized rows and transfers — is reachable for
+    ``link_transfer`` / ``set_transaction_category`` / ``get_transaction_detail``.
+
+    Args:
+        source: Filter by source type (e.g. "wise", "okx").
+        source_name: Filter by configured source instance name (e.g. "wise-main").
+        tx_type: Filter by transaction type (e.g. "deposit", "withdrawal", "transfer").
+        category: Filter by assigned category.
+        start: Start date in YYYY-MM-DD format.
+        end: End date in YYYY-MM-DD format.
+        search: Substring match against asset, source name, or tx_id.
+        is_internal_transfer: True → only flagged transfers; False → only non-transfers.
+        has_pair: True → only rows with a linked transfer pair; False → only unpaired rows.
+        limit: Page size (default 50, max 100).
+        offset: Page offset for pagination.
+
+    Returns ``{count, total, offset, limit, transactions}`` where ``total`` is
+    the unpaginated match count.
+    """
+    store = _ctx_store(ctx)
+    capped_limit = min(limit, _MAX_TRANSACTIONS)
+    items, total = await store.get_transactions_paginated(
+        source_type=source,
+        source_name=source_name,
+        tx_type=tx_type,
+        category=category,
+        start=date.fromisoformat(start) if start else None,
+        end=date.fromisoformat(end) if end else None,
+        search=search,
+        is_internal_transfer=is_internal_transfer,
+        has_pair=has_pair,
+        limit=capped_limit,
+        offset=offset,
+    )
+    data = [_transaction_row_dict(tx, meta) for tx, meta in items]
+    return _json({"count": len(data), "total": total, "offset": offset, "limit": capped_limit, "transactions": data})
 
 
 @mcp.tool()
@@ -587,6 +640,35 @@ def _metadata_dict(meta: TransactionMetadata | None) -> dict[str, object] | None
         "transfer_detected_by": meta.transfer_detected_by,
         "reviewed": meta.reviewed,
         "notes": meta.notes,
+    }
+
+
+def _transaction_row_dict(tx: Transaction, meta: TransactionMetadata | None) -> dict[str, object]:
+    """Serialize a transaction + optional metadata into a list row.
+
+    Includes the integer ``id`` (needed to drive ``link_transfer`` /
+    ``set_transaction_category`` / ``get_transaction_detail``) plus the
+    transfer/category metadata overlay so callers can tell linked from
+    unpaired rows without a second call.
+    """
+    return {
+        "id": tx.id,
+        "tx_id": tx.tx_id or None,
+        "date": tx.date.isoformat(),
+        "source": tx.source,
+        "source_name": tx.source_name or tx.source,
+        "type": tx.tx_type.value,
+        "asset": tx.asset,
+        "amount": _dec2(tx.amount),
+        "usd_value": _dec2(tx.usd_value),
+        "counterparty_asset": tx.counterparty_asset or None,
+        "counterparty_amount": _dec2(tx.counterparty_amount) if tx.counterparty_amount else None,
+        "trade_side": tx.trade_side or None,
+        "category": meta.category if meta else None,
+        "category_source": meta.category_source if meta else None,
+        "is_internal_transfer": meta.is_internal_transfer if meta else False,
+        "transfer_pair_id": meta.transfer_pair_id if meta else None,
+        "transfer_detected_by": meta.transfer_detected_by if meta else None,
     }
 
 
@@ -1001,16 +1083,192 @@ async def set_transaction_category(
     return _json({"metadata": _metadata_dict(meta)})
 
 
+def _link_after_dict(transaction_id: int, pair_id: int, existing: TransactionMetadata | None) -> dict[str, object]:
+    """Projected metadata for one side after a manual link (mirrors store SQL).
+
+    The link upsert only writes the transfer/category columns; ``reviewed`` and
+    ``notes`` are left untouched, so they are carried forward from ``existing``
+    to match exactly what a real link leaves behind.
+    """
+    return {
+        "transaction_id": transaction_id,
+        "category": "transfer",
+        "category_source": "manual",
+        "category_confidence": 1.0,
+        "type_override": "transfer",
+        "is_internal_transfer": True,
+        "transfer_pair_id": pair_id,
+        "transfer_detected_by": "manual",
+        "reviewed": existing.reviewed if existing else False,
+        "notes": existing.notes if existing else "",
+    }
+
+
 @mcp.tool()
 async def link_transfer(
     ctx: Context[ServerSession, AppContext],
     tx_id_a: int,
     tx_id_b: int,
+    *,
+    dry_run: bool = False,
 ) -> str:
-    """Link two transactions as an internal transfer pair."""
+    """Link two transactions as an internal transfer pair.
+
+    Both sides are set symmetrically (``is_internal_transfer=True``,
+    ``transfer_pair_id`` pointing at each other, ``category="transfer"``,
+    ``transfer_detected_by="manual"``). Pass ``dry_run=True`` to preview the
+    before/after metadata of both sides — and confirm both ids exist — without
+    writing.
+    """
     store = _ctx_store(ctx)
+    if tx_id_a == tx_id_b:
+        return _json(
+            {"ok": False, "error": "cannot link a transaction to itself", "tx_id_a": tx_id_a, "tx_id_b": tx_id_b}
+        )
+    if dry_run:
+        pair_a = await store.get_transaction_by_id(tx_id_a)
+        pair_b = await store.get_transaction_by_id(tx_id_b)
+        return _json(
+            {
+                "dry_run": True,
+                "tx_id_a": tx_id_a,
+                "tx_id_b": tx_id_b,
+                "preview": [
+                    {
+                        "transaction_id": tx_id_a,
+                        "exists": pair_a is not None,
+                        "before": _metadata_dict(pair_a[1]) if pair_a else None,
+                        "after": _link_after_dict(tx_id_a, tx_id_b, pair_a[1]) if pair_a else None,
+                    },
+                    {
+                        "transaction_id": tx_id_b,
+                        "exists": pair_b is not None,
+                        "before": _metadata_dict(pair_b[1]) if pair_b else None,
+                        "after": _link_after_dict(tx_id_b, tx_id_a, pair_b[1]) if pair_b else None,
+                    },
+                ],
+            }
+        )
     await store.link_transfer(tx_id_a, tx_id_b)
     return _json({"ok": True, "tx_id_a": tx_id_a, "tx_id_b": tx_id_b})
+
+
+def _is_int_id(value: object) -> bool:
+    """True for a genuine int id. ``isinstance(True, int)`` is True, so reject bool."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+@mcp.tool()
+async def bulk_link_transfers(
+    ctx: Context[ServerSession, AppContext],
+    pairs: list[list[int]],
+) -> str:
+    """Link many internal-transfer pairs at once.
+
+    ``pairs`` is a list of ``[tx_id_a, tx_id_b]`` 2-element lists; each is
+    linked symmetrically (mirror of ``link_transfer``). Malformed entries (not
+    exactly two integers), self-pairs (``a == b``), and entries referencing a
+    non-existent transaction id are skipped and reported in ``skipped`` — a
+    single bad id never aborts the rest of the batch. Pair candidates come from
+    ``suggest_transfer_links``.
+    """
+    store = _ctx_store(ctx)
+    well_formed: list[tuple[int, int]] = []
+    skipped: list[object] = []
+    for entry in pairs:
+        if len(entry) == _TRANSFER_PAIR_LEN and all(_is_int_id(x) for x in entry):
+            well_formed.append((int(entry[0]), int(entry[1])))
+        else:
+            skipped.append(entry)
+
+    # Drop pairs that reference a missing transaction id: link_transfers_batch
+    # is a single executemany, so one FK violation would roll back every pair.
+    existing = await store.existing_transaction_ids(tx_id for pair in well_formed for tx_id in pair)
+
+    # Link each pair only if it is not a self-pair, both ids exist, and neither
+    # id was already claimed by an earlier pair in this batch — a self-pair would
+    # link a row to itself, and reusing an id across pairs would leave an
+    # asymmetric (one-sided) link.
+    valid: list[tuple[int, int]] = []
+    claimed: set[int] = set()
+    for a, b in well_formed:
+        if a == b or a not in existing or b not in existing or a in claimed or b in claimed:
+            skipped.append([a, b])
+            continue
+        valid.append((a, b))
+        claimed.update({a, b})
+
+    linked = await store.link_transfers_batch(valid)
+    return _json({"ok": True, "linked": linked, "skipped": skipped})
+
+
+@mcp.tool()
+async def suggest_transfer_links(
+    ctx: Context[ServerSession, AppContext],
+    min_score: float = 0.5,
+    limit: int = 50,
+    start: str | None = None,
+    end: str | None = None,
+) -> str:
+    """Suggest cross-source internal-transfer pairs that are not yet linked.
+
+    Read-only matcher: same asset (stablecoin-aware), opposite direction,
+    amount within a 5% fee tolerance, dates within a 3-day window. Returns
+    candidate ``(id_a, id_b, score)`` pairs — feed the accepted ones to
+    ``bulk_link_transfers``. Already-linked transactions are excluded.
+
+    Args:
+        min_score: Drop candidates below this confidence (0..1, default 0.5).
+        limit: Maximum candidates to return (default 50).
+        start: Optional start date (YYYY-MM-DD) to bound the candidate window —
+            on a large multi-year DB this keeps the matcher from loading and
+            scanning the entire history. Omit to consider all transactions.
+        end: Optional end date (YYYY-MM-DD) for the candidate window.
+    """
+    from pfm.analytics.transfer_detector import detect_transfer_pairs
+
+    repo = _ctx_repo(ctx)
+    store = _ctx_store(ctx)
+    all_txs = await repo.get_transactions(
+        start=date.fromisoformat(start) if start else None,
+        end=date.fromisoformat(end) if end else None,
+    )
+    tx_ids = [t.id for t in all_txs if t.id is not None]
+    existing = await store.get_metadata_batch(tx_ids)
+
+    def _already_linked(tx_id: int) -> bool:
+        meta = existing.get(tx_id)
+        return bool(meta and (meta.is_internal_transfer or meta.transfer_pair_id is not None))
+
+    unpaired = [t for t in all_txs if t.id is not None and not _already_linked(t.id)]
+    by_id = {t.id: t for t in all_txs}
+
+    suggestions: list[dict[str, object]] = []
+    for pair in detect_transfer_pairs(unpaired):
+        if pair.score < min_score:
+            continue
+        side_a = by_id.get(pair.tx_id_a)
+        side_b = by_id.get(pair.tx_id_b)
+        if side_a is None or side_b is None:
+            continue
+        suggestions.append(
+            {
+                "id_a": pair.tx_id_a,
+                "id_b": pair.tx_id_b,
+                "score": pair.score,
+                "asset_a": side_a.asset,
+                "asset_b": side_b.asset,
+                "amount_a": _dec2(side_a.amount),
+                "amount_b": _dec2(side_b.amount),
+                "source_a": side_a.source_name or side_a.source,
+                "source_b": side_b.source_name or side_b.source,
+                "date_a": side_a.date.isoformat(),
+                "date_b": side_b.date.isoformat(),
+            }
+        )
+        if len(suggestions) >= limit:
+            break
+    return _json({"count": len(suggestions), "suggestions": suggestions})
 
 
 @mcp.tool()
@@ -1022,6 +1280,22 @@ async def unlink_transfer(
     store = _ctx_store(ctx)
     await store.unlink_transfer(transaction_id)
     return _json({"ok": True, "transaction_id": transaction_id})
+
+
+@mcp.tool()
+async def repair_transfer_pairs(
+    ctx: Context[ServerSession, AppContext],
+) -> str:
+    """Restore symmetry for one-sided or broken internal-transfer links.
+
+    Scans every transaction that claims a partner via ``transfer_pair_id`` and
+    ensures the partner points back (``is_internal_transfer=1``). Missing
+    back-links are restored; orphaned claims (partner gone or already paired to
+    a different row) are cleared. Returns ``{repaired, cleared}`` counts.
+    """
+    store = _ctx_store(ctx)
+    result = await store.repair_transfer_pairs()
+    return _json({"ok": True, **result})
 
 
 @mcp.tool()
@@ -1246,6 +1520,28 @@ async def apply_categorization(
     store = _ctx_store(ctx)
     result = await run_categorization(repo, store, force=force)
     return _json(result)
+
+
+@mcp.tool()
+async def backfill_usd_values(
+    ctx: Context[ServerSession, AppContext],
+    limit: int | None = None,
+) -> str:
+    """Value transactions ingested with ``usd_value=0`` using historical prices.
+
+    Most collectors defer pricing, so nearly all crypto rows land unvalued. This
+    looks up each ``(asset, date)`` once via CoinGecko historical prices and sets
+    ``usd_value = abs(amount) * price``. CoinGecko is rate-limited (~30 req/min),
+    so a full first sweep over a large backlog can take a while — pass ``limit``
+    to process the oldest unvalued rows in bounded batches. Returns
+    ``{scanned, updated, no_price, unique_lookups}``.
+    """
+    from pfm.analytics.usd_value_backfill import backfill_transaction_usd_values
+
+    repo = _ctx_repo(ctx)
+    pricing = _ctx_pricing(ctx)
+    result = await backfill_transaction_usd_values(repo, pricing, limit=limit)
+    return _json({"ok": True, **result})
 
 
 # ---------------------------------------------------------------------------

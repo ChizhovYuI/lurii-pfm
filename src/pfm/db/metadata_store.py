@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from pfm.db.models import CategoryRule, TransactionCategory, TransactionMetadata, TypeRule
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
     from datetime import date
 
     import aiosqlite
@@ -22,6 +23,93 @@ def _safe_column(row: aiosqlite.Row, name: str, default: object = None) -> objec
         return row[name]
     except IndexError:
         return default
+
+
+def _source_for(detected: str | None) -> str:
+    """Map a transfer detection source to its category_source ('manual' or 'auto')."""
+    return "manual" if detected == "manual" else "auto"
+
+
+def _metadata_from_aliased_row(row: aiosqlite.Row) -> TransactionMetadata | None:
+    """Build TransactionMetadata from a row carrying ``m_*``-aliased columns.
+
+    Returns None when the LEFT JOIN found no metadata overlay. Shared by the
+    paginated list, the single-row fetch, the uncategorized list, and the review
+    queue (all of which SELECT ``_ALIASED_TX_META_COLS``) so they cannot drift
+    apart.
+    """
+    if row["m_category"] is None and row["m_category_source"] is None:
+        return None
+    return TransactionMetadata(
+        transaction_id=row["id"],
+        category=row["m_category"],
+        category_source=row["m_category_source"] or "auto",
+        category_confidence=row["m_category_confidence"],
+        type_override=row["m_type_override"],
+        is_internal_transfer=bool(row["m_is_internal_transfer"]),
+        transfer_pair_id=row["m_transfer_pair_id"],
+        transfer_detected_by=row["m_transfer_detected_by"],
+        reviewed=bool(row["m_reviewed"]) if row["m_reviewed"] is not None else False,
+        notes=row["m_notes"] or "",
+    )
+
+
+def _build_paginated_filters(  # noqa: PLR0913
+    *,
+    source_name: str | None,
+    source_type: str | None,
+    tx_type: str | None,
+    category: str | None,
+    start: date | None,
+    end: date | None,
+    search: str | None,
+    is_internal_transfer: bool | None,
+    has_pair: bool | None,
+) -> tuple[list[str], list[str | int]]:
+    """Build the WHERE clauses and bound params for get_transactions_paginated."""
+    where_clauses: list[str] = []
+    params: list[str | int] = []
+
+    eq_filters: list[tuple[str, str | None]] = [
+        ("s.name = ?", source_name),
+        ("t.source = ?", source_type),
+        ("t.tx_type = ?", tx_type),
+        ("m.category = ?", category),
+        ("t.date >= ?", str(start) if start is not None else None),
+        ("t.date <= ?", str(end) if end is not None else None),
+    ]
+    for clause, value in eq_filters:
+        if value is not None:
+            where_clauses.append(clause)
+            params.append(value)
+
+    if is_internal_transfer is not None:
+        where_clauses.append("COALESCE(m.is_internal_transfer, 0) = ?")
+        params.append(1 if is_internal_transfer else 0)
+    if has_pair is not None:
+        where_clauses.append("m.transfer_pair_id IS NOT NULL" if has_pair else "m.transfer_pair_id IS NULL")
+    if search:
+        escaped = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        where_clauses.append("(t.asset LIKE ? ESCAPE '\\' OR s.name LIKE ? ESCAPE '\\' OR t.tx_id LIKE ? ESCAPE '\\')")
+        pattern = f"%{escaped}%"
+        params.extend([pattern, pattern, pattern])
+
+    return where_clauses, params
+
+
+# Shared SELECT projection feeding ``_metadata_from_aliased_row``: the canonical
+# source name plus the metadata overlay aliased as ``m_*``. Kept in one place so
+# the column list and the row->object mapping cannot drift apart.
+_ALIASED_TX_META_COLS = (
+    " s.name AS canonical_source_name,"
+    " m.category AS m_category, m.category_source AS m_category_source,"
+    " m.category_confidence AS m_category_confidence,"
+    " m.type_override AS m_type_override,"
+    " m.is_internal_transfer AS m_is_internal_transfer,"
+    " m.transfer_pair_id AS m_transfer_pair_id,"
+    " m.transfer_detected_by AS m_transfer_detected_by,"
+    " m.reviewed AS m_reviewed, m.notes AS m_notes"
+)
 
 
 class MetadataStore:
@@ -205,36 +293,44 @@ class MetadataStore:
         from pfm.db.repository import Repository
 
         cursor = await self._db.execute(
-            "SELECT t.*, m.category, m.category_source, m.category_confidence,"
-            " m.type_override, m.is_internal_transfer, m.transfer_pair_id,"
-            " m.transfer_detected_by, m.reviewed, m.notes, m.updated_at AS m_updated_at"
-            " FROM transactions t"
-            " INNER JOIN transaction_metadata m ON t.id = m.transaction_id"
-            " WHERE m.reviewed = 0"
-            " ORDER BY m.category_confidence ASC, t.date DESC"
-            " LIMIT ? OFFSET ?",
+            f"SELECT t.*,{_ALIASED_TX_META_COLS}"  # noqa: S608
+            f" FROM transactions t"
+            f" INNER JOIN transaction_metadata m ON t.id = m.transaction_id"
+            f" LEFT JOIN sources s ON t.source_id = s.id"
+            f" WHERE m.reviewed = 0"
+            f" ORDER BY m.category_confidence ASC, t.date DESC"
+            f" LIMIT ? OFFSET ?",
             (limit, offset),
         )
         rows = await cursor.fetchall()
         result: list[tuple[Transaction, TransactionMetadata]] = []
         for row in rows:
             tx = Repository.row_to_transaction(row)
-            meta = TransactionMetadata(
-                transaction_id=row["id"],
-                category=row["category"],
-                category_source=row["category_source"],
-                category_confidence=row["category_confidence"],
-                type_override=_safe_column(row, "type_override"),  # type: ignore[arg-type]
-                is_internal_transfer=bool(row["is_internal_transfer"]),
-                transfer_pair_id=row["transfer_pair_id"],
-                transfer_detected_by=row["transfer_detected_by"],
-                reviewed=bool(row["reviewed"]),
-                notes=row["notes"] or "",
-            )
+            # INNER JOIN guarantees an overlay (category_source is NOT NULL), so the
+            # helper never returns None here; the fallback only satisfies the type.
+            meta = _metadata_from_aliased_row(row) or TransactionMetadata(transaction_id=int(row["id"]))
             result.append((tx, meta))
         return result
 
     # ── Transfer linking ───────────────────────────────────────────────
+
+    # Symmetric manual-link upsert for one side (transaction_id, transfer_pair_id).
+    _LINK_SIDE_SQL = (
+        "INSERT INTO transaction_metadata"
+        " (transaction_id, is_internal_transfer, transfer_pair_id,"
+        "  transfer_detected_by, type_override, category, category_source,"
+        "  category_confidence, updated_at)"
+        " VALUES (?, 1, ?, 'manual', 'transfer', 'transfer', 'manual', 1.0, datetime('now'))"
+        " ON CONFLICT(transaction_id) DO UPDATE SET"
+        "  is_internal_transfer = 1,"
+        "  transfer_pair_id = excluded.transfer_pair_id,"
+        "  transfer_detected_by = 'manual',"
+        "  type_override = 'transfer',"
+        "  category = 'transfer',"
+        "  category_source = 'manual',"
+        "  category_confidence = 1.0,"
+        "  updated_at = excluded.updated_at"
+    )
 
     async def link_transfer(self, tx_id_a: int, tx_id_b: int) -> None:
         """Link two transactions as an internal transfer pair.
@@ -242,24 +338,75 @@ class MetadataStore:
         Sets type_override=transfer and category=transfer for both sides.
         """
         for tx_id, pair_id in [(tx_id_a, tx_id_b), (tx_id_b, tx_id_a)]:
-            await self._db.execute(
-                "INSERT INTO transaction_metadata"
-                " (transaction_id, is_internal_transfer, transfer_pair_id,"
-                "  transfer_detected_by, type_override, category, category_source,"
-                "  category_confidence, updated_at)"
-                " VALUES (?, 1, ?, 'manual', 'transfer', 'transfer', 'manual', 1.0, datetime('now'))"
-                " ON CONFLICT(transaction_id) DO UPDATE SET"
-                "  is_internal_transfer = 1,"
-                "  transfer_pair_id = excluded.transfer_pair_id,"
-                "  transfer_detected_by = 'manual',"
-                "  type_override = 'transfer',"
-                "  category = 'transfer',"
-                "  category_source = 'manual',"
-                "  category_confidence = 1.0,"
-                "  updated_at = excluded.updated_at",
-                (tx_id, pair_id),
-            )
+            await self._db.execute(self._LINK_SIDE_SQL, (tx_id, pair_id))
         await self._db.commit()
+
+    async def existing_transaction_ids(self, ids: Iterable[int]) -> set[int]:
+        """Return the subset of ``ids`` that exist in the transactions table.
+
+        Used to pre-filter link targets so a single stale id cannot raise a
+        FOREIGN KEY error that aborts a whole batch upsert.
+        """
+        id_list = list(dict.fromkeys(ids))
+        if not id_list:
+            return set()
+        placeholders = ",".join("?" for _ in id_list)
+        cursor = await self._db.execute(
+            f"SELECT id FROM transactions WHERE id IN ({placeholders})",  # noqa: S608
+            id_list,
+        )
+        rows = await cursor.fetchall()
+        return {int(row[0]) for row in rows}
+
+    async def link_transfers_batch(self, pairs: list[tuple[int, int]]) -> int:
+        """Link multiple transfer pairs symmetrically in a single transaction.
+
+        Each ``(a, b)`` writes both sides (a→b and b→a). Returns the count of
+        pairs linked. Callers must ensure both ids exist (see
+        ``existing_transaction_ids``); a non-existent id raises a FOREIGN KEY
+        error that aborts the whole batch.
+        """
+        if not pairs:
+            return 0
+        rows: list[tuple[int, int]] = []
+        for tx_id_a, tx_id_b in pairs:
+            rows.append((tx_id_a, tx_id_b))
+            rows.append((tx_id_b, tx_id_a))
+        await self._db.executemany(self._LINK_SIDE_SQL, rows)
+        await self._db.commit()
+        return len(pairs)
+
+    # Clear the transfer overlay on one side.
+    _CLEAR_TRANSFER_SQL = (
+        "UPDATE transaction_metadata SET"
+        " is_internal_transfer = 0, transfer_pair_id = NULL,"
+        " transfer_detected_by = NULL,"
+        " type_override = NULL, category = NULL,"
+        " category_source = 'auto', category_confidence = NULL,"
+        " updated_at = datetime('now')"
+        " WHERE transaction_id = ?"
+    )
+
+    # Restore a transfer back-link on one side, preserving that side's own
+    # detection source and keeping category_source consistent with it (so a
+    # repaired manual link is not silently downgraded to 'auto', and a
+    # previously-categorized row is not left with a stale category_source while
+    # forced to category='transfer'). Params: (tx_id, pair_id, detected_by, category_source).
+    _RESTORE_BACKLINK_SQL = (
+        "INSERT INTO transaction_metadata"
+        " (transaction_id, is_internal_transfer, transfer_pair_id, transfer_detected_by,"
+        "  type_override, category, category_source, category_confidence, updated_at)"
+        " VALUES (?, 1, ?, ?, 'transfer', 'transfer', ?, 1.0, datetime('now'))"
+        " ON CONFLICT(transaction_id) DO UPDATE SET"
+        "  is_internal_transfer = 1,"
+        "  transfer_pair_id = excluded.transfer_pair_id,"
+        "  transfer_detected_by = excluded.transfer_detected_by,"
+        "  type_override = 'transfer',"
+        "  category = 'transfer',"
+        "  category_source = excluded.category_source,"
+        "  category_confidence = 1.0,"
+        "  updated_at = excluded.updated_at"
+    )
 
     async def unlink_transfer(self, tx_id: int) -> None:
         """Unlink a transaction from its transfer pair."""
@@ -268,17 +415,103 @@ class MetadataStore:
             pair_id = meta.transfer_pair_id
             # Clear transfer fields on both sides.
             for tid in [tx_id, pair_id]:
-                await self._db.execute(
-                    "UPDATE transaction_metadata SET"
-                    " is_internal_transfer = 0, transfer_pair_id = NULL,"
-                    " transfer_detected_by = NULL,"
-                    " type_override = NULL, category = NULL,"
-                    " category_source = 'auto', category_confidence = NULL,"
-                    " updated_at = datetime('now')"
-                    " WHERE transaction_id = ?",
-                    (tid,),
-                )
+                await self._db.execute(self._CLEAR_TRANSFER_SQL, (tid,))
             await self._db.commit()
+
+    async def _claimed_partner_metadata(self, ids: set[int]) -> dict[int, tuple[str | None, str | None]]:
+        """Map claimed-partner id -> (category, type_override) for non-transfer rows.
+
+        Used by :meth:`repair_transfer_pairs` to tell a genuinely categorized
+        row (which must not be overwritten) from a blank/transfer-shaped one.
+        """
+        id_list = list(ids)
+        if not id_list:
+            return {}
+        placeholders = ",".join("?" for _ in id_list)
+        cursor = await self._db.execute(
+            f"SELECT transaction_id, category, type_override FROM transaction_metadata"  # noqa: S608
+            f" WHERE transaction_id IN ({placeholders})",
+            id_list,
+        )
+        rows = await cursor.fetchall()
+        return {int(r["transaction_id"]): (r["category"], r["type_override"]) for r in rows}
+
+    async def repair_transfer_pairs(self) -> dict[str, int]:
+        """Restore symmetry for one-sided or broken internal-transfer links.
+
+        For every row that claims a partner via ``transfer_pair_id``, ensure the
+        partner points back with ``is_internal_transfer=1``. Decisions are made
+        from a single immutable snapshot and applied afterwards, so the result is
+        independent of row iteration order. Missing/dropped back-links are
+        restored (each side keeps its own detection source); a claim is cleared
+        when the partner transaction is gone, the partner is paired to a
+        different row, or the partner is a genuine non-transfer categorized row
+        (which must never be clobbered into a transfer). Returns
+        ``{repaired, cleared}``.
+        """
+        # A transaction delete cascades its metadata and SET-NULLs any
+        # transfer_pair_id pointing at it — leaving a row flagged transfer but
+        # with a NULL pair. Catch both that and rows still claiming a partner.
+        cursor = await self._db.execute(
+            "SELECT transaction_id, transfer_pair_id, transfer_detected_by, is_internal_transfer"
+            " FROM transaction_metadata WHERE transfer_pair_id IS NOT NULL OR is_internal_transfer = 1"
+        )
+        rows = await cursor.fetchall()
+        # pair state: transaction_id -> (transfer_pair_id, transfer_detected_by, is_internal_transfer)
+        state = {
+            int(r["transaction_id"]): (
+                r["transfer_pair_id"],
+                r["transfer_detected_by"],
+                bool(r["is_internal_transfer"]),
+            )
+            for r in rows
+        }
+        claimed_ids = {pid for (pid, _, _) in state.values() if pid is not None}
+        existing_ids = await self.existing_transaction_ids(claimed_ids)
+        # Only need full metadata for claimed partners that are NOT themselves
+        # transfer-flagged (those absent from ``state``) — a claim onto a real
+        # categorized row must clear, not clobber.
+        claimed_meta = await self._claimed_partner_metadata(claimed_ids - set(state))
+
+        def _is_real_nontransfer(pid: int) -> bool:
+            meta = claimed_meta.get(pid)
+            if meta is None:
+                return False  # no metadata row → blank, safe to restore the back-link
+            category, type_override = meta
+            return category not in (None, "transfer") or type_override not in (None, "", "transfer")
+
+        # Phase 1 — decide from the immutable snapshot (no DB writes).
+        to_clear: set[int] = set()
+        restore_pairs: set[tuple[int, int]] = set()
+        for tid, (pair_id, _detected, internal) in state.items():
+            partner = state.get(pair_id)
+            if partner is not None and partner[0] == tid and partner[2] and internal:
+                continue  # already a clean mutual pair
+            if pair_id is None or pair_id not in existing_ids:
+                to_clear.add(tid)  # dangling flag, or partner transaction gone
+            elif partner is not None and partner[0] not in (None, tid):
+                to_clear.add(tid)  # partner is paired to a different row
+            elif partner is None and _is_real_nontransfer(pair_id):
+                to_clear.add(tid)  # stale claim onto a genuine non-transfer row
+            else:
+                restore_pairs.add((min(tid, pair_id), max(tid, pair_id)))
+
+        # Phase 2 — apply. A row in a restored pair is never also cleared.
+        restored_ids = {tid for pair in restore_pairs for tid in pair}
+        to_clear -= restored_ids
+        for tid in to_clear:
+            await self._db.execute(self._CLEAR_TRANSFER_SQL, (tid,))
+        for a, b in restore_pairs:
+            a_src = state[a][1] if a in state else None
+            b_src = state[b][1] if b in state else None
+            # A side with no recorded source inherits the other's so a manual
+            # pair stays manual on both ends.
+            a_detected = a_src or b_src or "auto"
+            b_detected = b_src or a_src or "auto"
+            await self._db.execute(self._RESTORE_BACKLINK_SQL, (a, b, a_detected, _source_for(a_detected)))
+            await self._db.execute(self._RESTORE_BACKLINK_SQL, (b, a, b_detected, _source_for(b_detected)))
+        await self._db.commit()
+        return {"repaired": len(restore_pairs), "cleared": len(to_clear)}
 
     # ── Category rules ────────────────────────────────────────────────
 
@@ -442,8 +675,6 @@ class MetadataStore:
         ``include_non_discriminating=True`` to surface them flagged with
         ``"non_discriminating": True`` and a ``"conflicting_categories"`` list.
         """
-        import json
-
         cursor = await self._db.execute(
             "SELECT source, effective_type, chosen_category, field_snapshot"
             " FROM user_category_choices"
@@ -456,16 +687,10 @@ class MetadataStore:
         # Group by (source_type, type, category) and collect field snapshots.
         # ``user_category_choices.source`` carries the source type string
         # (collected as ``tx.source`` at choice time).
-        groups: dict[tuple[str, str, str], list[dict[str, str]]] = {}
+        groups: dict[tuple[str, str, str], list[dict[str, object]]] = {}
         for row in rows:
             key = (row["source"], row["effective_type"], row["chosen_category"])
-            snapshot: dict[str, str] = {}
-            if row["field_snapshot"]:
-                import contextlib
-
-                with contextlib.suppress(json.JSONDecodeError, TypeError):
-                    snapshot = json.loads(row["field_snapshot"])
-            groups.setdefault(key, []).append(snapshot)
+            groups.setdefault(key, []).append(_snapshot_with_merchant(row["source"], row["field_snapshot"]))
 
         # Check existing rules to avoid duplicates — match against source_type
         # (ignoring source_id-pinned rules since suggestions are type-scoped).
@@ -675,70 +900,62 @@ class MetadataStore:
         self,
         *,
         source_name: str | None = None,
+        source_type: str | None = None,
         tx_type: str | None = None,
         category: str | None = None,
         start: date | None = None,
         end: date | None = None,
         search: str | None = None,
+        is_internal_transfer: bool | None = None,
+        has_pair: bool | None = None,
         limit: int = 50,
         offset: int = 0,
+        include_total: bool = True,
     ) -> tuple[list[tuple[Transaction, TransactionMetadata | None]], int]:
         """Get paginated transactions with optional metadata.
+
+        ``source_name`` matches ``sources.name`` (instance); ``source_type``
+        matches the cached ``transactions.source`` (type) column.
+        ``is_internal_transfer`` filters on the metadata flag (NULL treated as
+        False). ``has_pair`` filters on whether ``transfer_pair_id`` is set.
+        ``include_total=False`` skips the COUNT(*) query for callers that only
+        need the page (returns ``total=0``).
 
         Returns (items, total_count).
         """
         from pfm.db.repository import Repository
 
-        where_clauses: list[str] = []
-        params: list[str | int] = []
-
-        if source_name is not None:
-            where_clauses.append("s.name = ?")
-            params.append(source_name)
-        if tx_type is not None:
-            where_clauses.append("t.tx_type = ?")
-            params.append(tx_type)
-        if category is not None:
-            where_clauses.append("m.category = ?")
-            params.append(category)
-        if start is not None:
-            where_clauses.append("t.date >= ?")
-            params.append(str(start))
-        if end is not None:
-            where_clauses.append("t.date <= ?")
-            params.append(str(end))
-        if search:
-            escaped = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            where_clauses.append(
-                "(t.asset LIKE ? ESCAPE '\\' OR s.name LIKE ? ESCAPE '\\' OR t.tx_id LIKE ? ESCAPE '\\')"
-            )
-            pattern = f"%{escaped}%"
-            params.extend([pattern, pattern, pattern])
-
+        where_clauses, params = _build_paginated_filters(
+            source_name=source_name,
+            source_type=source_type,
+            tx_type=tx_type,
+            category=category,
+            start=start,
+            end=end,
+            search=search,
+            is_internal_transfer=is_internal_transfer,
+            has_pair=has_pair,
+        )
         where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
-        # Count query.
-        count_cursor = await self._db.execute(
-            f"SELECT COUNT(*) FROM transactions t"  # noqa: S608
-            f" LEFT JOIN transaction_metadata m ON t.id = m.transaction_id"
-            f" LEFT JOIN sources s ON t.source_id = s.id"
-            f"{where_sql}",
-            params,
-        )
-        count_row = await count_cursor.fetchone()
-        total = count_row[0] if count_row else 0
+        # Count query — skipped when the caller does not need the unpaginated
+        # total (e.g. get_transactions), so the hot path avoids a full
+        # filtered COUNT(*) aggregation it would only discard.
+        total = 0
+        if include_total:
+            count_cursor = await self._db.execute(
+                f"SELECT COUNT(*) FROM transactions t"  # noqa: S608
+                f" LEFT JOIN transaction_metadata m ON t.id = m.transaction_id"
+                f" LEFT JOIN sources s ON t.source_id = s.id"
+                f"{where_sql}",
+                params,
+            )
+            count_row = await count_cursor.fetchone()
+            total = count_row[0] if count_row else 0
 
         # Data query.
         cursor = await self._db.execute(
-            f"SELECT t.*,"  # noqa: S608
-            f" s.name AS canonical_source_name,"
-            f" m.category AS m_category, m.category_source AS m_category_source,"
-            f" m.category_confidence AS m_category_confidence,"
-            f" m.type_override AS m_type_override,"
-            f" m.is_internal_transfer AS m_is_internal_transfer,"
-            f" m.transfer_pair_id AS m_transfer_pair_id,"
-            f" m.transfer_detected_by AS m_transfer_detected_by,"
-            f" m.reviewed AS m_reviewed, m.notes AS m_notes"
+            f"SELECT t.*,{_ALIASED_TX_META_COLS}"  # noqa: S608
             f" FROM transactions t"
             f" LEFT JOIN transaction_metadata m ON t.id = m.transaction_id"
             f" LEFT JOIN sources s ON t.source_id = s.id"
@@ -752,21 +969,7 @@ class MetadataStore:
         result: list[tuple[Transaction, TransactionMetadata | None]] = []
         for row in rows:
             tx = Repository.row_to_transaction(row)
-            meta = None
-            if row["m_category"] is not None or row["m_category_source"] is not None:
-                meta = TransactionMetadata(
-                    transaction_id=row["id"],
-                    category=row["m_category"],
-                    category_source=row["m_category_source"] or "auto",
-                    category_confidence=row["m_category_confidence"],
-                    type_override=row["m_type_override"],
-                    is_internal_transfer=bool(row["m_is_internal_transfer"]),
-                    transfer_pair_id=row["m_transfer_pair_id"],
-                    transfer_detected_by=row["m_transfer_detected_by"],
-                    reviewed=bool(row["m_reviewed"]) if row["m_reviewed"] is not None else False,
-                    notes=row["m_notes"] or "",
-                )
-            result.append((tx, meta))
+            result.append((tx, _metadata_from_aliased_row(row)))
         return result, total
 
     async def get_transaction_by_id(
@@ -777,19 +980,11 @@ class MetadataStore:
         from pfm.db.repository import Repository
 
         cursor = await self._db.execute(
-            "SELECT t.*,"
-            " s.name AS canonical_source_name,"
-            " m.category AS m_category, m.category_source AS m_category_source,"
-            " m.category_confidence AS m_category_confidence,"
-            " m.type_override AS m_type_override,"
-            " m.is_internal_transfer AS m_is_internal_transfer,"
-            " m.transfer_pair_id AS m_transfer_pair_id,"
-            " m.transfer_detected_by AS m_transfer_detected_by,"
-            " m.reviewed AS m_reviewed, m.notes AS m_notes"
-            " FROM transactions t"
-            " LEFT JOIN transaction_metadata m ON t.id = m.transaction_id"
-            " LEFT JOIN sources s ON t.source_id = s.id"
-            " WHERE t.id = ?",
+            f"SELECT t.*,{_ALIASED_TX_META_COLS}"  # noqa: S608
+            f" FROM transactions t"
+            f" LEFT JOIN transaction_metadata m ON t.id = m.transaction_id"
+            f" LEFT JOIN sources s ON t.source_id = s.id"
+            f" WHERE t.id = ?",
             (transaction_id,),
         )
         row = await cursor.fetchone()
@@ -797,21 +992,7 @@ class MetadataStore:
             return None
 
         tx = Repository.row_to_transaction(row)
-        meta = None
-        if row["m_category"] is not None or row["m_category_source"] is not None:
-            meta = TransactionMetadata(
-                transaction_id=row["id"],
-                category=row["m_category"],
-                category_source=row["m_category_source"] or "auto",
-                category_confidence=row["m_category_confidence"],
-                type_override=row["m_type_override"],
-                is_internal_transfer=bool(row["m_is_internal_transfer"]),
-                transfer_pair_id=row["m_transfer_pair_id"],
-                transfer_detected_by=row["m_transfer_detected_by"],
-                reviewed=bool(row["m_reviewed"]) if row["m_reviewed"] is not None else False,
-                notes=row["m_notes"] or "",
-            )
-        return tx, meta
+        return tx, _metadata_from_aliased_row(row)
 
     # ── Categorization summary / discovery ────────────────────────────
 
@@ -822,11 +1003,14 @@ class MetadataStore:
     ) -> list[dict[str, object]]:
         """Per-source counts for the categorization workflow.
 
-        Each entry: source_name, source_id, total, unknown_type,
-        no_category, internal_transfer. ADR-030 Stage 2: source_name is
-        the canonical ``sources.name`` when ``source_id`` is set, falling
-        back to the denormalized ``transactions.source_name`` for legacy
-        rows whose Stage 1 backfill could not link.
+        Each entry: source_name, source_id, total, unknown_type, no_category,
+        internal_transfer, transfer_linked, transfer_unpaired. ``internal_transfer``
+        is the total flagged as transfers (= linked + unpaired); ``transfer_linked``
+        carry a ``transfer_pair_id``, ``transfer_unpaired`` are flagged one-sided
+        rows with no pair (work still to do). ADR-030 Stage 2: source_name is
+        the canonical ``sources.name`` when ``source_id`` is set, falling back to
+        the denormalized ``transactions.source_name`` for legacy rows whose
+        Stage 1 backfill could not link.
         """
         params: list[str] = []
         where_sql = ""
@@ -841,7 +1025,11 @@ class MetadataStore:
             "       AND (m.type_override IS NULL OR m.type_override = '') THEN 1 ELSE 0 END) AS unknown_type,"
             "  SUM(CASE WHEN m.category IS NULL"
             "       AND COALESCE(m.is_internal_transfer, 0) = 0 THEN 1 ELSE 0 END) AS no_category,"
-            "  SUM(CASE WHEN COALESCE(m.is_internal_transfer, 0) = 1 THEN 1 ELSE 0 END) AS internal_transfer"
+            "  SUM(CASE WHEN COALESCE(m.is_internal_transfer, 0) = 1 THEN 1 ELSE 0 END) AS internal_transfer,"
+            "  SUM(CASE WHEN COALESCE(m.is_internal_transfer, 0) = 1"
+            "       AND m.transfer_pair_id IS NOT NULL THEN 1 ELSE 0 END) AS transfer_linked,"
+            "  SUM(CASE WHEN COALESCE(m.is_internal_transfer, 0) = 1"
+            "       AND m.transfer_pair_id IS NULL THEN 1 ELSE 0 END) AS transfer_unpaired"
             " FROM transactions t"
             " LEFT JOIN transaction_metadata m ON t.id = m.transaction_id"
             " LEFT JOIN sources s ON t.source_id = s.id"
@@ -859,6 +1047,8 @@ class MetadataStore:
                 "unknown_type": int(row["unknown_type"] or 0),
                 "no_category": int(row["no_category"] or 0),
                 "internal_transfer": int(row["internal_transfer"] or 0),
+                "transfer_linked": int(row["transfer_linked"] or 0),
+                "transfer_unpaired": int(row["transfer_unpaired"] or 0),
             }
             for row in rows
         ]
@@ -911,15 +1101,7 @@ class MetadataStore:
         total = count_row[0] if count_row else 0
 
         cursor = await self._db.execute(
-            f"SELECT t.*,"  # noqa: S608
-            f" s.name AS canonical_source_name,"
-            f" m.category AS m_category, m.category_source AS m_category_source,"
-            f" m.category_confidence AS m_category_confidence,"
-            f" m.type_override AS m_type_override,"
-            f" m.is_internal_transfer AS m_is_internal_transfer,"
-            f" m.transfer_pair_id AS m_transfer_pair_id,"
-            f" m.transfer_detected_by AS m_transfer_detected_by,"
-            f" m.reviewed AS m_reviewed, m.notes AS m_notes"
+            f"SELECT t.*,{_ALIASED_TX_META_COLS}"  # noqa: S608
             f" FROM transactions t"
             f" LEFT JOIN transaction_metadata m ON t.id = m.transaction_id"
             f" LEFT JOIN sources s ON t.source_id = s.id"
@@ -933,21 +1115,7 @@ class MetadataStore:
         result: list[tuple[Transaction, TransactionMetadata | None]] = []
         for row in rows:
             tx = Repository.row_to_transaction(row)
-            meta = None
-            if row["m_category"] is not None or row["m_category_source"] is not None:
-                meta = TransactionMetadata(
-                    transaction_id=row["id"],
-                    category=row["m_category"],
-                    category_source=row["m_category_source"] or "auto",
-                    category_confidence=row["m_category_confidence"],
-                    type_override=row["m_type_override"],
-                    is_internal_transfer=bool(row["m_is_internal_transfer"]),
-                    transfer_pair_id=row["m_transfer_pair_id"],
-                    transfer_detected_by=row["m_transfer_detected_by"],
-                    reviewed=bool(row["m_reviewed"]) if row["m_reviewed"] is not None else False,
-                    notes=row["m_notes"] or "",
-                )
-            result.append((tx, meta))
+            result.append((tx, _metadata_from_aliased_row(row)))
         return result, total
 
 
@@ -1005,13 +1173,43 @@ def _auto_priority(
 _SKIP_FIELDS = {"balance", "time", "ts", "transactionTime", "datetime", "dateTime", "timestamp"}
 
 
+def _snapshot_with_merchant(source: str, field_snapshot: str | None) -> dict[str, object]:
+    """Parse a choice's ``field_snapshot`` to a dict and inject the merchant token.
+
+    A snapshot that is missing, malformed, or valid-but-non-object JSON yields an
+    empty dict so callers never operate on a list/scalar. The derived
+    ``merchant_name`` is added as a synthetic field so a discriminating payee can
+    outrank noisy raw fields (e.g. channel) — the categorizer resolves the same
+    ``merchant_name`` virtual field at match time, so a suggested rule applies.
+    """
+    import contextlib
+    import json
+
+    from pfm.analytics.merchant import derive_merchant_name
+
+    snapshot: dict[str, object] = {}
+    if field_snapshot:
+        with contextlib.suppress(json.JSONDecodeError, TypeError):
+            parsed = json.loads(field_snapshot)
+            if isinstance(parsed, dict):
+                snapshot = parsed
+    merchant = derive_merchant_name(source, snapshot)
+    if merchant:
+        snapshot["merchant_name"] = merchant
+    return snapshot
+
+
 def _find_common_field(
-    snapshots: list[dict[str, str]],
+    snapshots: list[dict[str, object]],
 ) -> tuple[str | None, str | None]:
     """Find the most common (field, value) pair across snapshots.
 
-    Skips non-useful fields (balance, timestamps). Returns (None, None)
-    if no common field is found in >50% of snapshots.
+    Skips non-useful fields (balance, timestamps) and non-string values — the
+    snapshot may be a full ``raw_json`` whose nested objects/lists are neither
+    hashable nor matchable as a top-level rule field. The derived
+    ``merchant_name`` is preferred when it clears the threshold — it is the most
+    discriminating signal and outranks noisy raw fields (payment rails, ref
+    codes). Returns (None, None) if no common field is found in >50% of snapshots.
     """
     from collections import Counter
 
@@ -1019,12 +1217,19 @@ def _find_common_field(
     pair_counts: Counter[tuple[str, str]] = Counter()
     for snap in snapshots:
         for field, value in snap.items():
-            if field in _SKIP_FIELDS or not value:
+            if field in _SKIP_FIELDS or not isinstance(value, str) or not value:
                 continue
             pair_counts[(field, value)] += 1
 
     if not pair_counts:
         return None, None
+
+    # Prefer a discriminating merchant token over any raw field.
+    merchant_pairs = [(pair, n) for pair, n in pair_counts.items() if pair[0] == "merchant_name"]
+    if merchant_pairs:
+        (m_field, m_value), m_count = max(merchant_pairs, key=lambda item: item[1])
+        if m_count > threshold:
+            return m_field, m_value
 
     (best_field, best_value), count = pair_counts.most_common(1)[0]
     if count > threshold:

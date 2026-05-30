@@ -12,6 +12,16 @@ from typing import TYPE_CHECKING, Any
 import aiosqlite
 import httpx
 
+from pfm.pricing.constants import (
+    HISTORICAL_PRICE_SOURCE as _HISTORICAL_SOURCE,
+)
+from pfm.pricing.constants import (
+    MISS_PRICE_SOURCE as _MISS_SOURCE,
+)
+from pfm.pricing.constants import (
+    REAL_PRICE_SOURCE as _REAL_SOURCE,
+)
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -30,6 +40,14 @@ _RATE_LIMIT_DELAY = 2.1  # seconds between requests (30 req/min = 1 per 2s)
 _MAX_429_RETRIES = 3
 _RETRY_BACKOFF_BASE_SECONDS = 2.0
 _HTTP_STATUS_TOO_MANY_REQUESTS = 429
+
+# ``prices.source`` tags (see ``pfm.pricing.constants``). ``_REAL_SOURCE`` is a
+# live spot price (date=today); ``_HISTORICAL_SOURCE`` is a back-dated backfill
+# price kept distinct so it can never be served by the live cache read even when
+# its ``on_date`` is today; a miss sentinel stops the backfill from re-hitting
+# CoinGecko for an unpriceable (asset, date) and is time-limited so a transient
+# outage self-heals.
+_MISS_RETRY_WINDOW = "-7 days"
 
 
 class PricingService:
@@ -132,6 +150,70 @@ class PricingService:
         price = await self.get_price_usd(ticker)
         return amount * price
 
+    async def get_price_usd_on(self, ticker: str, on_date: date) -> Decimal | None:
+        """USD price for ``ticker`` on a historical ``on_date``.
+
+        Returns ``None`` (rather than raising) when no price is available — the
+        caller decides whether to skip. Results are persisted to the date-keyed
+        ``prices`` cache so a backfill never re-fetches the same (asset, date);
+        a definitive miss is recorded as a time-limited sentinel so unpriceable
+        rows are not re-fetched on every collect.
+
+        Note: ``on_date`` is treated as a UTC calendar day (CoinGecko's
+        ``/history`` daily snapshots are UTC). A transaction whose local
+        timestamp falls near a UTC day boundary may be valued against the
+        adjacent day's price — an accepted limitation, since stored transaction
+        dates carry no intraday time.
+        """
+        ticker = ticker.upper()
+        if ticker == "USD" or ticker in STABLECOINS:
+            return Decimal(1)
+
+        cached = await self._get_persisted_cache_on(ticker, on_date)
+        if cached is not None:
+            return cached
+        # A recent miss sentinel means we already tried and CoinGecko had no
+        # price; skip the network until the retry window lapses.
+        if await self._recent_miss_on(ticker, on_date):
+            return None
+
+        try:
+            if ticker in FIAT_TICKERS:
+                price = await self._fetch_fiat_rate_on(ticker, on_date)
+            else:
+                price = await self._fetch_crypto_price_on(ticker, on_date)
+        except (httpx.HTTPStatusError, RuntimeError, ValueError):
+            # Transient error — do NOT record a sentinel; let it retry next run.
+            logger.warning("CoinGecko: no historical price for %s on %s", ticker, on_date)
+            return None
+
+        if price is not None:
+            await self._save_persisted_cache_on(ticker, price, on_date)
+            return price
+        # Definitive "no price for this date" — record a time-limited sentinel so
+        # the per-collect forward-fill stops re-fetching this (asset, date).
+        await self._save_miss_on(ticker, on_date)
+        return None
+
+    async def peek_price_usd_on(self, ticker: str, on_date: date) -> tuple[str, Decimal | None]:
+        """Resolve a historical price from the cache only — never the network.
+
+        Returns ``(status, price)`` where status is ``"hit"`` (price known, no
+        network needed), ``"miss"`` (a recent "no price" sentinel — also free),
+        or ``"unknown"`` (a network lookup via :meth:`get_price_usd_on` is
+        required). Lets a bounded backfill spend its lookup budget only on
+        genuine network calls instead of free cache/sentinel hits.
+        """
+        ticker = ticker.upper()
+        if ticker == "USD" or ticker in STABLECOINS:
+            return "hit", Decimal(1)
+        cached = await self._get_persisted_cache_on(ticker, on_date)
+        if cached is not None:
+            return "hit", cached
+        if await self._recent_miss_on(ticker, on_date):
+            return "miss", None
+        return "unknown", None
+
     def _get_cached(self, ticker: str) -> Decimal | None:
         if ticker in self._cache:
             price, cached_at = self._cache[ticker]
@@ -207,14 +289,20 @@ class PricingService:
             return None
 
         ttl_window = f"-{int(self._cache_ttl_seconds)} seconds"
+        # Pin to today's row only. The same ``prices`` table also holds
+        # historical rows written by the usd_value backfill (old ``date``,
+        # fresh ``created_at``); without the date pin a backfill would let an
+        # old price win the ``created_at DESC`` ordering and be served as the
+        # current price for the whole TTL window.
         sql = (
             "SELECT price FROM prices "
-            "WHERE asset = ? AND currency = 'USD' AND created_at >= datetime('now', ?) "
+            "WHERE asset = ? AND currency = 'USD' AND date = ? AND source = ? "
+            "AND created_at >= datetime('now', ?) "
             "ORDER BY created_at DESC LIMIT 1"
         )
         try:
             async with aiosqlite.connect(self._cache_db_path) as db:
-                row = await (await db.execute(sql, (ticker, ttl_window))).fetchone()
+                row = await (await db.execute(sql, (ticker, str(self.today()), _REAL_SOURCE, ttl_window))).fetchone()
         except aiosqlite.Error:
             logger.exception("Failed to read price cache from SQLite")
             return None
@@ -223,18 +311,103 @@ class PricingService:
             return None
         return Decimal(str(row[0]))
 
-    async def _save_persisted_cache(self, ticker: str, price: Decimal) -> None:
-        """Write fetched price into SQLite cache, if configured."""
+    async def _write_price_row(self, ticker: str, price: str, on_date: date, source: str) -> None:
+        """Append a price row to the SQLite cache, if configured.
+
+        Single writer behind the live cache, the historical cache, and the miss
+        sentinel so the INSERT lives in one place.
+        """
         if self._cache_db_path is None:
             return
-
-        sql = "INSERT INTO prices (date, asset, currency, price, source) VALUES (?, ?, 'USD', ?, 'coingecko')"
+        sql = "INSERT INTO prices (date, asset, currency, price, source) VALUES (?, ?, 'USD', ?, ?)"
         try:
             async with aiosqlite.connect(self._cache_db_path) as db:
-                await db.execute(sql, (str(self.today()), ticker, str(price)))
+                await db.execute(sql, (str(on_date), ticker, price, source))
                 await db.commit()
         except aiosqlite.Error:
-            logger.exception("Failed to write price cache into SQLite")
+            logger.exception("Failed to write price row into SQLite")
+
+    async def _save_persisted_cache(self, ticker: str, price: Decimal) -> None:
+        """Write a fetched current price into SQLite cache, if configured."""
+        await self._write_price_row(ticker, str(price), self.today(), _REAL_SOURCE)
+
+    async def _get_persisted_cache_on(self, ticker: str, on_date: date) -> Decimal | None:
+        """Read a real price for an exact historical date from SQLite, if configured.
+
+        Reads both the historical-backfill source and a same-day live row, but
+        never the miss sentinel, so a "no price" marker is not served as a price.
+        """
+        if self._cache_db_path is None:
+            return None
+        sql = (
+            "SELECT price FROM prices WHERE asset = ? AND currency = 'USD' AND date = ? "
+            "AND source IN (?, ?) "
+            "ORDER BY created_at DESC LIMIT 1"
+        )
+        try:
+            async with aiosqlite.connect(self._cache_db_path) as db:
+                row = await (await db.execute(sql, (ticker, str(on_date), _REAL_SOURCE, _HISTORICAL_SOURCE))).fetchone()
+        except aiosqlite.Error:
+            logger.exception("Failed to read historical price cache from SQLite")
+            return None
+        return Decimal(str(row[0])) if row is not None else None
+
+    async def _save_persisted_cache_on(self, ticker: str, price: Decimal, on_date: date) -> None:
+        """Write a fetched historical price into SQLite under the historical source.
+
+        Tagged ``_HISTORICAL_SOURCE`` (not ``_REAL_SOURCE``) so the live cache read
+        — which pins ``source = _REAL_SOURCE`` — can never serve a back-dated
+        backfill price as the current spot price, even when ``on_date`` is today.
+        """
+        await self._write_price_row(ticker, str(price), on_date, _HISTORICAL_SOURCE)
+
+    async def _recent_miss_on(self, ticker: str, on_date: date) -> bool:
+        """True if a non-expired "no price" sentinel exists for (ticker, date)."""
+        if self._cache_db_path is None:
+            return False
+        sql = (
+            "SELECT 1 FROM prices WHERE asset = ? AND currency = 'USD' AND date = ? AND source = ? "
+            "AND created_at >= datetime('now', ?) LIMIT 1"
+        )
+        try:
+            async with aiosqlite.connect(self._cache_db_path) as db:
+                row = await (await db.execute(sql, (ticker, str(on_date), _MISS_SOURCE, _MISS_RETRY_WINDOW))).fetchone()
+        except aiosqlite.Error:
+            logger.exception("Failed to read price miss sentinel from SQLite")
+            return False
+        return row is not None
+
+    async def _save_miss_on(self, ticker: str, on_date: date) -> None:
+        """Record a time-limited "no price available" sentinel for (ticker, date)."""
+        await self._write_price_row(ticker, "0", on_date, _MISS_SOURCE)
+
+    async def _history_market_data(self, coin_id: str, on_date: date) -> dict[str, Any]:
+        """Fetch /coins/{id}/history market_data for a date (dd-mm-yyyy)."""
+        data = await self._request_json(
+            f"/coins/{coin_id}/history",
+            {"date": on_date.strftime("%d-%m-%Y"), "localization": "false"},
+        )
+        market_data = data.get("market_data")
+        return market_data if isinstance(market_data, dict) else {}
+
+    async def _fetch_crypto_price_on(self, ticker: str, on_date: date) -> Decimal | None:
+        """Fetch a single crypto's USD price on a historical date."""
+        coingecko_id = await self._resolve_coingecko_id(ticker)
+        if not coingecko_id:
+            return None
+        market_data = await self._history_market_data(coingecko_id, on_date)
+        price_val = market_data.get("current_price", {}).get("usd")
+        return Decimal(str(price_val)) if price_val is not None else None
+
+    async def _fetch_fiat_rate_on(self, ticker: str, on_date: date) -> Decimal | None:
+        """Fetch a fiat-to-USD rate on a historical date via the BTC bridge."""
+        market_data = await self._history_market_data("bitcoin", on_date)
+        prices = market_data.get("current_price", {})
+        btc_usd = prices.get("usd")
+        btc_fiat = prices.get(ticker.lower())
+        if btc_usd is None or not btc_fiat:
+            return None
+        return Decimal(str(btc_usd)) / Decimal(str(btc_fiat))
 
     async def _fetch_crypto_price(self, ticker: str) -> Decimal:
         """Fetch a single crypto price from CoinGecko."""
