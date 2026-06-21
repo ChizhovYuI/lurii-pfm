@@ -10,8 +10,10 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
+from pfm.collectors import bybit as bybit_mod
 from pfm.collectors._auth import sign_bybit
 from pfm.collectors.bybit import _MAX_TX_PAGES_PER_WINDOW, _RECV_WINDOW, BybitCollector
+from pfm.db.models import TransactionType
 
 
 def _mock_response(json_data: dict) -> httpx.Response:
@@ -458,3 +460,87 @@ async def test_bybit_window_raises_on_page_cap(pricing):
     with pytest.raises(ValueError, match=r"exceeded \d+ pages"):
         await collector._fetch_transaction_window(datetime(2026, 6, 7, tzinfo=UTC), datetime(2026, 6, 14, tzinfo=UTC))
     assert counter["n"] == _MAX_TX_PAGES_PER_WINDOW
+
+
+def _card_record(txn_id: str, amount: str = "24.36", currency: str = "USD", merch: str = "Trip.com") -> dict:
+    return {
+        "txnId": txn_id,
+        "tradeStatus": "1",
+        "status": "1",
+        "paidAmount": amount,
+        "paidCurrency": currency,
+        "basicAmount": amount,
+        "basicCurrency": currency,
+        "txnCreate": _ms_ago(1),
+        "merchName": merch,
+        "merchCountry": "GBR",
+        "mccCode": "4722",
+    }
+
+
+def _card_response(rows: list[dict], total: int) -> httpx.Response:
+    return _mock_response({"retCode": 0, "result": {"data": rows, "totalCount": total, "pageNo": 1}})
+
+
+def test_bybit_parse_card_transaction():
+    """A settled AUTH record becomes a SPEND tx; declined / id-less rows are skipped."""
+    tx = BybitCollector._parse_card_transaction(_card_record("card-1", currency="usd"))
+    assert tx is not None
+    assert tx.tx_type == TransactionType.SPEND
+    assert tx.asset == "USD"
+    assert tx.amount == Decimal("24.36")
+    assert tx.tx_id == "card-1"
+    raw = json.loads(tx.raw_json)
+    assert raw["account_type"] == "card"
+    assert raw["row"]["merchName"] == "Trip.com"
+    # Declined / reversed rows are not real outflow.
+    assert BybitCollector._parse_card_transaction({**_card_record("c"), "tradeStatus": "2", "status": "2"}) is None
+    # A row without a txnId is skipped (no stable dedup key).
+    assert BybitCollector._parse_card_transaction({**_card_record("c"), "txnId": ""}) is None
+
+
+async def test_bybit_fetch_card_transactions_paginates(pricing, monkeypatch):
+    """Card AUTH records page via page/totalCount and surface as SPEND txns."""
+    monkeypatch.setattr(bybit_mod, "_CARD_PAGE_LIMIT", 2)
+    monkeypatch.setattr(bybit_mod._CARD_RATE_LIMITER, "_min_interval", 0.0)
+    collector = BybitCollector(pricing, api_key="key", api_secret="secret")
+
+    async def mock_get(path, **kwargs):
+        return _empty_response()  # no account-log txns
+
+    async def mock_post(path, **kwargs):
+        page = json.loads(kwargs["content"])["page"]
+        if page == 1:
+            return _card_response([_card_record("c1"), _card_record("c2")], total=3)
+        return _card_response([_card_record("c3")], total=3)
+
+    collector._client.get = AsyncMock(side_effect=mock_get)
+    collector._client.post = AsyncMock(side_effect=mock_post)
+
+    since = datetime.now(tz=UTC).date() - timedelta(days=2)
+    txs = await collector.fetch_transactions(since=since)
+    card = [t for t in txs if t.tx_type == TransactionType.SPEND]
+    assert {t.tx_id for t in card} == {"c1", "c2", "c3"}
+
+
+async def test_bybit_card_non_fatal_on_permission_error(pricing):
+    """A card permission error (10005) must not break account-log collection."""
+    collector = BybitCollector(pricing, api_key="key", api_secret="secret")
+
+    log_row = {"currency": "USDT", "cashFlow": "5", "transactionTime": _ms_ago(0), "id": "log1"}
+
+    async def mock_get(path, **kwargs):
+        if "transaction-log" in path:
+            return _tx_log_response([log_row])
+        return _empty_response()
+
+    async def mock_post(path, **kwargs):
+        return _mock_response({"retCode": 10005, "retMsg": "Permission denied, check API key permissions."})
+
+    collector._client.get = AsyncMock(side_effect=mock_get)
+    collector._client.post = AsyncMock(side_effect=mock_post)
+
+    since = datetime.now(tz=UTC).date() - timedelta(days=1)
+    txs = await collector.fetch_transactions(since=since)
+    # The account-log transaction survives; the card error is swallowed.
+    assert [t.tx_id for t in txs] == ["log1"]

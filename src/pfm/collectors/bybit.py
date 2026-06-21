@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -41,6 +42,16 @@ _TX_PAGE_LIMIT = "50"
 # years"). Stay a margin inside that bound so the oldest window is never refused.
 _MAX_BACKFILL_DAYS = 720
 _MAX_TX_PAGES_PER_WINDOW = 50
+
+# Bybit Card asset records — a separate POST endpoint, body-signed and rate-limited
+# far tighter than the account APIs. SIDE_QUERY_AUTH returns settled card purchases.
+_CARD_TX_PATH = "/v5/card/transaction/query-asset-records"
+_CARD_PAGE_LIMIT = 50
+_CARD_MAX_PAGES = 100
+_CARD_RATE_LIMITER = RateLimiter(requests_per_minute=20.0)
+_CARD_RATE_LIMIT_RETCODE = 10006
+_CARD_MAX_RETRIES = 4
+_CARD_RETRY_BACKOFF_S = 3.0
 
 
 def _synthetic_tx_id(raw_type: str, asset: str, change: Decimal, ts_ms: str) -> str:
@@ -101,6 +112,33 @@ class BybitCollector(BaseCollector):
             msg = f"Bybit API error: {data.get('retMsg', 'unknown')}"
             raise ValueError(msg)
         return data
+
+    @retry()
+    async def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Make a signed POST request (body-signed) to Bybit V5 API.
+
+        Used for the card endpoint, which is throttled hard; retries on the
+        rate-limit retCode with a short backoff before giving up.
+        """
+        # Sign the exact body bytes we send (content=body), so the signature
+        # matches regardless of how a dict would otherwise be serialized.
+        body = json.dumps(payload)
+        for attempt in range(_CARD_MAX_RETRIES):
+            await _CARD_RATE_LIMITER.acquire()
+            headers = self._signed_headers(body)
+            resp = await self._client.post(path, content=body, headers=headers)
+            resp.raise_for_status()
+            data: dict[str, Any] = resp.json()
+            ret_code = data.get("retCode")
+            if ret_code == _CARD_RATE_LIMIT_RETCODE and attempt < _CARD_MAX_RETRIES - 1:
+                await asyncio.sleep(_CARD_RETRY_BACKOFF_S * (attempt + 1))
+                continue
+            if ret_code != 0:
+                msg = f"Bybit card API error: {data.get('retMsg', 'unknown')}"
+                raise ValueError(msg)
+            return data
+        msg = "Bybit card API error: rate limited after retries"
+        raise ValueError(msg)
 
     @staticmethod
     def _accumulate(totals: dict[str, Decimal], ticker: str, amount: Decimal) -> None:
@@ -312,39 +350,130 @@ class BybitCollector(BaseCollector):
         return raw
 
     async def fetch_transactions(self, since: date | None = None) -> list[Transaction]:
-        """Fetch transaction log from Bybit, windowed and cursor-paginated.
+        """Fetch the account transaction log plus card spend from Bybit.
 
-        The endpoint returns only the last 24h without an explicit range, caps
-        the query interval at 7 days, and retains 2 years. Walk forward from the
-        lower bound in <=7-day windows, paging each window via nextPageCursor.
+        The log endpoint returns only the last 24h without an explicit range,
+        caps the query interval at 7 days, and retains 2 years — so it is walked
+        in <=7-day windows, each paged via nextPageCursor. Card spend lives in a
+        separate, optional endpoint and is appended non-fatally.
         """
         now_dt = datetime.now(tz=UTC)
         floor = now_dt.date() - timedelta(days=_MAX_BACKFILL_DAYS)
         start = since if since is not None and since > floor else floor
-        window_start = datetime(start.year, start.month, start.day, tzinfo=UTC)
-        step = timedelta(days=_TX_WINDOW_DAYS)
 
         transactions: list[Transaction] = []
         seen_ids: set[str] = set()
+        self._append_deduped(transactions, await self._fetch_log_transactions(start, now_dt), seen_ids, since=since)
+
+        # Bybit Card spend is a separate, optional ledger. Keep it strictly
+        # non-fatal: a key without card permission (10005) or a card-side outage
+        # must not break the primary account-log collection.
+        try:
+            card = await self._fetch_card_transactions(start)
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.warning("Bybit: card transactions unavailable (%s)", exc)
+        else:
+            self._append_deduped(transactions, card, seen_ids, since=since)
+
+        logger.info("Bybit: parsed %d transactions", len(transactions))
+        return transactions
+
+    @staticmethod
+    def _append_deduped(
+        dest: list[Transaction],
+        src: list[Transaction],
+        seen_ids: set[str],
+        *,
+        since: date | None,
+    ) -> None:
+        """Append ``src`` to ``dest``, dropping rows before ``since`` or already seen.
+
+        Windows touch at their boundaries (Bybit's endTime is inclusive) and the
+        incremental overlap re-fetches recent rows, so dedup on the entry id.
+        """
+        for tx in src:
+            if since is not None and tx.date < since:
+                continue
+            if tx.tx_id and tx.tx_id in seen_ids:
+                continue
+            if tx.tx_id:
+                seen_ids.add(tx.tx_id)
+            dest.append(tx)
+
+    async def _fetch_log_transactions(self, start: date, now_dt: datetime) -> list[Transaction]:
+        """Walk the account transaction log in <=7-day windows from ``start``."""
+        window_start = datetime(start.year, start.month, start.day, tzinfo=UTC)
+        step = timedelta(days=_TX_WINDOW_DAYS)
+
+        out: list[Transaction] = []
         while window_start < now_dt:
             window_end = min(window_start + step, now_dt)
             for item in await self._fetch_transaction_window(window_start, window_end):
                 tx = self._parse_transaction(item)
-                if tx is None:
-                    continue
-                if since is not None and tx.date < since:
-                    continue
-                # Windows touch at their boundaries (and Bybit's endTime is
-                # inclusive), so a row can recur — dedup on the log entry id.
-                if tx.tx_id and tx.tx_id in seen_ids:
-                    continue
-                if tx.tx_id:
-                    seen_ids.add(tx.tx_id)
-                transactions.append(tx)
+                if tx is not None:
+                    out.append(tx)
             window_start = window_end
+        return out
 
-        logger.info("Bybit: parsed %d transactions", len(transactions))
+    async def _fetch_card_transactions(self, start: date) -> list[Transaction]:
+        """Fetch settled Bybit Card purchases (SIDE_QUERY_AUTH) since ``start``."""
+        begin_dt = datetime(start.year, start.month, start.day, tzinfo=UTC)
+        begin_ms = int(begin_dt.timestamp() * 1000)
+        end_ms = int(datetime.now(tz=UTC).timestamp() * 1000)
+
+        transactions: list[Transaction] = []
+        for page in range(1, _CARD_MAX_PAGES + 1):
+            payload = {
+                "type": "SIDE_QUERY_AUTH",
+                "createBeginTime": begin_ms,
+                "createEndTime": end_ms,
+                "limit": _CARD_PAGE_LIMIT,
+                "page": page,
+            }
+            data = await self._post(_CARD_TX_PATH, payload)
+            result = data.get("result") or {}
+            rows = result.get("data") or []
+            for record in rows:
+                tx = self._parse_card_transaction(record)
+                if tx is not None:
+                    transactions.append(tx)
+            total = int(result.get("totalCount") or 0)
+            if not rows or page * _CARD_PAGE_LIMIT >= total:
+                break
+
+        logger.info("Bybit: parsed %d card transactions", len(transactions))
         return transactions
+
+    @staticmethod
+    def _parse_card_transaction(record: dict[str, Any]) -> Transaction | None:
+        """Parse a settled Bybit Card AUTH record into a SPEND transaction."""
+        # Only settled, successful purchases represent real outflow. Declined,
+        # pending, and reversal rows are skipped (refunds are a future refinement).
+        if str(record.get("tradeStatus", "")) != "1" or str(record.get("status", "")) != "1":
+            return None
+
+        asset = str(record.get("paidCurrency") or record.get("basicCurrency") or "").upper()
+        amount = BybitCollector._to_decimal(record.get("paidAmount") or record.get("basicAmount") or "0")
+        tx_id = str(record.get("txnId") or "").strip()
+        if not asset or amount == 0 or not tx_id:
+            return None
+
+        ts_ms = str(record.get("txnCreate", "0"))
+        try:
+            tx_date = datetime.fromtimestamp(int(ts_ms) / 1000, tz=UTC).date()
+        except (ValueError, OSError):
+            tx_date = datetime.now(tz=UTC).date()
+
+        return Transaction(
+            date=tx_date,
+            source="bybit",
+            tx_type=TransactionType.SPEND,
+            asset=asset,
+            amount=abs(amount),
+            usd_value=Decimal(0),
+            tx_id=tx_id,
+            raw_json=json.dumps({"account_type": "card", "row": record}),
+        )
 
     async def _fetch_transaction_window(
         self,
