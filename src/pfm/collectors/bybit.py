@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 import logging
 import time
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
+from urllib.parse import unquote
 
 import httpx
 
@@ -31,12 +32,33 @@ _RATE_LIMITER = RateLimiter(requests_per_minute=600.0)
 # Earn sub-categories already covered by _fetch_earn_raw() via /v5/earn/position.
 _KNOWN_EARN_CATEGORIES: frozenset[str] = frozenset({"Easy Earn"})
 
+# Transaction-log windowing. The endpoint returns only the last 24h when no time
+# range is given, caps the query interval at 7 days, and retains 2 years of data.
+_TX_LOG_PATH = "/v5/account/transaction-log"
+_TX_WINDOW_DAYS = 7
+_TX_PAGE_LIMIT = "50"
+# Bybit rejects startTime older than ~2 years ("Can't query order earlier than 2
+# years"). Stay a margin inside that bound so the oldest window is never refused.
+_MAX_BACKFILL_DAYS = 720
+_MAX_TX_PAGES_PER_WINDOW = 50
+
+
+def _synthetic_tx_id(raw_type: str, asset: str, change: Decimal, ts_ms: str) -> str:
+    """Stable id for transaction-log rows that lack Bybit's own ``id``.
+
+    The transactions unique index ignores empty ``tx_id``, so a blank id would
+    re-insert a fresh duplicate on every overlapping run. Mirror CoinEx's
+    synthetic-id approach to keep such rows idempotent.
+    """
+    return f"bybit:{raw_type}:{asset}:{format(change.normalize(), 'f')}:{ts_ms}"
+
 
 @register_collector
 class BybitCollector(BaseCollector):
     """Collector for Bybit exchange via V5 API."""
 
     source_name = SourceName.BYBIT
+    incremental_history_overlap_days = 2
 
     def __init__(
         self,
@@ -66,7 +88,11 @@ class BybitCollector(BaseCollector):
     async def _get(self, path: str, params: dict[str, str] | None = None) -> dict[str, Any]:
         """Make a signed GET request to Bybit V5 API."""
         await _RATE_LIMITER.acquire()
-        query = "&".join(f"{k}={v}" for k, v in (params or {}).items())
+        # Sign the exact query string httpx puts on the wire. Building it via
+        # QueryParams (rather than a hand-rolled join) keeps the signed bytes and
+        # the sent bytes identical even when a value needs percent-encoding (e.g.
+        # the nextPageCursor token), which a manual join would not encode.
+        query = str(httpx.QueryParams(params)) if params else ""
         headers = self._signed_headers(query)
         resp = await self._client.get(path, params=params, headers=headers)
         resp.raise_for_status()
@@ -286,20 +312,87 @@ class BybitCollector(BaseCollector):
         return raw
 
     async def fetch_transactions(self, since: date | None = None) -> list[Transaction]:
-        """Fetch transaction log from Bybit."""
-        data = await self._get("/v5/account/transaction-log", params={"limit": "50"})
-        transactions: list[Transaction] = []
+        """Fetch transaction log from Bybit, windowed and cursor-paginated.
 
-        for item in data.get("result", {}).get("list", []):
-            tx = self._parse_transaction(item)
-            if tx is None:
-                continue
-            if since and tx.date < since:
-                continue
-            transactions.append(tx)
+        The endpoint returns only the last 24h without an explicit range, caps
+        the query interval at 7 days, and retains 2 years. Walk forward from the
+        lower bound in <=7-day windows, paging each window via nextPageCursor.
+        """
+        now_dt = datetime.now(tz=UTC)
+        floor = now_dt.date() - timedelta(days=_MAX_BACKFILL_DAYS)
+        start = since if since is not None and since > floor else floor
+        window_start = datetime(start.year, start.month, start.day, tzinfo=UTC)
+        step = timedelta(days=_TX_WINDOW_DAYS)
+
+        transactions: list[Transaction] = []
+        seen_ids: set[str] = set()
+        while window_start < now_dt:
+            window_end = min(window_start + step, now_dt)
+            for item in await self._fetch_transaction_window(window_start, window_end):
+                tx = self._parse_transaction(item)
+                if tx is None:
+                    continue
+                if since is not None and tx.date < since:
+                    continue
+                # Windows touch at their boundaries (and Bybit's endTime is
+                # inclusive), so a row can recur — dedup on the log entry id.
+                if tx.tx_id and tx.tx_id in seen_ids:
+                    continue
+                if tx.tx_id:
+                    seen_ids.add(tx.tx_id)
+                transactions.append(tx)
+            window_start = window_end
 
         logger.info("Bybit: parsed %d transactions", len(transactions))
         return transactions
+
+    async def _fetch_transaction_window(
+        self,
+        start_dt: datetime,
+        end_dt: datetime,
+    ) -> list[dict[str, Any]]:
+        """Fetch all transaction-log rows in a <=7-day window via cursor paging."""
+        rows: list[dict[str, Any]] = []
+        cursor = ""
+        seen_cursors: set[str] = set()
+        for _ in range(_MAX_TX_PAGES_PER_WINDOW):
+            params = {
+                "limit": _TX_PAGE_LIMIT,
+                "startTime": str(int(start_dt.timestamp() * 1000)),
+                "endTime": str(int(end_dt.timestamp() * 1000)),
+            }
+            if cursor:
+                params["cursor"] = cursor
+            # Let _get errors (HTTP status, retCode) propagate. A swallowed window
+            # would drop data silently, and the incremental overlap then anchors
+            # past the gap so it is never re-fetched; failing loudly lets collect()
+            # record the error and retry the run.
+            data = await self._get(_TX_LOG_PATH, params=params)
+            # result is null (-> None) on some edge responses; guard before .get().
+            result = data.get("result") or {}
+            page_rows = result.get("list") or []
+            rows.extend(page_rows)
+            # nextPageCursor may be JSON null (-> None), "", or a percent-encoded
+            # token. Decode it once so httpx re-encodes back to the same token
+            # instead of double-encoding the '%'. Bybit returns a trailing cursor
+            # that points at an empty page and then repeats the first page, so stop
+            # on an empty page or a cursor we have already followed.
+            next_cursor = unquote((result.get("nextPageCursor") or "").strip())
+            if not page_rows or not next_cursor or next_cursor in seen_cursors:
+                break
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+        else:
+            # Page cap reached with a live cursor: more rows exist than we read.
+            # Raise rather than return a truncated window that the incremental
+            # overlap would then permanently skip.
+            msg = (
+                f"Bybit: transaction-log window {start_dt.date()}..{end_dt.date()} "
+                f"exceeded {_MAX_TX_PAGES_PER_WINDOW} pages; refusing to truncate history"
+            )
+            logger.error(msg)
+            raise ValueError(msg)
+        return rows
 
     @staticmethod
     def _parse_transaction(item: dict[str, Any]) -> Transaction | None:
@@ -309,11 +402,15 @@ class BybitCollector(BaseCollector):
         if not ticker:
             return None
 
-        ts_ms = item.get("transactionTime", "0")
+        ts_ms = str(item.get("transactionTime", "0"))
         try:
             tx_date = datetime.fromtimestamp(int(ts_ms) / 1000, tz=UTC).date()
         except (ValueError, OSError):
             tx_date = datetime.now(tz=UTC).date()
+
+        # Fall back to a deterministic id so blank-id rows still dedup (the unique
+        # index ignores empty tx_id).
+        tx_id = str(item.get("id") or "").strip() or _synthetic_tx_id(str(item.get("type", "")), ticker, change, ts_ms)
 
         return Transaction(
             date=tx_date,
@@ -322,6 +419,6 @@ class BybitCollector(BaseCollector):
             asset=ticker,
             amount=abs(change),
             usd_value=Decimal(0),
-            tx_id=str(item.get("id", "")),
+            tx_id=tx_id,
             raw_json=json.dumps(item),
         )
