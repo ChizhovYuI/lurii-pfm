@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import date
 from decimal import Decimal
@@ -31,6 +32,12 @@ class Repository:
         self._key_hex = key_hex
         self._conn: aiosqlite.Connection | None = None
         self._source_id_cache: dict[str, int] = {}
+        # Serializes leaf write methods (executemany + commit) on the single
+        # shared connection. Without it, two concurrent tasks (e.g. a collection
+        # and the background valuation job) can interleave: one task's commit()
+        # flushes the other's pending DML. Acquired only around writes, never the
+        # network phase. Not re-entrant — locked methods must not call each other.
+        self._write_lock = asyncio.Lock()
 
     async def __aenter__(self) -> Self:
         from pfm.db.encryption import connect_db
@@ -58,6 +65,11 @@ class Repository:
     def connection(self) -> aiosqlite.Connection:
         """Return the underlying database connection for use by store classes."""
         return self._db
+
+    @property
+    def write_lock(self) -> asyncio.Lock:
+        """Shared write lock — pass to stores sharing this connection (MetadataStore)."""
+        return self._write_lock
 
     @property
     def db_path(self) -> Path:
@@ -176,42 +188,43 @@ class Repository:
         if not snapshots:
             return
 
-        rows: list[tuple[str, str, int, str, str, str, str, str, str]] = []
-        resolved_pairs: set[tuple[str, int]] = set()
-        for s in snapshots:
-            sid = (
-                s.source_id
-                if s.source_id is not None
-                else await self._ensure_source(s.source, s.source_name or s.source)
-            )
-            rows.append(
-                (
-                    str(s.date),
-                    s.source,
-                    sid,
-                    s.asset,
-                    str(s.amount),
-                    str(s.usd_value),
-                    str(s.price),
-                    str(s.apy),
-                    s.raw_json,
+        async with self._write_lock:
+            rows: list[tuple[str, str, int, str, str, str, str, str, str]] = []
+            resolved_pairs: set[tuple[str, int]] = set()
+            for s in snapshots:
+                sid = (
+                    s.source_id
+                    if s.source_id is not None
+                    else await self._ensure_source(s.source, s.source_name or s.source)
                 )
-            )
-            resolved_pairs.add((str(s.date), sid))
+                rows.append(
+                    (
+                        str(s.date),
+                        s.source,
+                        sid,
+                        s.asset,
+                        str(s.amount),
+                        str(s.usd_value),
+                        str(s.price),
+                        str(s.apy),
+                        s.raw_json,
+                    )
+                )
+                resolved_pairs.add((str(s.date), sid))
 
-        for snapshot_date, sid in resolved_pairs:
-            await self._db.execute(
-                "DELETE FROM snapshots WHERE date = ? AND source_id = ?",
-                (snapshot_date, sid),
-            )
+            for snapshot_date, sid in resolved_pairs:
+                await self._db.execute(
+                    "DELETE FROM snapshots WHERE date = ? AND source_id = ?",
+                    (snapshot_date, sid),
+                )
 
-        await self._db.executemany(
-            "INSERT INTO snapshots "
-            "(date, source, source_id, asset, amount, usd_value, price, apy, raw_json)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            rows,
-        )
-        await self._db.commit()
+            await self._db.executemany(
+                "INSERT INTO snapshots "
+                "(date, source, source_id, asset, amount, usd_value, price, apy, raw_json)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+            await self._db.commit()
 
     async def get_snapshots_by_date(self, d: date) -> list[Snapshot]:
         """Get all snapshots for a specific date."""
@@ -321,13 +334,14 @@ class Repository:
             return 0
         placeholders = ",".join("?" for _ in source_names)
         # safe — placeholders count derived from input length, no string interp.
-        cursor = await self._db.execute(
-            f"DELETE FROM snapshots WHERE source_id IN"  # noqa: S608
-            f" (SELECT id FROM sources WHERE name IN ({placeholders}))",
-            source_names,
-        )
-        await self._db.commit()
-        return cursor.rowcount
+        async with self._write_lock:
+            cursor = await self._db.execute(
+                f"DELETE FROM snapshots WHERE source_id IN"  # noqa: S608
+                f" (SELECT id FROM sources WHERE name IN ({placeholders}))",
+                source_names,
+            )
+            await self._db.commit()
+            return cursor.rowcount
 
     async def delete_source_cascade(self, source_name: str) -> SourceDeleteResult:
         """Delete a source and all source-owned state in one transaction.
@@ -443,18 +457,22 @@ class Repository:
 
     async def save_transaction(self, tx: Transaction) -> None:
         """Save a single transaction."""
-        sid = await self._resolve_required_source_id(tx)
-        await self._db.execute(self._TX_INSERT_SQL, self._tx_to_row(tx, sid))
-        await self._db.commit()
+        async with self._write_lock:
+            sid = await self._resolve_required_source_id(tx)
+            await self._db.execute(self._TX_INSERT_SQL, self._tx_to_row(tx, sid))
+            await self._db.commit()
 
     async def save_transactions(self, txs: list[Transaction]) -> None:
         """Save multiple transactions atomically."""
-        rows: list[tuple[object, ...]] = []
-        for tx in txs:
-            sid = await self._resolve_required_source_id(tx)
-            rows.append(self._tx_to_row(tx, sid))
-        await self._db.executemany(self._TX_INSERT_SQL, rows)
-        await self._db.commit()
+        if not txs:
+            return
+        async with self._write_lock:
+            rows: list[tuple[object, ...]] = []
+            for tx in txs:
+                sid = await self._resolve_required_source_id(tx)
+                rows.append(self._tx_to_row(tx, sid))
+            await self._db.executemany(self._TX_INSERT_SQL, rows)
+            await self._db.commit()
 
     async def get_transactions(
         self,
@@ -531,11 +549,12 @@ class Repository:
         """Batch update tx_type for resolved transactions."""
         if not updates:
             return
-        await self._db.executemany(
-            "UPDATE transactions SET tx_type = ? WHERE id = ?",
-            [(tx_type.value, tx_id) for tx_id, tx_type in updates],
-        )
-        await self._db.commit()
+        async with self._write_lock:
+            await self._db.executemany(
+                "UPDATE transactions SET tx_type = ? WHERE id = ?",
+                [(tx_type.value, tx_id) for tx_id, tx_type in updates],
+            )
+            await self._db.commit()
 
     async def get_transactions_missing_usd_value(
         self, *, newest_first: bool = False, limit: int | None = None
@@ -568,11 +587,12 @@ class Repository:
         """Batch update usd_value for valued transactions."""
         if not updates:
             return
-        await self._db.executemany(
-            "UPDATE transactions SET usd_value = ? WHERE id = ?",
-            [(str(usd_value), tx_id) for tx_id, usd_value in updates],
-        )
-        await self._db.commit()
+        async with self._write_lock:
+            await self._db.executemany(
+                "UPDATE transactions SET usd_value = ? WHERE id = ?",
+                [(str(usd_value), tx_id) for tx_id, usd_value in updates],
+            )
+            await self._db.commit()
 
     # ── Prices ────────────────────────────────────────────────────────
 

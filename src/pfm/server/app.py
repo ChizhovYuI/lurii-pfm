@@ -86,11 +86,17 @@ async def _on_shutdown(app: web.Application) -> None:
 async def _on_cleanup(app: web.Application) -> None:
     """Close shared resources and clear sensitive state."""
     state = get_runtime_state(app)
-    scheduler = state.scheduler_task
-    if scheduler is not None:
-        scheduler.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await scheduler
+    # Block any new collection/valuation tasks from spawning while we tear down,
+    # then cancel the in-flight ones. Order matters: cancel the collection first
+    # so it cannot reach maybe_start_valuation and spawn a valuation against the
+    # repository we are about to close.
+    state.shutting_down = True
+
+    for task in (state.scheduler_task, state.collection_task, state.valuation_task):
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
     repo = state.repo
     if repo is not None:
@@ -106,6 +112,10 @@ async def _on_cleanup(app: web.Application) -> None:
     state.pricing = None
     state.broadcaster = None
     state.scheduler_task = None
+    state.collection_task = None
+    state.collecting = False
+    state.valuation_task = None
+    state.valuing = False
 
 
 def create_app(db_path: Path) -> web.Application:

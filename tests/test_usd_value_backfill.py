@@ -71,6 +71,51 @@ async def test_backfill_values_zero_usd_and_dedups_lookups(tmp_path):
         assert by_tx["already"].usd_value == Decimal(50)
 
 
+async def test_backfill_on_progress_callback_fires(tmp_path):
+    async with Repository(tmp_path / "x.db") as repo:
+        await repo.save_transactions(
+            [
+                _tx(asset="BTC", amount=Decimal(1), usd_value=Decimal(0), d=_D1, tx_id="b1"),
+                _tx(asset="ETH", amount=Decimal(1), usd_value=Decimal(0), d=_D2, tx_id="e1"),
+            ]
+        )
+        stub = _StubPricing({("BTC", _D1): Decimal(40000), ("ETH", _D2): Decimal(2000)})
+        events: list[tuple[int, int, int]] = []
+
+        async def _cb(scanned: int, total: int, valued: int) -> None:
+            events.append((scanned, total, valued))
+
+        summary = await backfill_transaction_usd_values(repo, stub, on_progress=_cb)
+
+        # The final callback always fires, carrying the run totals.
+        assert events
+        assert events[-1] == (summary["scanned"], 2, summary["updated"])
+
+
+async def test_backfill_progress_fires_across_no_price_rows(tmp_path):
+    """Periodic progress must tick on scanned position even when rows are unpriceable."""
+    async with Repository(tmp_path / "x.db") as repo:
+        # 60 DOGE rows, all unpriceable → every row hits the no_price path.
+        await repo.save_transactions(
+            [_tx(asset="DOGE", amount=Decimal(1), usd_value=Decimal(0), d=_D1, tx_id=f"d{i}") for i in range(60)]
+        )
+        # peek returns "unknown", get returns None → no_price for every distinct
+        # (asset, date); the single (DOGE, _D1) key dedups to one lookup.
+        stub = _StubPricing({})
+        events: list[tuple[int, int, int]] = []
+
+        async def _cb(scanned: int, total: int, valued: int) -> None:
+            events.append((scanned, total, valued))
+
+        summary = await backfill_transaction_usd_values(repo, stub, on_progress=_cb)
+
+        assert summary["updated"] == 0  # nothing priceable
+        # The 50th scanned row emitted despite being a no_price row.
+        assert (50, 60, 0) in events
+        # Final tick covers the tail (60 != 50, so it is emitted, not deduped).
+        assert events[-1] == (60, 60, 0)
+
+
 async def test_backfill_respects_limit(tmp_path):
     async with Repository(tmp_path / "x.db") as repo:
         await repo.save_transactions(

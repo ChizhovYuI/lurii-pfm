@@ -143,6 +143,15 @@ class CollectorResult:
     duration_seconds: float = 0.0
 
 
+def has_new_transactions(results: list[CollectorResult]) -> bool:
+    """True if any collector imported new transactions (the post-collect work gate).
+
+    Single source of truth for "did this collect import anything worth categorizing
+    / valuing", shared by the pipeline, the CLI, and the server's valuation spawn.
+    """
+    return any(r.transactions_count > 0 for r in results)
+
+
 @dataclass(frozen=True, slots=True)
 class TransactionCategory:
     """A category definition for transactions."""

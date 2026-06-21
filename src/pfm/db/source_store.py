@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 import aiosqlite
 
+from pfm.db.encryption import BUSY_TIMEOUT_SECONDS
 from pfm.db.models import Source
 from pfm.source_types import SOURCE_TYPES, validate_credentials
 
@@ -65,7 +66,7 @@ class SourceStore:
 
         creds_json = json.dumps(credentials)
 
-        async with aiosqlite.connect(self._db_path) as db:
+        async with aiosqlite.connect(self._db_path, timeout=BUSY_TIMEOUT_SECONDS) as db:
             if source_type == "cash":
                 existing_cash = await (
                     await db.execute("SELECT name FROM sources WHERE type = 'cash' LIMIT 1")
@@ -90,7 +91,7 @@ class SourceStore:
 
     async def get(self, name: str) -> Source:
         """Get a source by name. Raises SourceNotFoundError if missing."""
-        async with aiosqlite.connect(self._db_path) as db:
+        async with aiosqlite.connect(self._db_path, timeout=BUSY_TIMEOUT_SECONDS) as db:
             row = await (await db.execute("SELECT * FROM sources WHERE name = ?", (name,))).fetchone()
 
         if row is None:
@@ -100,19 +101,19 @@ class SourceStore:
 
     async def list_all(self) -> list[Source]:
         """List all sources."""
-        async with aiosqlite.connect(self._db_path) as db:
+        async with aiosqlite.connect(self._db_path, timeout=BUSY_TIMEOUT_SECONDS) as db:
             rows = await (await db.execute("SELECT * FROM sources ORDER BY id")).fetchall()
         return [self._row_to_source(r) for r in rows]
 
     async def list_enabled(self) -> list[Source]:
         """List only enabled sources."""
-        async with aiosqlite.connect(self._db_path) as db:
+        async with aiosqlite.connect(self._db_path, timeout=BUSY_TIMEOUT_SECONDS) as db:
             rows = await (await db.execute("SELECT * FROM sources WHERE enabled = 1 ORDER BY id")).fetchall()
         return [self._row_to_source(r) for r in rows]
 
     async def delete(self, name: str) -> bool:
         """Delete a source by name. Returns True if deleted, raises if not found."""
-        async with aiosqlite.connect(self._db_path) as db:
+        async with aiosqlite.connect(self._db_path, timeout=BUSY_TIMEOUT_SECONDS) as db:
             cursor = await db.execute("DELETE FROM sources WHERE name = ?", (name,))
             await db.commit()
 
@@ -166,7 +167,7 @@ class SourceStore:
         params.append(name)
         sql = f"UPDATE sources SET {', '.join(sets)} WHERE name = ?"  # noqa: S608
 
-        async with aiosqlite.connect(self._db_path) as db:
+        async with aiosqlite.connect(self._db_path, timeout=BUSY_TIMEOUT_SECONDS) as db:
             try:
                 await db.execute(sql, params)
                 await db.commit()

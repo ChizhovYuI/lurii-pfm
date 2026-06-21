@@ -12,6 +12,7 @@ def setup_routes(app: web.Application) -> None:
     """Register all route tables with the application."""
     from pfm.server.routes.analytics import routes as analytics_routes
     from pfm.server.routes.apy_rules import routes as apy_rules_routes
+    from pfm.server.routes.backfill import routes as backfill_routes
     from pfm.server.routes.cash_manual import routes as cash_manual_routes
     from pfm.server.routes.collect import routes as collect_routes
     from pfm.server.routes.earn import routes as earn_routes
@@ -32,6 +33,7 @@ def setup_routes(app: web.Application) -> None:
     app.router.add_routes(portfolio_routes)
     app.router.add_routes(analytics_routes)
     app.router.add_routes(collect_routes)
+    app.router.add_routes(backfill_routes)
     app.router.add_routes(earn_routes)
     app.router.add_routes(ext_snapshot_routes)
     app.router.add_routes(settings_routes)

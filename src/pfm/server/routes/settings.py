@@ -7,6 +7,8 @@ from typing import Any
 import aiosqlite
 from aiohttp import web
 
+from pfm.db.encryption import BUSY_TIMEOUT_SECONDS
+
 routes = web.RouteTableDef()
 
 
@@ -15,7 +17,7 @@ async def get_settings(request: web.Request) -> web.Response:
     """Read all key-value settings from app_settings."""
     db_path = request.app["db_path"]
 
-    async with aiosqlite.connect(str(db_path)) as db:
+    async with aiosqlite.connect(str(db_path), timeout=BUSY_TIMEOUT_SECONDS) as db:
         rows = await (await db.execute("SELECT key, value FROM app_settings")).fetchall()
     settings_dict: dict[str, Any] = {str(row[0]): str(row[1]) for row in rows}
 
@@ -31,7 +33,7 @@ async def update_settings(request: web.Request) -> web.Response:
     if not body:
         return web.json_response({"error": "Request body must be a non-empty JSON object"}, status=400)
 
-    async with aiosqlite.connect(str(db_path)) as db:
+    async with aiosqlite.connect(str(db_path), timeout=BUSY_TIMEOUT_SECONDS) as db:
         for key, value in body.items():
             await db.execute(
                 "INSERT INTO app_settings (key, value) VALUES (?, ?) "

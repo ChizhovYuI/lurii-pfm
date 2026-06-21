@@ -16,6 +16,16 @@ logger = logging.getLogger(__name__)
 
 _HEX_64 = re.compile(r"^[0-9a-fA-F]{64}$")
 
+# Wait up to this long for a write lock instead of failing immediately with
+# "database is locked". A single local user can have several writers contend
+# briefly — the daemon's collection/valuation jobs plus a separate MCP process
+# running the full backfill sweep against the same file. sqlite3 applies an
+# implicit 5s timeout; this raises the headroom and makes the intent explicit.
+BUSY_TIMEOUT_MS = 15000
+# Same budget in seconds — for the ``timeout=`` kwarg of ``aiosqlite.connect`` /
+# ``sqlite3.connect`` used by the inline short-lived store/route connections.
+BUSY_TIMEOUT_SECONDS = BUSY_TIMEOUT_MS / 1000
+
 
 def validate_key_hex(key_hex: str) -> bool:
     """Return True if key_hex is a valid 64-char hex string (256-bit key)."""
@@ -34,6 +44,7 @@ def connect_encrypted(db_path: str | Path, key_hex: str) -> aiosqlite.Connection
         conn: sqlite3.Connection = sqlcipher3.connect(str(db_path))
         conn.execute(f"PRAGMA key = \"x'{key_hex}'\"")
         conn.execute("PRAGMA cipher_compatibility = 4")
+        conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
         return conn
 
     return aiosqlite.Connection(connector, iter_chunk_size=64)
@@ -43,7 +54,13 @@ def connect_db(db_path: str | Path, *, key_hex: str | None = None) -> aiosqlite.
     """Return an aiosqlite Connection — encrypted if *key_hex* is provided, plain otherwise."""
     if key_hex is not None:
         return connect_encrypted(db_path, key_hex)
-    return aiosqlite.Connection(lambda: sqlite3.connect(str(db_path)), iter_chunk_size=64)
+
+    def connector() -> sqlite3.Connection:
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
+        return conn
+
+    return aiosqlite.Connection(connector, iter_chunk_size=64)
 
 
 async def init_encrypted_db(path: Path, key_hex: str) -> None:

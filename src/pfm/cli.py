@@ -269,7 +269,9 @@ def collect(source_name: str | None) -> None:
 
 async def _collect_async(source_name: str | None) -> list[CollectorResult]:
     """Run collection: parallel raw fetch, batch pricing, save snapshots."""
+    from pfm.analytics.usd_value_backfill import forward_fill_recent
     from pfm.collectors.pipeline import run_parallel_pipeline
+    from pfm.db.models import has_new_transactions
     from pfm.db.repository import Repository
     from pfm.pricing import PricingService
     from pfm.server.routes.collect import _build_collectors
@@ -311,6 +313,14 @@ async def _collect_async(source_name: str | None) -> list[CollectorResult]:
                     collector=collector,
                     today=pricing.today(),
                 )
+
+            # Value freshly imported zero-USD rows. The server runs this as a
+            # detached background job; the one-shot CLI does it inline (blocking
+            # on CoinGecko is acceptable here).
+            if has_new_transactions(results):
+                click.echo("Valuing transactions (CoinGecko historical prices)...")
+                valued = await forward_fill_recent(repo, pricing)
+                click.echo(f"  valued {valued['updated']}/{valued['scanned']} rows")
     finally:
         await pricing.close()
 

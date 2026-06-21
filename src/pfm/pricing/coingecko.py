@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 import aiosqlite
 import httpx
 
+from pfm.db.encryption import BUSY_TIMEOUT_SECONDS as _CACHE_BUSY_TIMEOUT_SECONDS
 from pfm.pricing.constants import (
     HISTORICAL_PRICE_SOURCE as _HISTORICAL_SOURCE,
 )
@@ -37,6 +38,10 @@ FIAT_TICKERS: frozenset[str] = frozenset(
 
 _BASE_URL = "https://api.coingecko.com/api/v3"
 _RATE_LIMIT_DELAY = 2.1  # seconds between requests (30 req/min = 1 per 2s)
+# ``_CACHE_BUSY_TIMEOUT_SECONDS`` (imported from db.encryption): wait for a write
+# lock rather than failing with "database is locked" — the price cache is written
+# concurrently by the daemon's valuation job and a separate MCP backfill sweep.
+# ``aiosqlite.connect`` passes it to ``sqlite3.connect`` as the busy timeout.
 _MAX_429_RETRIES = 3
 _RETRY_BACKOFF_BASE_SECONDS = 2.0
 _HTTP_STATUS_TOO_MANY_REQUESTS = 429
@@ -301,7 +306,7 @@ class PricingService:
             "ORDER BY created_at DESC LIMIT 1"
         )
         try:
-            async with aiosqlite.connect(self._cache_db_path) as db:
+            async with aiosqlite.connect(self._cache_db_path, timeout=_CACHE_BUSY_TIMEOUT_SECONDS) as db:
                 row = await (await db.execute(sql, (ticker, str(self.today()), _REAL_SOURCE, ttl_window))).fetchone()
         except aiosqlite.Error:
             logger.exception("Failed to read price cache from SQLite")
@@ -321,7 +326,7 @@ class PricingService:
             return
         sql = "INSERT INTO prices (date, asset, currency, price, source) VALUES (?, ?, 'USD', ?, ?)"
         try:
-            async with aiosqlite.connect(self._cache_db_path) as db:
+            async with aiosqlite.connect(self._cache_db_path, timeout=_CACHE_BUSY_TIMEOUT_SECONDS) as db:
                 await db.execute(sql, (str(on_date), ticker, price, source))
                 await db.commit()
         except aiosqlite.Error:
@@ -345,7 +350,7 @@ class PricingService:
             "ORDER BY created_at DESC LIMIT 1"
         )
         try:
-            async with aiosqlite.connect(self._cache_db_path) as db:
+            async with aiosqlite.connect(self._cache_db_path, timeout=_CACHE_BUSY_TIMEOUT_SECONDS) as db:
                 row = await (await db.execute(sql, (ticker, str(on_date), _REAL_SOURCE, _HISTORICAL_SOURCE))).fetchone()
         except aiosqlite.Error:
             logger.exception("Failed to read historical price cache from SQLite")
@@ -370,7 +375,7 @@ class PricingService:
             "AND created_at >= datetime('now', ?) LIMIT 1"
         )
         try:
-            async with aiosqlite.connect(self._cache_db_path) as db:
+            async with aiosqlite.connect(self._cache_db_path, timeout=_CACHE_BUSY_TIMEOUT_SECONDS) as db:
                 row = await (await db.execute(sql, (ticker, str(on_date), _MISS_SOURCE, _MISS_RETRY_WINDOW))).fetchone()
         except aiosqlite.Error:
             logger.exception("Failed to read price miss sentinel from SQLite")

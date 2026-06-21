@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import re
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
 from pfm.db.models import CategoryRule, TransactionCategory, TransactionMetadata, TypeRule
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    import asyncio
+    from collections.abc import AsyncIterator, Iterable
     from datetime import date
 
     import aiosqlite
@@ -115,8 +117,22 @@ _ALIASED_TX_META_COLS = (
 class MetadataStore:
     """Async store for transaction metadata, categories, and rules."""
 
-    def __init__(self, conn: aiosqlite.Connection) -> None:
+    def __init__(self, conn: aiosqlite.Connection, write_lock: asyncio.Lock | None = None) -> None:
         self._db = conn
+        # Optional shared write lock (Repository.write_lock). When this store shares
+        # the daemon's connection with concurrent writers (collection vs the
+        # valuation job), the categorization upsert must serialize against them so
+        # one task's commit() cannot flush the other's pending DML.
+        self._write_lock = write_lock
+
+    @asynccontextmanager
+    async def _writing(self) -> AsyncIterator[None]:
+        """Hold the shared write lock for an executemany+commit, if one was provided."""
+        if self._write_lock is None:
+            yield
+        else:
+            async with self._write_lock:
+                yield
 
     # ── Categories ─────────────────────────────────────────────────────
 
@@ -238,34 +254,35 @@ class MetadataStore:
         """Batch upsert category metadata. Preserves type_override, transfer, and review fields."""
         if not items:
             return
-        await self._db.executemany(
-            "INSERT INTO transaction_metadata"
-            " (transaction_id, category, category_source, category_confidence,"
-            "  type_override, is_internal_transfer, transfer_pair_id, transfer_detected_by,"
-            "  reviewed, notes, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))"
-            " ON CONFLICT(transaction_id) DO UPDATE SET"
-            "  category = excluded.category,"
-            "  category_source = excluded.category_source,"
-            "  category_confidence = excluded.category_confidence,"
-            "  updated_at = excluded.updated_at",
-            [
-                (
-                    m.transaction_id,
-                    m.category,
-                    m.category_source,
-                    m.category_confidence,
-                    m.type_override,
-                    1 if m.is_internal_transfer else 0,
-                    m.transfer_pair_id,
-                    m.transfer_detected_by,
-                    1 if m.reviewed else 0,
-                    m.notes,
-                )
-                for m in items
-            ],
-        )
-        await self._db.commit()
+        async with self._writing():
+            await self._db.executemany(
+                "INSERT INTO transaction_metadata"
+                " (transaction_id, category, category_source, category_confidence,"
+                "  type_override, is_internal_transfer, transfer_pair_id, transfer_detected_by,"
+                "  reviewed, notes, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))"
+                " ON CONFLICT(transaction_id) DO UPDATE SET"
+                "  category = excluded.category,"
+                "  category_source = excluded.category_source,"
+                "  category_confidence = excluded.category_confidence,"
+                "  updated_at = excluded.updated_at",
+                [
+                    (
+                        m.transaction_id,
+                        m.category,
+                        m.category_source,
+                        m.category_confidence,
+                        m.type_override,
+                        1 if m.is_internal_transfer else 0,
+                        m.transfer_pair_id,
+                        m.transfer_detected_by,
+                        1 if m.reviewed else 0,
+                        m.notes,
+                    )
+                    for m in items
+                ],
+            )
+            await self._db.commit()
 
     @staticmethod
     def _row_to_metadata(row: aiosqlite.Row) -> TransactionMetadata:

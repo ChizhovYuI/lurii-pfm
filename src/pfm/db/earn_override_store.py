@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, Any
 
 import aiosqlite
 
+from pfm.db.encryption import BUSY_TIMEOUT_SECONDS
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -22,7 +24,7 @@ class EarnOverrideStore:
     async def load(self, source_name: str) -> list[dict[str, str]]:
         """Load earn overrides for a source.  Each item: {category, coin, apr?, settlement_at?}."""
         key = self._key(source_name)
-        async with aiosqlite.connect(self._db_path) as db:
+        async with aiosqlite.connect(self._db_path, timeout=BUSY_TIMEOUT_SECONDS) as db:
             row = await (await db.execute("SELECT value FROM app_settings WHERE key = ?", (key,))).fetchone()
         if row is None:
             return []
@@ -33,7 +35,7 @@ class EarnOverrideStore:
         """Replace all earn overrides for a source."""
         key = self._key(source_name)
         value = json.dumps(overrides)
-        async with aiosqlite.connect(self._db_path) as db:
+        async with aiosqlite.connect(self._db_path, timeout=BUSY_TIMEOUT_SECONDS) as db:
             await db.execute(
                 "INSERT INTO app_settings (key, value) VALUES (?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value, "

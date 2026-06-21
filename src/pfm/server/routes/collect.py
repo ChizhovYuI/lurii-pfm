@@ -15,11 +15,13 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from pfm.collectors.base import BaseCollector
-    from pfm.db.models import Source
+    from pfm.db.models import CollectorResult, Source
     from pfm.db.repository import Repository
     from pfm.db.source_store import SourceStore
     from pfm.pricing.coingecko import PricingService
+    from pfm.server.ws import EventBroadcaster
 
+from pfm.server.routes.backfill import maybe_start_valuation
 from pfm.server.serializers import collector_result_to_dict
 
 logger = logging.getLogger(__name__)
@@ -27,10 +29,18 @@ logger = logging.getLogger(__name__)
 routes = web.RouteTableDef()
 
 
+def _collection_summary(results: list[CollectorResult]) -> str:
+    """Build the human-readable completion message from collector results."""
+    ok_count = sum(1 for r in results if not r.errors)
+    err_count = sum(1 for r in results if r.errors)
+    suffix = f". {err_count} error{'s' if err_count != 1 else ''}" if err_count else ""
+    return f"Done. {ok_count} ok{suffix}"
+
+
 def start_collection_task(app: web.Application, source_name: str | None) -> bool:
     """Start a background collection task if no collection is active."""
     state = get_runtime_state(app)
-    if state.collecting:
+    if state.collecting or state.shutting_down:
         return False
 
     state.collecting = True
@@ -72,10 +82,13 @@ async def _run_collection(app: web.Application, source_name: str | None) -> None
     state = get_runtime_state(app)
     broadcaster = get_broadcaster(app)
     db_path = app["db_path"]
-    repo = get_repo(app)
-    pricing = get_pricing(app)
 
     try:
+        # repo/pricing inside the try so a getter raise still hits the finally
+        # that clears state.collecting (otherwise the flag wedges True forever).
+        repo = get_repo(app)
+        pricing = get_pricing(app)
+
         await broadcaster.broadcast({"type": "collection_started"})
 
         store = SourceStore(db_path)
@@ -115,25 +128,7 @@ async def _run_collection(app: web.Application, source_name: str | None) -> None
         await _on_progress(0, 1, f"Fetching from {total} source(s)...")
 
         results = await run_parallel_pipeline(collectors, pricing, repo, on_progress=_on_progress)
-
-        ok_count = sum(1 for r in results if not r.errors)
-        err_count = sum(1 for r in results if r.errors)
-        summary = f"Done. {ok_count} ok" + (f". {err_count} error{'s' if err_count != 1 else ''}" if err_count else "")
-
-        try:
-            await _run_analyze(repo)
-            await broadcaster.broadcast({"type": "snapshot_updated"})
-        except Exception:
-            logger.exception("Post-collection analyze failed")
-
-        event: dict[str, object] = {
-            "type": "collection_completed",
-            "results": [collector_result_to_dict(r) for r in results],
-            "message": summary,
-        }
-        if source_name:
-            event["source"] = source_name
-        await broadcaster.broadcast(event)
+        await _finalize_collection(app, broadcaster, repo, results, source_name)
 
     except Exception as exc:
         logger.exception("Collection background task failed")
@@ -141,6 +136,39 @@ async def _run_collection(app: web.Application, source_name: str | None) -> None
     finally:
         state.collecting = False
         state.collection_task = None
+
+
+async def _finalize_collection(
+    app: web.Application,
+    broadcaster: EventBroadcaster,
+    repo: Repository,
+    results: list[CollectorResult],
+    source_name: str | None,
+) -> None:
+    """Run post-collection analyze, broadcast completion, and spawn valuation."""
+    try:
+        await _run_analyze(repo)
+        await broadcaster.broadcast({"type": "snapshot_updated"})
+    except Exception:
+        logger.exception("Post-collection analyze failed")
+
+    event: dict[str, object] = {
+        "type": "collection_completed",
+        "results": [collector_result_to_dict(r) for r in results],
+        "message": _collection_summary(results),
+    }
+    if source_name:
+        event["source"] = source_name
+    await broadcaster.broadcast(event)
+
+    # Collection is done; value freshly imported zero-USD rows in the background
+    # (slow CoinGecko step). No-op if a valuation is already running. Guard its
+    # own spawn errors so they can't surface as a contradictory collection_failed
+    # after collection_completed was already sent.
+    try:
+        maybe_start_valuation(app, results)
+    except Exception:
+        logger.exception("Failed to start post-collection valuation (non-fatal)")
 
 
 async def _build_collectors(

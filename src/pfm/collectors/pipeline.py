@@ -9,10 +9,14 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from pfm.analytics.categorization_runner import run_categorization
-from pfm.analytics.usd_value_backfill import backfill_transaction_usd_values
 from pfm.collectors._retry import format_fetch_error, is_dns_resolution_error
 from pfm.db.metadata_store import MetadataStore
-from pfm.db.models import CollectorResult, is_sync_marker_snapshot, make_sync_marker_snapshot
+from pfm.db.models import (
+    CollectorResult,
+    has_new_transactions,
+    is_sync_marker_snapshot,
+    make_sync_marker_snapshot,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -71,28 +75,24 @@ async def run_parallel_pipeline(
         result = await _process_single(src.name, collector, raw, prices, repo)
         results.append(result)
 
-    # Phase 5: resolve types, detect transfers, categorize
-    has_new_txs = any(r.transactions_count > 0 for r in results)
-    if has_new_txs:
+    # Phase 5: resolve types, detect transfers, categorize. USD valuation is
+    # NOT done here — it is a slow, CoinGecko-bound step the server runs as a
+    # separate background job after ``collection_completed`` (see
+    # ``pfm.server.routes.backfill``); the ``pfm collect`` CLI values rows
+    # directly after this returns.
+    if has_new_transactions(results):
         if on_progress:
             await on_progress(0.95, 1, "Categorizing transactions...")
-        await _run_post_import(repo, pricing)
+        await _run_categorization(repo)
 
     return results
 
 
-# Cap the post-collect valuation so collection never blocks on the full
-# historical backlog (use the backfill_usd_values tool for a full sweep).
-# ``_FORWARD_FILL_MAX_LOOKUPS`` bounds wall-clock: CoinGecko is serialized at
-# ~2.1s/request, so 20 distinct (asset, date) lookups cap the added collect
-# latency at ~45s. The backlog drains across successive collects.
-_FORWARD_FILL_LIMIT = 200
-_FORWARD_FILL_MAX_LOOKUPS = 20
-
-
-async def _run_post_import(repo: Repository, pricing: PricingService) -> None:
-    """Run the categorization pipeline, then value recent imports best-effort."""
-    store = MetadataStore(repo.connection)
+async def _run_categorization(repo: Repository) -> None:
+    """Resolve transaction types, detect transfers, and apply category rules."""
+    # Share the Repository write lock so categorization's metadata upserts
+    # serialize against a concurrent valuation job on the same connection.
+    store = MetadataStore(repo.connection, write_lock=repo.write_lock)
     summary = await run_categorization(repo, store)
     logger.info(
         "Post-import categorization: %d types resolved, %d transfers, %d categorized",
@@ -100,18 +100,6 @@ async def _run_post_import(repo: Repository, pricing: PricingService) -> None:
         summary["transfers"],
         summary["categorized"],
     )
-
-    try:
-        valued = await backfill_transaction_usd_values(
-            repo,
-            pricing,
-            limit=_FORWARD_FILL_LIMIT,
-            newest_first=True,
-            max_lookups=_FORWARD_FILL_MAX_LOOKUPS,
-        )
-        logger.info("Post-import usd_value forward-fill: %s", valued)
-    except Exception:
-        logger.exception("Post-import usd_value forward-fill failed (non-fatal)")
 
 
 async def _fetch_all(

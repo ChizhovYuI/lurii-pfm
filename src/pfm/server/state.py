@@ -21,7 +21,10 @@ class ServerRuntimeState:
 
     collecting: bool = False
     collection_task: asyncio.Task[None] | None = None
+    valuing: bool = False
+    valuation_task: asyncio.Task[None] | None = None
     scheduler_task: asyncio.Task[None] | None = None
+    shutting_down: bool = False
     bg_tasks: set[asyncio.Task[None]] = field(default_factory=set)
     db_locked: bool = False
     db_key: str | None = None

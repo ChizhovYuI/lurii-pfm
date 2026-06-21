@@ -15,6 +15,7 @@ import httpx
 from aiohttp import web
 
 from pfm import __version__
+from pfm.db.encryption import BUSY_TIMEOUT_SECONDS
 from pfm.server.daemon import get_service_target, is_launchd_service_loaded, schedule_restart
 from pfm.server.state import get_broadcaster, get_runtime_state
 
@@ -154,7 +155,7 @@ def _normalize_install_state(raw: object) -> dict[str, Any]:
 
 
 async def _load_install_state(db_path: Path) -> dict[str, Any]:
-    async with aiosqlite.connect(str(db_path)) as db:
+    async with aiosqlite.connect(str(db_path), timeout=BUSY_TIMEOUT_SECONDS) as db:
         row = await (await db.execute("SELECT value FROM app_settings WHERE key = ?", (_UPDATE_STATE_KEY,))).fetchone()
 
     if row is None:
@@ -171,7 +172,7 @@ async def _load_install_state(db_path: Path) -> dict[str, Any]:
 
 async def _save_install_state(db_path: Path, state: dict[str, Any]) -> dict[str, Any]:
     normalized = _set_cached_install_state(state)
-    async with aiosqlite.connect(str(db_path)) as db:
+    async with aiosqlite.connect(str(db_path), timeout=BUSY_TIMEOUT_SECONDS) as db:
         await db.execute(
             "INSERT INTO app_settings (key, value) VALUES (?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')",
